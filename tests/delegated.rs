@@ -5,7 +5,7 @@ mod support;
 
 use asb_tui::{
     compatibility::Architecture,
-    delegated::{LifecycleRequest, execute, read_request},
+    delegated::{LifecycleRequest, execute, execute_input, read_request},
     lifecycle::FilesystemLifecycle,
 };
 use std::{
@@ -34,6 +34,7 @@ fn request_parser_is_closed_bounded_and_versioned() {
         read_request(vec![b'x'; 65_537].as_slice()).unwrap_err(),
         "request_size_invalid"
     );
+    assert_eq!(execute_input(&b"{}"[..]).code, "request_invalid");
 }
 
 #[test]

@@ -8,7 +8,8 @@ use asb_tui::{
     compatibility::Architecture,
     lifecycle::{
         ExecutableSelfTest, FilesystemLifecycle, FrontendLauncher, Installation, LifecycleIoError,
-        LifecycleStore, ProcessLauncher, SelfTest, install, launch, remove, status,
+        LifecycleStore, ProcessLauncher, SelfTest, install, launch, local_self_test_response,
+        remove, status,
     },
 };
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
@@ -336,4 +337,15 @@ fn process_launcher_runs_exact_bytes_and_reports_frontend_failure() {
             .launch_frontend(&installed, b"#!/bin/sh\nexit 9\n")
             .is_err()
     );
+}
+
+#[test]
+fn local_self_test_response_validates_release_and_reports_observed_readiness() {
+    assert!(local_self_test_response("1.2.3").is_none());
+    assert!(local_self_test_response("v1.2").is_none());
+    assert!(local_self_test_response("v1.two.3").is_none());
+    let response = local_self_test_response("v1.2.3").unwrap();
+    assert_eq!(response.release, "v1.2.3");
+    assert_eq!(response.protocol_version, 1);
+    assert!(!response.ready);
 }

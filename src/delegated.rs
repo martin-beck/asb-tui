@@ -105,6 +105,13 @@ pub fn read_request(mut input: impl Read) -> Result<LifecycleRequest, &'static s
     serde_json::from_slice(&bytes).map_err(|_| "request_invalid")
 }
 
+pub fn execute_input(input: impl Read) -> LifecycleResponse {
+    match read_request(input) {
+        Ok(request) => execute(request),
+        Err(code) => LifecycleResponse::result(false, code),
+    }
+}
+
 pub fn execute(request: LifecycleRequest) -> LifecycleResponse {
     let result = match request {
         LifecycleRequest::Status {

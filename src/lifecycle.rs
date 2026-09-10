@@ -4,7 +4,9 @@
 
 use crate::{
     bundle::{BundleManifest, digest_bytes},
+    compatibility::evaluate,
     compatibility::{COORDINATOR_COMMIT, COORDINATOR_VERSION, QUALITY_COMMIT, QUALITY_VERSION},
+    system_probe::{LocalSystem, detect},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -236,6 +238,47 @@ struct ExecutableSelfTestResponse {
     quality_version: String,
     quality_commit: String,
     ready: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalSelfTestResponse<'a> {
+    pub schema_version: u64,
+    pub classification: &'static str,
+    pub release: &'a str,
+    pub protocol_version: u64,
+    pub coordinator_version: &'static str,
+    pub coordinator_commit: &'static str,
+    pub quality_version: &'static str,
+    pub quality_commit: &'static str,
+    pub ready: bool,
+}
+
+pub fn local_self_test_response(release: &str) -> Option<LocalSelfTestResponse<'_>> {
+    if !valid_release(release) {
+        return None;
+    }
+    Some(LocalSelfTestResponse {
+        schema_version: 1,
+        classification: "unverified_extension",
+        release,
+        protocol_version: 1,
+        coordinator_version: COORDINATOR_VERSION,
+        coordinator_commit: COORDINATOR_COMMIT,
+        quality_version: QUALITY_VERSION,
+        quality_commit: QUALITY_COMMIT,
+        ready: evaluate(detect(&LocalSystem)).bundle.is_some(),
+    })
+}
+
+fn valid_release(value: &str) -> bool {
+    let Some(version) = value.strip_prefix('v') else {
+        return false;
+    };
+    value.len() <= 32
+        && version.split('.').count() == 3
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// Executes the exact candidate bytes from an anonymous file and validates its closed response.

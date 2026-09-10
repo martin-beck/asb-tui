@@ -3,10 +3,9 @@
 #![forbid(unsafe_code)]
 
 use asb_tui::{
-    compatibility::{
-        COORDINATOR_COMMIT, COORDINATOR_VERSION, QUALITY_COMMIT, QUALITY_VERSION, evaluate,
-    },
-    delegated::{execute, read_request},
+    compatibility::evaluate,
+    delegated::execute_input,
+    lifecycle::local_self_test_response,
     system_probe::{LocalSystem, detect},
 };
 use std::{env, process::ExitCode};
@@ -21,19 +20,7 @@ const DIAGNOSTIC: &str = concat!(
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
     if arguments == ["lifecycle", "--format", "json"] {
-        let response = match read_request(std::io::stdin().lock()) {
-            Ok(request) => execute(request),
-            Err(code) => asb_tui::delegated::LifecycleResponse {
-                schema_version: 1,
-                classification: "unverified_extension",
-                ok: false,
-                code,
-                installed: None,
-                verified: None,
-                release: None,
-                executable_sha256: None,
-            },
-        };
+        let response = execute_input(std::io::stdin().lock());
         println!(
             "{}",
             serde_json::to_string(&response).expect("serialize lifecycle response")
@@ -43,27 +30,17 @@ fn main() -> ExitCode {
     if let [command, release_flag, release, format_flag, format] = arguments.as_slice()
         && command == "lifecycle-self-test"
         && release_flag == "--release"
-        && valid_release(release)
         && format_flag == "--format"
         && format == "json"
     {
-        let report = evaluate(detect(&LocalSystem));
-        let ready = report.bundle.is_some();
+        let Some(response) = local_self_test_response(release) else {
+            return usage();
+        };
         println!(
             "{}",
-            serde_json::json!({
-                "schema_version": 1,
-                "classification": "unverified_extension",
-                "release": release,
-                "protocol_version": 1,
-                "coordinator_version": COORDINATOR_VERSION,
-                "coordinator_commit": COORDINATOR_COMMIT,
-                "quality_version": QUALITY_VERSION,
-                "quality_commit": QUALITY_COMMIT,
-                "ready": ready,
-            })
+            serde_json::to_string(&response).expect("serialize self-test response")
         );
-        return ExitCode::from(if ready { 0 } else { 3 });
+        return ExitCode::from(if response.ready { 0 } else { 3 });
     }
     if arguments == ["compatibility", "--format", "json"] {
         let report = evaluate(detect(&LocalSystem));
@@ -77,19 +54,12 @@ fn main() -> ExitCode {
         println!("{DIAGNOSTIC}");
         return ExitCode::from(3);
     }
-    eprintln!("usage: asb-tui (doctor|compatibility) --format json");
-    ExitCode::from(2)
+    usage()
 }
 
-fn valid_release(value: &str) -> bool {
-    let Some(version) = value.strip_prefix('v') else {
-        return false;
-    };
-    value.len() <= 32
-        && version.split('.').count() == 3
-        && version
-            .split('.')
-            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+fn usage() -> ExitCode {
+    eprintln!("usage: asb-tui (doctor|compatibility) --format json");
+    ExitCode::from(2)
 }
 
 #[cfg(test)]
