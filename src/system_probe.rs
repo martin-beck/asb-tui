@@ -549,9 +549,10 @@ impl PrivateDirectory {
         };
         let observed =
             bounded_command_with_stdin("/proc/self/fd/0/destination", &[], Stdio::from(inherited));
-        observed.is_some_and(|value| value.success)
-            && unix_fs::statat(&self.directory, "destination", AtFlags::SYMLINK_NOFOLLOW)
-                .is_ok_and(|metadata| (metadata.st_dev, metadata.st_ino) == expected)
+        let identity_matches =
+            unix_fs::statat(&self.directory, "destination", AtFlags::SYMLINK_NOFOLLOW)
+                .is_ok_and(|metadata| (metadata.st_dev, metadata.st_ino) == expected);
+        observed.is_some_and(|value| value.success) && identity_matches
     }
 
     #[cfg(not(unix))]
@@ -591,6 +592,9 @@ impl Drop for PrivateDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[cfg(unix)]
     struct TestBase(PathBuf);
@@ -640,6 +644,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn command_probe_bounds_timeout_output_encoding_and_stderr() {
+        let _guard = PROCESS_TEST_LOCK.lock().unwrap();
         let root = TestBase::create();
         let timeout = script(root.path(), "timeout", b"#!/bin/sh\nexec sleep 3\n");
         assert!(bounded_command(timeout.to_str().unwrap(), &[]).is_none());
@@ -714,6 +719,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn filesystem_probe_is_executable_atomic_private_and_self_cleaning() {
+        let _guard = PROCESS_TEST_LOCK.lock().unwrap();
         use std::os::unix::fs::{PermissionsExt, symlink};
         let root = TestBase::create();
         let before = fs::read_dir(root.path()).unwrap().count();
@@ -842,6 +848,7 @@ mod tests {
 
     #[test]
     fn local_probe_exercises_only_the_normalized_privacy_boundary() {
+        let _guard = PROCESS_TEST_LOCK.lock().unwrap();
         let probe = detect(&LocalSystem);
         assert_eq!(probe.schema_version, 1);
         assert!(!probe.terminal.resize_events);
