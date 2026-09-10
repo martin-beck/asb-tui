@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "classification": "unverified_extension",
+  "classification": "source_only_unverified",
   "ok": false,
   "code": "extension_not_installed",
   "installed": false,

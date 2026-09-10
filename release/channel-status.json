@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
-  "classification": "optional_unverified",
+  "trust_policy_version": 1,
+  "classification": "source_only_unverified",
   "installable": false,
   "release_artifacts_published": false,
   "promotion_requirements": {

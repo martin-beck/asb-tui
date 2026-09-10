@@ -6,13 +6,13 @@
 It does not own benchmark execution, providers, credentials, run state, or artifacts. Removing this
 repository or binary must not affect the installed `asb` program.
 
-This initial boundary is deliberately classified as `unverified_extension`. It defines the closed
+This initial boundary is deliberately classified as `source_only_unverified`. It defines the closed
 capability-negotiation response expected from an installed ASB program, but current ASB releases do
 not yet publish that external CLI contract. Run:
 
 ```console
 $ asb-tui doctor --format json
-{"classification":"unverified_extension","protocol":"asb-cli-capabilities","protocol_version":1,"reason":"installed_asb_compatibility_not_verified"}
+{"classification":"source_only_unverified","protocol":"asb-cli-capabilities","protocol_version":1,"reason":"installed_asb_compatibility_not_verified"}
 ```
 
 The command exits 3. It does not probe ambient configuration, contact a network service, or claim
@@ -106,11 +106,23 @@ contracts are `protocol/v1/lifecycle-request.schema.json` and
 `protocol/v1/lifecycle-response.schema.json`. Responses contain fixed reason codes and verified
 release identities, never caller paths, environment values, or artifact contents.
 
+The unreleased v1 schema was corrected before public routing: install and upgrade no longer accept
+`allowed_signers` or `now_unix`. Requests using that superseded shape are rejected as
+`request_invalid` before filesystem mutation. The binary embeds the sole allowed signer, reads a
+bounded system clock, and requires the expected target, ASB/protocol version, release, source
+commit/tree, and executable digest to match the authenticated manifest. The binary embeds only the
+static signer/trust-policy version and promotion gates; it never embeds its own digest or the commit
+of the source tree containing that value.
+
 Install and upgrade authenticate the manifest first, verify all five locally staged bundle
 artifacts against their signed sizes and SHA-256 digests, enforce license/SBOM/provenance policy,
 write only to the requested owner-private extension root, and execute the exact candidate bytes in
-an anonymous file for the protocol/terminal self-test before atomic activation. Launch rechecks the
-active digest and self-test and executes those exact bytes. Removal deletes only extension state;
+an anonymous file for the protocol/terminal self-test before atomic activation. Release builds
+receive source commit/tree as external immutable build metadata, which does not alter the tracked
+source tree; the self-test binds that source identity, release, target and protocol but does not
+claim its own digest. The parent already digest-checks the exact anonymous-file bytes. A source-only
+build has closed promotion gates, so even the repository's authentic synthetic fixture cannot be
+installed, launched, or reported as verified. Removal deletes only extension state;
 the lifecycle has no benchmark-process handle and cannot signal or remove an ASB run.
 
 This is the standalone half of the command contract. Current ASB releases do not yet route
