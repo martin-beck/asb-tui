@@ -1,0 +1,38 @@
+{
+  "dependencies": [
+    {
+      "archive_sha256": "a51e58ed71dd93979acc55560fc8208db7131d8e6d0a6b7b805fa383fef25b34",
+      "archive_size": 124386,
+      "commit": "510817b93feb80dde13e5a6c61d657954fae2346",
+      "license": "MIT",
+      "license_sha256": "91863eae26953e0b98d8701c6d73b24cf2213c1ee7444e04cc9319417854f88e",
+      "name": "agent-workflow-coordinator",
+      "provenance_limit": "signed-source-archive-only-no-publisher-sbom",
+      "repository": "https://github.com/martin-beck/agent-workflow-coordinator",
+      "tag": "v0.3.5",
+      "tag_object": "9e862e9e7af328e489b6e2fe958e5df1ddd702c1",
+      "tree": "41d08ed42333cb47b07c2c401a9167b56c7cfb81"
+    },
+    {
+      "commit": "8a9f056b7fc7926b9465a0f7a09225d4da1c572a",
+      "license": "MIT",
+      "license_sha256": "20647d25b17a19a582bc1d48340c8b61d5c39f11c738d8d3910a384e8d747201",
+      "manifest_sha256": "05bbb0d40a64e8a309af7d56b76760fb95ba1eee580dff1487e8102bd0b9e29d",
+      "name": "agent-workflow-quality",
+      "provenance_sha256": "a2ba5f30d8d4065fef2e7f30121b7f8e48ac288423ea5dd83349e7b78e3c15f5",
+      "repository": "https://github.com/martin-beck/agent-workflow-quality",
+      "sbom_sha256": "840e85a1ba681a42895e8e8cb4134ed5e6a40d3403c4d769e735b0d9201013f5",
+      "sdist_sha256": "69b1c9c4aa715ea87699d9898f3f25c07fac3f3ff575ccdeba0f8118cad0aba3",
+      "tag": "v0.23.0",
+      "tag_object": "79c699258111cc3ae4585d46c6ce4999784001b3",
+      "tree": "ca77db478f0737142690d37683d826710cd953b0",
+      "wheel_sha256": "9d480cabe955a5faf88f6f1c8dfd2bfe63045445173c86f93d200a00c97fff89"
+    }
+  ],
+  "rendering": {
+    "classification": "unavailable",
+    "reason": "awaiting-reviewed-immutable-ratatui-crossterm-closure"
+  },
+  "schema_version": 1,
+  "signing_key_fingerprint": "SHA256:a36V6yPvRZyxnQ2113tiA/MlHt7mPfJEXAGByBXVkuE"
+}

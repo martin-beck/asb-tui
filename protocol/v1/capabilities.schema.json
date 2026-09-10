@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/martin-beck/asb-tui/protocol/v1/capabilities.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "asb_version": {
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    },
+    "capabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis": { "type": "boolean" },
+        "artifacts": { "type": "boolean" },
+        "cancel": { "type": "boolean" },
+        "events": { "type": "boolean" },
+        "history": { "type": "boolean" },
+        "launch": { "type": "boolean" },
+        "planning": { "type": "boolean" },
+        "repeat": { "type": "boolean" }
+      },
+      "required": [
+        "analysis",
+        "artifacts",
+        "cancel",
+        "events",
+        "history",
+        "launch",
+        "planning",
+        "repeat"
+      ],
+      "type": "object"
+    },
+    "protocol": { "const": "asb-cli-capabilities" },
+    "protocol_version": { "const": 1 }
+  },
+  "required": ["protocol", "protocol_version", "asb_version", "capabilities"],
+  "title": "ASB external frontend capability negotiation v1",
+  "type": "object"
+}
