@@ -259,6 +259,50 @@ fn filesystem_install_is_private_atomic_idempotent_and_removable() {
 }
 
 #[test]
+fn filesystem_upgrade_reconnect_and_existing_version_reuse_are_verified() {
+    let directory = PrivateDirectory::create();
+    let mut store = FilesystemLifecycle::open(directory.path()).unwrap();
+    let mut first = Installation {
+        schema_version: 1,
+        release: "v1.0.0".into(),
+        executable_sha256: "486ea46224d1bb4fb680f34f7c9ad96a8f24ec88be73ea8e5a6c65260e9cb8a7"
+            .into(),
+        source_commit: "a".repeat(40),
+        source_tree: "b".repeat(40),
+        coordinator_version: "v0.3.5".into(),
+        coordinator_commit: "510817b93feb80dde13e5a6c61d657954fae2346".into(),
+        quality_version: "v0.23.0".into(),
+        quality_commit: "8a9f056b7fc7926b9465a0f7a09225d4da1c572a".into(),
+        classification: "unverified_extension".into(),
+    };
+    store.stage(&first, b"world").unwrap();
+    store.activate(&first).unwrap();
+    assert!(status(&store).verified);
+
+    first.release = "v1.1.0".into();
+    first.executable_sha256 =
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into();
+    store.stage(&first, b"hello").unwrap();
+    store.activate(&first).unwrap();
+    drop(store);
+    let mut reconnected = FilesystemLifecycle::open(directory.path()).unwrap();
+    assert_eq!(status(&reconnected).release.as_deref(), Some("v1.1.0"));
+
+    let binary = directory
+        .path()
+        .join("versions")
+        .join(&first.executable_sha256)
+        .join("asb-tui");
+    fs::write(&binary, b"jello").unwrap();
+    reconnected.stage(&first, b"hello").unwrap();
+    assert!(reconnected.activate(&first).is_err());
+    assert_eq!(
+        status(&reconnected).reason,
+        "installation_verification_failed"
+    );
+}
+
+#[test]
 fn filesystem_open_recovers_interrupted_stage_and_retains_original_directory() {
     let directory = PrivateDirectory::create();
     let versions = directory.path().join("versions");

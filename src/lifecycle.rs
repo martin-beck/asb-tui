@@ -491,6 +491,16 @@ impl LifecycleStore for FilesystemLifecycle {
         }
         let version = self.version_path(installation)?;
         if version.exists() {
+            if Self::read_state(&version.join("installation.json"))? != *installation {
+                return Err(LifecycleIoError);
+            }
+            let existing =
+                Self::read_bounded(&version.join("asb-tui"), MAX_EXECUTABLE_BYTES, true)?;
+            if digest_bytes(&existing).map_err(|_| LifecycleIoError)?
+                != installation.executable_sha256
+            {
+                return Err(LifecycleIoError);
+            }
             fs::remove_dir_all(&staging).map_err(|_| LifecycleIoError)?;
         } else {
             fs::rename(&staging, &version).map_err(|_| LifecycleIoError)?;
