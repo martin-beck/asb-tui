@@ -16,9 +16,14 @@ use rustix::fd::AsRawFd;
 #[cfg(unix)]
 use rustix::{
     fd::OwnedFd,
-    fs::{self as unix_fs, AtFlags, Mode, OFlags},
+    fs::{self as unix_fs, AtFlags, FileType, Mode, OFlags},
     io::dup,
     process::{Pid, Signal, getuid, kill_process_group},
+};
+#[cfg(target_os = "linux")]
+use rustix::{
+    pty::{self, OpenptFlags},
+    termios::{self, Winsize},
 };
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -96,7 +101,7 @@ impl ProbeSource for LocalSystem {
     }
 
     fn resize_events_verified(&self) -> bool {
-        false
+        verify_resize_events()
     }
 
     fn environment(&self, name: &str) -> Option<String> {
@@ -212,8 +217,8 @@ fn terminal_probe(source: &impl ProbeSource) -> TerminalProbe {
         color,
         unicode: locale.to_ascii_lowercase().contains("utf-8")
             || locale.to_ascii_lowercase().contains("utf8"),
-        // A size snapshot alone does not prove WINCH delivery. Production stays false until a
-        // future PTY verifier supplies authenticated evidence through this explicit seam.
+        // The source must prove delivery using an isolated synthetic PTY; a size snapshot alone
+        // never qualifies.
         resize_events: interactive && dimensions.is_some() && source.resize_events_verified(),
         channel: if interactive {
             TerminalChannel::Tty
@@ -378,6 +383,184 @@ fn terminate_group(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+#[cfg(target_os = "linux")]
+const RESIZE_HELPER: &str = "trap 'echo WINCH >/dev/tty; exit 0' WINCH\necho READY >/dev/tty\nwhile :; do read value </dev/tty || :; done\n";
+#[cfg(all(target_os = "linux", test))]
+const RESIZE_IGNORE_HELPER: &str =
+    "trap '' WINCH\necho READY >/dev/tty\nwhile :; do read value </dev/tty || :; done\n";
+#[cfg(all(target_os = "linux", test))]
+const RESIZE_DESCENDANT_HELPER: &str = "(trap '' WINCH; while :; do read value </dev/tty || :; done) & echo DESCENDANT:$! >/dev/tty\necho READY >/dev/tty\ntrap '' WINCH\nwhile :; do read value </dev/tty || :; done\n";
+
+#[cfg(target_os = "linux")]
+struct ResizeProbeResult {
+    verified: bool,
+    #[cfg_attr(not(test), allow(dead_code))]
+    output: Vec<u8>,
+}
+
+#[cfg(target_os = "linux")]
+fn verify_resize_events() -> bool {
+    run_resize_probe(RESIZE_HELPER, true).verified
+}
+
+#[cfg(not(target_os = "linux"))]
+fn verify_resize_events() -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn trusted_executable(path: &str) -> Option<OwnedFd> {
+    let executable = unix_fs::openat(
+        unix_fs::CWD,
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let trusted = unix_fs::fstat(&executable).is_ok_and(|metadata| {
+        FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile
+            && metadata.st_uid == 0
+            && metadata.st_mode & 0o022 == 0
+            && metadata.st_mode & 0o111 != 0
+    });
+    trusted.then_some(executable)
+}
+
+#[cfg(target_os = "linux")]
+fn run_resize_probe(script: &str, change_size: bool) -> ResizeProbeResult {
+    let failed = || ResizeProbeResult {
+        verified: false,
+        output: Vec::new(),
+    };
+    let master = match pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC) {
+        Ok(master) => master,
+        Err(_) => return failed(),
+    };
+    if pty::grantpt(&master).is_err() || pty::unlockpt(&master).is_err() {
+        return failed();
+    }
+    let slave = match pty::ioctl_tiocgptpeer(
+        &master,
+        OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC,
+    ) {
+        Ok(slave) => slave,
+        Err(_) => return failed(),
+    };
+    let initial = Winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    if termios::tcsetwinsize(&master, initial).is_err() {
+        return failed();
+    }
+    let Some(shell) = trusted_executable("/bin/dash") else {
+        return failed();
+    };
+    let Some(session_helper) = trusted_executable("/usr/bin/setsid") else {
+        return failed();
+    };
+    let reader = match dup(&master) {
+        Ok(reader) => std::fs::File::from(reader),
+        Err(_) => return failed(),
+    };
+    let mut command = Command::new("/proc/self/fd/2");
+    command
+        .args([
+            "--ctty",
+            "--wait",
+            "/proc/self/fd/1",
+            "-c",
+            script,
+            "asb-tui-resize-probe",
+        ])
+        .env_clear()
+        .env("PATH", SAFE_PATH)
+        .env("LANG", "C")
+        .stdin(Stdio::from(slave))
+        // Both programs are retained, identity-checked inodes. setsid executes the shell
+        // through fd 1 after establishing the slave as its controlling terminal.
+        .stdout(Stdio::from(shell))
+        .stderr(Stdio::from(session_helper));
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => return failed(),
+    };
+    // Command retains its configured slave fd after spawning; close that parent-side copy so
+    // EOF/EIO after helper exit is observable and bounded.
+    drop(command);
+    let mut output_reader = reader;
+    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+    let (output_sender, output_receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut byte = [0_u8; 1];
+        let mut sent_ready = false;
+        while bytes.len() <= COMMAND_LIMIT {
+            match output_reader.read(&mut byte) {
+                Ok(0) => break,
+                Ok(_) => {
+                    bytes.push(byte[0]);
+                    if !sent_ready && bytes.ends_with(b"READY\r\n") {
+                        let _ = ready_sender.send(());
+                        sent_ready = true;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = output_sender.send(bytes);
+    });
+    let started = Instant::now();
+    if ready_receiver.recv_timeout(COMMAND_TIMEOUT / 2).is_err() {
+        terminate_group(&mut child);
+        let output = output_receiver
+            .recv_timeout(COMMAND_TIMEOUT / 2)
+            .unwrap_or_default();
+        return ResizeProbeResult {
+            verified: false,
+            output,
+        };
+    }
+    let resized = Winsize {
+        ws_row: 40,
+        ws_col: 120,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    if change_size && termios::tcsetwinsize(&master, resized).is_err() {
+        terminate_group(&mut child);
+        return failed();
+    }
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < COMMAND_TIMEOUT => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                terminate_group(&mut child);
+                break None;
+            }
+        }
+    };
+    // Reap any descendants before draining: a hostile descendant must not keep stdout open.
+    kill_group(child.id());
+    let remaining = COMMAND_TIMEOUT
+        .checked_sub(started.elapsed())
+        .unwrap_or(Duration::from_millis(1));
+    let output = output_receiver.recv_timeout(remaining).unwrap_or_default();
+    let size_changed =
+        change_size && termios::tcgetwinsize(&master).is_ok_and(|value| value == resized);
+    ResizeProbeResult {
+        verified: status.is_some_and(|status| status.success())
+            && size_changed
+            && output == b"READY\r\nWINCH\r\n",
+        output,
+    }
+}
+
 #[derive(Debug, Default)]
 struct DirectoryResult {
     writable: bool,
@@ -386,16 +569,29 @@ struct DirectoryResult {
 }
 
 fn probe_directory(base: &Path) -> DirectoryResult {
-    let directory = match PrivateDirectory::create(base) {
+    probe_directory_with_cleanup_hook(base, |_| {})
+}
+
+fn probe_directory_with_cleanup_hook(
+    base: &Path,
+    before_cleanup: impl FnOnce(&PrivateDirectory),
+) -> DirectoryResult {
+    let mut directory = match PrivateDirectory::create(base) {
         Some(directory) => directory,
         None => return DirectoryResult::default(),
     };
     let (writable, atomic_rename, identity) = directory.prepare_destination();
     let executable = identity.is_some_and(|identity| directory.executable_probe(identity));
-    DirectoryResult {
+    let result = DirectoryResult {
         writable,
         atomic_rename,
         executable,
+    };
+    before_cleanup(&directory);
+    if directory.cleanup() {
+        result
+    } else {
+        DirectoryResult::default()
     }
 }
 
@@ -414,6 +610,11 @@ struct PrivateDirectory;
 impl PrivateDirectory {
     #[cfg(unix)]
     fn create(base: &Path) -> Option<Self> {
+        Self::create_with_hook(base, |_, _| {})
+    }
+
+    #[cfg(unix)]
+    fn create_with_hook(base: &Path, after_mkdir: impl Fn(&OwnedFd, &str)) -> Option<Self> {
         let base = unix_fs::openat(
             unix_fs::CWD,
             base,
@@ -434,14 +635,33 @@ impl PrivateDirectory {
             let name = format!(".asb-tui-probe-{}-{nonce}-{sequence}", std::process::id());
             match unix_fs::mkdirat(&base, name.as_str(), Mode::RUSR | Mode::WUSR | Mode::XUSR) {
                 Ok(()) => {
+                    let created =
+                        match unix_fs::statat(&base, name.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+                            Ok(metadata) => (metadata.st_dev, metadata.st_ino),
+                            Err(_) => {
+                                let _ = unix_fs::unlinkat(&base, name.as_str(), AtFlags::REMOVEDIR);
+                                return None;
+                            }
+                        };
+                    after_mkdir(&base, name.as_str());
                     let directory = unix_fs::openat(
                         &base,
                         name.as_str(),
                         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
                         Mode::empty(),
-                    )
-                    .ok()?;
-                    let metadata = unix_fs::fstat(&directory).ok()?;
+                    );
+                    let Ok(directory) = directory else {
+                        cleanup_created_directory(&base, name.as_str(), created);
+                        return None;
+                    };
+                    let Ok(metadata) = unix_fs::fstat(&directory) else {
+                        cleanup_created_directory(&base, name.as_str(), created);
+                        return None;
+                    };
+                    if (metadata.st_dev, metadata.st_ino) != created {
+                        cleanup_created_directory(&base, name.as_str(), created);
+                        return None;
+                    }
                     return Some(Self {
                         base,
                         directory,
@@ -464,6 +684,14 @@ impl PrivateDirectory {
 
     #[cfg(unix)]
     fn prepare_destination(&self) -> (bool, bool, Option<(u64, u64)>) {
+        self.prepare_destination_with(|file| file.write_all(b"probe"))
+    }
+
+    #[cfg(unix)]
+    fn prepare_destination_with(
+        &self,
+        write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+    ) -> (bool, bool, Option<(u64, u64)>) {
         let file = unix_fs::openat(
             &self.directory,
             "source",
@@ -477,7 +705,13 @@ impl PrivateDirectory {
             .ok()
             .map(|metadata| (metadata.st_dev, metadata.st_ino));
         let mut file = std::fs::File::from(file);
-        if file.write_all(b"probe").is_err() {
+        if write(&mut file).is_err() {
+            drop(file);
+            if identity
+                .is_some_and(|expected| artifact_matches(&self.directory, "source", expected))
+            {
+                let _ = unix_fs::unlinkat(&self.directory, "source", AtFlags::empty());
+            }
             return (false, false, None);
         }
         let renamed =
@@ -498,6 +732,9 @@ impl PrivateDirectory {
         drop(file);
         if let Some(held) = held {
             self.artifact.replace(Some((renamed, held)));
+        } else if identity.is_some_and(|expected| artifact_matches(&self.directory, name, expected))
+        {
+            let _ = unix_fs::unlinkat(&self.directory, name, AtFlags::empty());
         }
         let still_same = self.artifact.borrow().is_some();
         (
@@ -514,13 +751,32 @@ impl PrivateDirectory {
 
     #[cfg(unix)]
     fn executable_probe(&self, expected: (u64, u64)) -> bool {
-        let executable = match fs::metadata("/bin/true") {
-            Ok(metadata) if metadata.len() <= 1024 * 1024 => match fs::read("/bin/true") {
-                Ok(bytes) => bytes,
-                Err(_) => return false,
-            },
+        self.executable_probe_with_hook(expected, || {})
+    }
+
+    #[cfg(unix)]
+    fn executable_probe_with_hook(
+        &self,
+        expected: (u64, u64),
+        before_execute: impl FnOnce(),
+    ) -> bool {
+        let source = match trusted_executable("/bin/true") {
+            Some(source) => source,
+            None => return false,
+        };
+        let source_metadata = match unix_fs::fstat(&source) {
+            Ok(metadata) if metadata.st_size <= 1024 * 1024 => metadata,
             _ => return false,
         };
+        let mut executable = Vec::with_capacity(source_metadata.st_size as usize);
+        if std::fs::File::from(source)
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut executable)
+            .is_err()
+            || executable.len() != source_metadata.st_size as usize
+        {
+            return false;
+        }
         let file = unix_fs::openat(
             &self.directory,
             "destination",
@@ -541,17 +797,28 @@ impl PrivateDirectory {
         {
             return false;
         }
-        // Linux rejects executing a file while this process still has it open writable.
         drop(file);
-        let inherited = match dup(&self.directory) {
+        let exact = match unix_fs::openat(
+            &self.directory,
+            "destination",
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(exact)
+                if unix_fs::fstat(&exact)
+                    .is_ok_and(|metadata| (metadata.st_dev, metadata.st_ino) == expected) =>
+            {
+                exact
+            }
+            _ => return false,
+        };
+        before_execute();
+        let inherited = match dup(&exact) {
             Ok(fd) => fd,
             Err(_) => return false,
         };
-        let observed =
-            bounded_command_with_stdin("/proc/self/fd/0/destination", &[], Stdio::from(inherited));
-        let identity_matches =
-            unix_fs::statat(&self.directory, "destination", AtFlags::SYMLINK_NOFOLLOW)
-                .is_ok_and(|metadata| (metadata.st_dev, metadata.st_ino) == expected);
+        let observed = bounded_command_with_stdin("/proc/self/fd/0", &[], Stdio::from(inherited));
+        let identity_matches = artifact_matches(&self.directory, "destination", expected);
         observed.is_some_and(|value| value.success) && identity_matches
     }
 
@@ -559,33 +826,58 @@ impl PrivateDirectory {
     fn executable_probe(&self, _expected: (u64, u64)) -> bool {
         false
     }
-}
 
-#[cfg(unix)]
-impl Drop for PrivateDirectory {
-    fn drop(&mut self) {
-        if let Some((destination, held)) = self.artifact.borrow().as_ref() {
-            let name = if *destination {
-                "destination"
-            } else {
-                "source"
-            };
-            let expected = unix_fs::fstat(held)
+    #[cfg(unix)]
+    fn cleanup(&mut self) -> bool {
+        let mut clean = true;
+        if let Some((destination, held)) = self.artifact.borrow_mut().take() {
+            let name = if destination { "destination" } else { "source" };
+            let expected = unix_fs::fstat(&held)
                 .ok()
                 .map(|metadata| (metadata.st_dev, metadata.st_ino));
-            let still_same = expected.is_some_and(|expected| {
-                unix_fs::statat(&self.directory, name, AtFlags::SYMLINK_NOFOLLOW)
-                    .is_ok_and(|metadata| (metadata.st_dev, metadata.st_ino) == expected)
-            });
-            if still_same {
-                let _ = unix_fs::unlinkat(&self.directory, name, AtFlags::empty());
+            if expected.is_some_and(|expected| artifact_matches(&self.directory, name, expected)) {
+                clean &= unix_fs::unlinkat(&self.directory, name, AtFlags::empty()).is_ok();
+                clean &= unix_fs::statat(&self.directory, name, AtFlags::SYMLINK_NOFOLLOW)
+                    .is_err_and(|error| error == rustix::io::Errno::NOENT);
+            } else {
+                clean = false;
             }
         }
         let still_same = unix_fs::statat(&self.base, self.name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
             .is_ok_and(|metadata| (metadata.st_dev, metadata.st_ino) == self.identity);
         if still_same {
-            let _ = unix_fs::unlinkat(&self.base, self.name.as_str(), AtFlags::REMOVEDIR);
+            clean &= unix_fs::unlinkat(&self.base, self.name.as_str(), AtFlags::REMOVEDIR).is_ok();
+            clean &= unix_fs::statat(&self.base, self.name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+                .is_err_and(|error| error == rustix::io::Errno::NOENT);
+        } else {
+            clean = false;
         }
+        clean
+    }
+
+    #[cfg(not(unix))]
+    fn cleanup(&mut self) -> bool {
+        false
+    }
+}
+
+#[cfg(unix)]
+fn artifact_matches(directory: &OwnedFd, name: &str, expected: (u64, u64)) -> bool {
+    unix_fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW)
+        .is_ok_and(|metadata| (metadata.st_dev, metadata.st_ino) == expected)
+}
+
+#[cfg(unix)]
+fn cleanup_created_directory(base: &OwnedFd, name: &str, expected: (u64, u64)) {
+    if artifact_matches(base, name, expected) {
+        let _ = unix_fs::unlinkat(base, name, AtFlags::REMOVEDIR);
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PrivateDirectory {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
     }
 }
 
@@ -802,6 +1094,145 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn exact_open_executable_cannot_be_substituted_after_identity_check() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+        let root = TestBase::create();
+        let directory = PrivateDirectory::create(root.path()).unwrap();
+        let (_, renamed, identity) = directory.prepare_destination();
+        assert!(renamed);
+        let identity = identity.unwrap();
+        let directory_path =
+            PathBuf::from(format!("/proc/self/fd/{}", directory.directory.as_raw_fd()));
+        let marker = root.path().join("substituted-effect");
+        let replacement = format!("#!/bin/dash\nprintf substituted > {}\n", marker.display());
+        assert!(!directory.executable_probe_with_hook(identity, || {
+            fs::remove_file(directory_path.join("destination")).unwrap();
+            fs::write(directory_path.join("destination"), replacement.as_bytes()).unwrap();
+            fs::set_permissions(
+                directory_path.join("destination"),
+                fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+        }));
+        assert!(
+            !marker.exists(),
+            "substituted executable produced an effect"
+        );
+        drop(directory);
+        assert!(!marker.exists());
+        fs::remove_dir_all(
+            fs::read_dir(root.path())
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn partial_create_and_write_failures_roll_back_without_claiming_capability() {
+        let root = TestBase::create();
+        let missing_after_mkdir = PrivateDirectory::create_with_hook(root.path(), |base, name| {
+            unix_fs::unlinkat(base, name, AtFlags::REMOVEDIR).unwrap();
+        });
+        assert!(missing_after_mkdir.is_none());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+
+        let mut directory = PrivateDirectory::create(root.path()).unwrap();
+        let result = directory.prepare_destination_with(|_| {
+            Err(std::io::Error::other("injected bounded write failure"))
+        });
+        assert_eq!(result, (false, false, None));
+        let child = fs::read_dir(root.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(fs::read_dir(child).unwrap().count(), 0);
+        assert!(directory.cleanup());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_replacement_fails_closed_and_preserves_the_replacement() {
+        let root = TestBase::create();
+        let mut directory = PrivateDirectory::create(root.path()).unwrap();
+        let child = fs::read_dir(root.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let (_, renamed, identity) = directory.prepare_destination();
+        assert!(renamed && identity.is_some());
+        let moved = child.with_extension("owned");
+        fs::rename(&child, &moved).unwrap();
+        fs::create_dir(&child).unwrap();
+        assert!(!directory.cleanup());
+        assert!(child.is_dir(), "replacement directory was deleted");
+        fs::remove_dir(&child).unwrap();
+        fs::remove_dir_all(&moved).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn synthetic_pty_requires_both_size_change_and_winch_event_and_reaps_descendants() {
+        let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+        let positive = run_resize_probe(RESIZE_HELPER, true);
+        assert!(positive.verified, "PTY output: {:?}", positive.output);
+
+        let no_event = run_resize_probe(RESIZE_HELPER, false);
+        assert!(!no_event.verified);
+        assert_eq!(no_event.output, b"READY\r\n");
+
+        let wrong_event = run_resize_probe(RESIZE_IGNORE_HELPER, true);
+        assert!(!wrong_event.verified);
+
+        let descendant = run_resize_probe(RESIZE_DESCENDANT_HELPER, true);
+        assert!(!descendant.verified);
+        let output = String::from_utf8(descendant.output).unwrap();
+        let pid = output
+            .lines()
+            .find_map(|line| line.strip_prefix("DESCENDANT:"))
+            .expect("descendant pid marker");
+        assert!(
+            !Command::new("/bin/kill")
+                .args(["-0", pid])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success()),
+            "resize helper descendant survived timeout cleanup"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_denial_clears_every_returned_capability() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = TestBase::create();
+        let result = probe_directory_with_cleanup_hook(root.path(), |directory| {
+            unix_fs::fchmod(&directory.directory, Mode::RUSR | Mode::XUSR).unwrap();
+        });
+        assert!(!result.writable && !result.atomic_rename && !result.executable);
+        let leaked = fs::read_dir(root.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::set_permissions(&leaked, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(leaked).unwrap();
+    }
+
+    #[test]
     fn os_release_parser_is_bounded_closed_and_exact() {
         assert_eq!(
             classify_distribution(b"ID=debian\nVERSION_ID=\"12\"\n"),
@@ -843,6 +1274,9 @@ mod tests {
             parse_asb_version(format!("asb {}", "1".repeat(65)).into_bytes()),
             None
         );
+        #[cfg(target_os = "linux")]
+        assert!(LocalSystem.resize_events_verified());
+        #[cfg(not(target_os = "linux"))]
         assert!(!LocalSystem.resize_events_verified());
     }
 
@@ -851,7 +1285,9 @@ mod tests {
         let _guard = PROCESS_TEST_LOCK.lock().unwrap();
         let probe = detect(&LocalSystem);
         assert_eq!(probe.schema_version, 1);
-        assert!(!probe.terminal.resize_events);
+        if probe.terminal.channel == TerminalChannel::Tty && probe.terminal.columns >= 80 {
+            assert!(probe.terminal.resize_events);
+        }
         let report = serde_json::to_value(crate::compatibility::evaluate(probe)).unwrap();
         let object = report.as_object().unwrap();
         assert_eq!(

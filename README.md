@@ -58,10 +58,12 @@ Unsupported probes return fixed reason codes and exit 3; malformed or unknown in
 diagnostic and exits 2. Selection is compatibility evaluation, not native platform qualification or
 permission to install an unverified bundle.
 
-The production probe intentionally reports `resize_events_unavailable`: a one-time terminal-size
-snapshot does not prove resize-event delivery. Bundle selection therefore remains unavailable until
-a later authenticated PTY verifier supplies that evidence. Deterministic fixture injection exercises
-the selection path without presenting caller-asserted facts as local detection.
+The production probe never treats a one-time terminal-size snapshot as resize evidence. On an
+interactive channel it creates an isolated synthetic PTY, changes only that PTY's size, and requires
+both the exact new size and the resulting bounded `WINCH` observation from identity-checked
+helpers. Any setup, event, timeout, output, or descendant-cleanup failure reports
+`resize_events_unavailable`. Deterministic fixture injection exercises the same selection path
+without presenting caller-asserted facts as local detection.
 
 The closed offline/test input and public output contracts are
 `protocol/v1/compatibility-probe.schema.json` and `protocol/v1/compatibility-report.schema.json`.
