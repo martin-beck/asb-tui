@@ -68,6 +68,8 @@ pub enum AppError {
     InvalidDimensions,
     /// An event was duplicated, stale, skipped, or overflowed a durable revision.
     InvalidEventOrder,
+    /// A control event arrived without an active negotiated connection.
+    ControlUnavailable,
 }
 
 impl fmt::Display for AppError {
@@ -75,6 +77,7 @@ impl fmt::Display for AppError {
         formatter.write_str(match self {
             Self::InvalidDimensions => "invalid terminal dimensions",
             Self::InvalidEventOrder => "control event revision is not contiguous",
+            Self::ControlUnavailable => "control connection is unavailable",
         })
     }
 }
@@ -116,6 +119,9 @@ impl AppState {
                 self.layout = ResponsiveLayout::from_dimensions(Some(columns), Some(lines));
             }
             Action::Control(event) => {
+                if !self.connected {
+                    return Err(AppError::ControlUnavailable);
+                }
                 let expected = self
                     .last_revision
                     .map_or(Some(1), |last| last.checked_add(1));
@@ -128,6 +134,9 @@ impl AppState {
             Action::Connected { baseline } => {
                 if self.last_revision.is_some_and(|known| baseline < known) {
                     return Err(AppError::InvalidEventOrder);
+                }
+                if self.last_revision.is_some_and(|known| baseline > known) {
+                    self.last_event = None;
                 }
                 self.last_revision = Some(baseline);
                 self.connected = true;
@@ -295,13 +304,10 @@ mod tests {
         let mut standalone = AppState::new(80, 24).unwrap();
         let untouched = standalone.clone();
         assert_eq!(
-            standalone.apply(Action::Control(event(2, ControlEventKind::RunnerReady))),
-            Err(AppError::InvalidEventOrder)
+            standalone.apply(Action::Control(event(1, ControlEventKind::RunnerReady))),
+            Err(AppError::ControlUnavailable)
         );
         assert_eq!(standalone, untouched);
-        standalone
-            .apply(Action::Control(event(1, ControlEventKind::RunnerReady)))
-            .unwrap();
 
         let mut negotiated = AppState::new(80, 24).unwrap();
         negotiated
@@ -316,6 +322,35 @@ mod tests {
         negotiated
             .apply(Action::Control(event(91, ControlEventKind::RunnerReady)))
             .unwrap();
+    }
+
+    #[test]
+    fn disconnected_events_and_advanced_baselines_are_atomic_and_not_stale() {
+        let mut state = AppState::new(80, 24).unwrap();
+        state.apply(Action::Connected { baseline: 0 }).unwrap();
+        state
+            .apply(Action::Control(event(1, ControlEventKind::RunnerReady)))
+            .unwrap();
+        state.apply(Action::Disconnected).unwrap();
+        let disconnected = state.clone();
+        assert_eq!(
+            state.apply(Action::Control(event(2, ControlEventKind::RunStarted))),
+            Err(AppError::ControlUnavailable)
+        );
+        assert_eq!(state, disconnected);
+
+        state.apply(Action::Connected { baseline: 4 }).unwrap();
+        assert_eq!(state.frame_model().last_event, "none");
+        assert_eq!(state.frame_model().connection, "connected");
+        state
+            .apply(Action::Control(event(5, ControlEventKind::RunUpdated)))
+            .unwrap();
+        let current = state.clone();
+        state.apply(Action::Connected { baseline: 5 }).unwrap();
+        assert_eq!(
+            state, current,
+            "equal baseline preserves current projection"
+        );
     }
 
     #[test]
@@ -364,6 +399,10 @@ mod tests {
         assert_eq!(
             AppError::InvalidEventOrder.to_string(),
             "control event revision is not contiguous"
+        );
+        assert_eq!(
+            AppError::ControlUnavailable.to_string(),
+            "control connection is unavailable"
         );
     }
 }

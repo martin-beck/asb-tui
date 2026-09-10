@@ -45,13 +45,29 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(if response.ok { 0 } else { 3 });
     }
-    if let [command, release_flag, release, format_flag, format] = arguments.as_slice()
+    if let [
+        command,
+        release_flag,
+        release,
+        asb_flag,
+        asb_version,
+        protocol_flag,
+        protocol_version,
+        format_flag,
+        format,
+    ] = arguments.as_slice()
         && command == "lifecycle-self-test"
         && release_flag == "--release"
+        && asb_flag == "--asb-version"
+        && protocol_flag == "--protocol-version"
         && format_flag == "--format"
         && format == "json"
     {
-        let Some(response) = local_self_test_response(release) else {
+        let Some(response) = protocol_version
+            .parse()
+            .ok()
+            .and_then(|protocol| local_self_test_response(release, asb_version, protocol))
+        else {
             return usage();
         };
         println!(

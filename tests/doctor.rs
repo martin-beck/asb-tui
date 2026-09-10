@@ -113,6 +113,10 @@ fn lifecycle_self_test_is_closed_and_fails_when_terminal_or_protocol_is_unavaila
                 "lifecycle-self-test",
                 "--release",
                 "v1.2.3",
+                "--asb-version",
+                "0.1.0",
+                "--protocol-version",
+                "1",
                 "--format",
                 "json",
             ])

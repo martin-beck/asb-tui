@@ -193,12 +193,12 @@ impl RenderPolicy {
             && !evidence.screen;
         Ok(Self {
             tier,
-            unicode: !matches!(tier, CapabilityTier::Plain),
+            unicode: evidence.tty && !unknown_terminal && !evidence.no_color,
             mouse: enhanced,
             focus: enhanced,
             bracketed_paste: enhanced,
             synchronized_output: matches!(tier, CapabilityTier::TrueColor) && !evidence.ssh,
-            alternate_screen: evidence.tty && !matches!(tier, CapabilityTier::Plain),
+            alternate_screen: evidence.tty && !unknown_terminal,
         })
     }
 
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn pipes_and_no_color_are_plain_and_bounded() {
+    fn pipes_are_plain_and_no_color_ttys_remain_interactive() {
         let mut value = evidence();
         value.tty = false;
         value.no_color = true;
@@ -324,6 +324,13 @@ mod tests {
         let policy = RenderPolicy::from_evidence(&value).unwrap();
         assert_eq!(policy.tier, CapabilityTier::Plain);
         assert!(!policy.unicode && !policy.alternate_screen);
+
+        value.tty = true;
+        let policy = RenderPolicy::from_evidence(&value).unwrap();
+        assert_eq!(policy.tier, CapabilityTier::Plain);
+        assert!(!policy.unicode);
+        assert!(policy.alternate_screen);
+        assert!(!policy.mouse && !policy.focus && !policy.bracketed_paste);
 
         let mut unknown = evidence();
         unknown.term = Some("dumb".into());

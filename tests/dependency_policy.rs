@@ -136,6 +136,9 @@ fn manifest_and_deny_policy_cannot_silently_widen() {
     assert!(manifest.contains(
         "ratatui = { version = \"=0.30.2\", default-features = false, features = [\"crossterm_0_29\"] }"
     ));
+    assert!(manifest.contains(
+        "signal-hook = { version = \"=0.3.18\", default-features = false, features = [\"iterator\"] }"
+    ));
     assert!(!manifest.contains("path ="));
     assert!(!manifest.contains("git ="));
 
@@ -192,6 +195,7 @@ fn enabled_terminal_features_are_exact_and_calendar_cache_are_absent() {
                     | "ratatui-core"
                     | "ratatui-crossterm"
                     | "ratatui-widgets"
+                    | "signal-hook"
             )
             .then(|| {
                 (
@@ -253,6 +257,10 @@ fn enabled_terminal_features_are_exact_and_calendar_cache_are_absent() {
             BTreeSet::from(["crossterm_0_29", "default", "underline-color"]),
         ),
         (("ratatui-widgets", "0.3.2"), BTreeSet::from(["std"])),
+        (
+            ("signal-hook", "0.3.18"),
+            BTreeSet::from(["channel", "default", "iterator"]),
+        ),
     ]);
     assert_eq!(observed, expected);
     let all_features = format!("{observed:?}");

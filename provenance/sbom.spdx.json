@@ -1524,6 +1524,11 @@
       "relatedSpdxElement": "SPDXRef-serde-json-1.0.143",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-asb-tui"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-signal-hook-0.3.18",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-asb-tui"
     }
   ],
   "spdxVersion": "SPDX-2.3"

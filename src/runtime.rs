@@ -17,6 +17,10 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use signal_hook::{
+    consts::signal::{SIGCONT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP},
+    iterator::Signals,
+};
 use std::{fmt, io, time::Duration};
 
 /// Terminal startup, input, or restoration error.
@@ -232,22 +236,58 @@ impl TerminalSession {
 
 /// Run the single-writer interactive draw loop until the operator quits.
 pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(), RuntimeError> {
+    let mut signals = Signals::new([SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGCONT])?;
     let mut session = TerminalSession::enter(policy)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     while !state.should_quit() {
+        handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
         terminal.draw(|frame| renderer::render(frame, state, policy))?;
         if let Some(action) = poll_action(Duration::from_millis(50))? {
             state.apply(action)?;
         }
+        handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
     }
     drop(terminal);
     session.restore()
 }
 
+fn handle_signals(
+    signals: &mut Signals,
+    session: &mut TerminalSession,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    policy: RenderPolicy,
+) -> Result<(), RuntimeError> {
+    for signal in signals.pending() {
+        match signal {
+            SIGHUP | SIGINT | SIGQUIT | SIGTERM => {
+                session.restore()?;
+                signal_hook::low_level::emulate_default_handler(signal)?;
+                return Err(RuntimeError(io::Error::other(
+                    "termination signal returned",
+                )));
+            }
+            SIGTSTP => {
+                session.restore()?;
+                signal_hook::low_level::emulate_default_handler(SIGTSTP)?;
+                *session = TerminalSession::enter(policy)?;
+                terminal.clear()?;
+            }
+            SIGCONT => {}
+            _ => return Err(RuntimeError(io::Error::other("unknown signal"))),
+        }
+    }
+    Ok(())
+}
+
 /// Poll once for a bounded terminal action. Unknown input is ignored.
 pub fn poll_action(timeout: Duration) -> Result<Option<Action>, RuntimeError> {
-    if !event::poll(timeout)? {
+    let ready = match event::poll(timeout) {
+        Ok(ready) => ready,
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !ready {
         return Ok(None);
     }
     Ok(action_from_event(event::read()?))

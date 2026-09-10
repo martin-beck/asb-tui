@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "trust_policy_version": 1,
+  "classification": "verified_extension",
+  "installable": true,
+  "release_artifacts_published": true,
+  "promotion_requirements": {
+    "asb_external_protocol": true,
+    "asb_lifecycle_router": true,
+    "interactive_ui": true,
+    "x86_64_release_qualification": true,
+    "aarch64_release_qualification": true,
+    "signed_release_bundle": true,
+    "hosted_exact_release_ci": true,
+    "trusted_exact_release_ci": true
+  }
+}

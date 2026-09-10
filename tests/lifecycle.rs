@@ -366,6 +366,23 @@ fn filesystem_rejects_concurrent_lifecycle_owner_without_waiting() {
 
 #[test]
 fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response() {
+    const CHILD: &str = "ASB_TUI_EXECUTABLE_SELF_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let command = format!(
+            "{} --exact executable_self_test_runs_exact_candidate_and_requires_closed_ready_response --nocapture",
+            std::env::current_exe().unwrap().display()
+        );
+        let status = Command::new("/usr/bin/script")
+            .args(["-q", "-e", "-c", &command, "/dev/null"])
+            .env(CHILD, "1")
+            .env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
+            .status()
+            .unwrap();
+        assert!(status.success(), "PTY self-test probe failed");
+        return;
+    }
+
     let mut store = Store::default();
     let mut probe = Probe {
         pass: true,
@@ -392,13 +409,65 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
         installed.quality_version,
         installed.quality_commit
     );
-    let candidate = format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", response);
-    let mut self_test = ExecutableSelfTest;
+    let candidate = format!(
+        concat!(
+            "#!/bin/sh\nset -eu\n",
+            "test -t 0\n",
+            "case $XDG_CONFIG_HOME in /proc/self/fd/*) ;; *) exit 11;; esac\n",
+            "case $XDG_CACHE_HOME in /proc/self/fd/*) ;; *) exit 12;; esac\n",
+            "test -d \"$XDG_CONFIG_HOME\" && test -d \"$XDG_CACHE_HOME\"\n",
+            "printf probe >\"$XDG_CONFIG_HOME/write-test\"\n",
+            "printf probe >\"$XDG_CACHE_HOME/write-test\"\n",
+            "test \"$1\" = lifecycle-self-test && test \"$2\" = --release\n",
+            "test \"$4\" = --asb-version && test \"$5\" = 0.1.0\n",
+            "test \"$6\" = --protocol-version && test \"$7\" = 1\n",
+            "test \"$8\" = --format && test \"$9\" = json\n",
+            "printf '%s\\n' '{}'\n"
+        ),
+        response
+    );
+    let directory = PrivateDirectory::create();
+    let original = directory.path().join("original");
+    let retained = directory.path().join("retained");
+    fs::create_dir(&original).unwrap();
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime_store = FilesystemLifecycle::open(&original).unwrap();
+    let mut self_test = ExecutableSelfTest::for_store(&runtime_store).unwrap();
+    fs::rename(&original, &retained).unwrap();
+    fs::create_dir(&original).unwrap();
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(self_test.verify_protocol_and_terminal(&installed, candidate.as_bytes()));
+    let runtime_artifacts = || {
+        fs::read_dir(&retained)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".self-test-runtime-")
+            })
+            .count()
+    };
+    assert_eq!(runtime_artifacts(), 0, "successful probe residue remained");
+    assert!(
+        self_test.verify_protocol_and_terminal(&installed, candidate.as_bytes()),
+        "a second probe should receive a fresh private runtime"
+    );
+    assert_eq!(runtime_artifacts(), 0, "repeated probe residue remained");
+    assert!(
+        fs::read_dir(&original).unwrap().next().is_none(),
+        "the replacement root was modified"
+    );
 
     let hostile = candidate.replace("\"ready\":true", "\"ready\":true,\"host\":\"secret\"");
     assert!(!self_test.verify_protocol_and_terminal(&installed, hostile.as_bytes()));
+    assert_eq!(runtime_artifacts(), 0, "rejected probe residue remained");
+    let crashing = "#!/bin/sh\nset -eu\nmkdir -p \"$XDG_CONFIG_HOME/nested\"\nprintf residue >\"$XDG_CONFIG_HOME/nested/file\"\nkill -KILL $$\n";
+    assert!(!self_test.verify_protocol_and_terminal(&installed, crashing.as_bytes()));
+    assert_eq!(runtime_artifacts(), 0, "crashed probe residue remained");
     assert!(!self_test.verify_protocol_and_terminal(&installed, b"not executable"));
+    assert_eq!(runtime_artifacts(), 0, "spawn failure residue remained");
 }
 
 #[test]
@@ -437,10 +506,12 @@ fn process_launcher_requires_a_controlling_terminal() {
 
 #[test]
 fn local_self_test_response_validates_release_and_reports_observed_readiness() {
-    assert!(local_self_test_response("1.2.3").is_none());
-    assert!(local_self_test_response("v1.2").is_none());
-    assert!(local_self_test_response("v1.two.3").is_none());
-    let response = local_self_test_response("v1.2.3").unwrap();
+    assert!(local_self_test_response("1.2.3", "0.1.0", 1).is_none());
+    assert!(local_self_test_response("v1.2", "0.1.0", 1).is_none());
+    assert!(local_self_test_response("v1.two.3", "0.1.0", 1).is_none());
+    assert!(local_self_test_response("v1.2.3", "9.9.9", 1).is_none());
+    assert!(local_self_test_response("v1.2.3", "0.1.0", 2).is_none());
+    let response = local_self_test_response("v1.2.3", "0.1.0", 1).unwrap();
     assert_eq!(response.classification, "source_only_unverified");
     assert!(!response.ready);
 }

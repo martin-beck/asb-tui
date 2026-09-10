@@ -789,6 +789,74 @@ struct Provenance {
     reproducible: bool,
 }
 
+fn spdx_inventory(
+    document: &serde_json::Value,
+) -> Result<BTreeMap<(String, String), String>, &'static str> {
+    let packages = document
+        .get("packages")
+        .and_then(|value| value.as_array())
+        .ok_or("sbom_invalid")?;
+    let mut inventory = BTreeMap::new();
+    for package in packages {
+        let name = package
+            .get("name")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or("sbom_invalid")?;
+        let version = package
+            .get("versionInfo")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or("sbom_invalid")?;
+        let license = package
+            .get("licenseDeclared")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or("sbom_invalid")?;
+        if inventory
+            .insert((name.to_owned(), version.to_owned()), license.to_owned())
+            .is_some()
+        {
+            return Err("sbom_invalid");
+        }
+    }
+    Ok(inventory)
+}
+
+fn expected_inventory(
+    manifest: &BundleManifest,
+) -> Result<BTreeMap<(String, String), String>, &'static str> {
+    let source_sbom: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../provenance/sbom.spdx.json"))
+            .map_err(|_| "sbom_invalid")?;
+    let mut expected = spdx_inventory(&source_sbom)?;
+    expected.insert(
+        (
+            "agent-workflow-coordinator".to_owned(),
+            manifest
+                .compatibility
+                .coordinator_version
+                .strip_prefix('v')
+                .unwrap_or(&manifest.compatibility.coordinator_version)
+                .to_owned(),
+        ),
+        "MIT".to_owned(),
+    );
+    expected.insert(
+        (
+            "agent-workflow-quality".to_owned(),
+            manifest
+                .compatibility
+                .quality_version
+                .strip_prefix('v')
+                .unwrap_or(&manifest.compatibility.quality_version)
+                .to_owned(),
+        ),
+        "MIT".to_owned(),
+    );
+    Ok(expected)
+}
+
 /// Enforce semantic policy on already digest-verified metadata artifacts.
 pub fn validate_bundle_documents(
     manifest: &BundleManifest,
@@ -800,35 +868,29 @@ pub fn validate_bundle_documents(
     if licenses.schema_version != 1 || licenses.release != manifest.release {
         return Err("license_report_invalid");
     }
-    let mut names = BTreeSet::new();
+    let expected = expected_inventory(manifest)?;
+    let mut license_inventory = BTreeMap::new();
     for package in licenses.packages {
-        let permitted_license = matches!(
-            package.license.as_str(),
-            "MIT"
-                | "Apache-2.0"
-                | "MIT OR Apache-2.0"
-                | "Apache-2.0 OR BSL-1.0"
-                | "Unlicense OR MIT"
-                | "(MIT OR Apache-2.0) AND Unicode-3.0"
-        ) || (package.name == "foldhash"
-            && package.version == "0.2.0"
-            && package.license == "Zlib");
-        if package.name.is_empty()
-            || package.version.is_empty()
-            || !permitted_license
-            || !names.insert(package.name)
+        if package.name.is_empty() || package.version.is_empty() {
+            return Err("license_policy_rejected");
+        }
+        let identity = (package.name, package.version);
+        if expected.get(&identity).map(String::as_str) != Some(package.license.as_str())
+            || license_inventory
+                .insert(identity, package.license)
+                .is_some()
         {
             return Err("license_policy_rejected");
         }
     }
-    for required in [
-        "asb-tui",
-        "agent-workflow-coordinator",
-        "agent-workflow-quality",
-    ] {
-        if !names.contains(required) {
-            return Err("license_report_incomplete");
-        }
+    if expected
+        .keys()
+        .any(|required| !license_inventory.contains_key(required))
+    {
+        return Err("license_report_incomplete");
+    }
+    if license_inventory != expected {
+        return Err("license_policy_rejected");
     }
 
     let sbom: serde_json::Value =
@@ -840,15 +902,15 @@ pub fn validate_bundle_documents(
     {
         return Err("sbom_invalid");
     }
-    let sbom_names: BTreeSet<_> = sbom
-        .get("packages")
-        .and_then(|value| value.as_array())
-        .ok_or("sbom_invalid")?
-        .iter()
-        .filter_map(|package| package.get("name").and_then(|value| value.as_str()))
-        .collect();
-    if !names.iter().all(|name| sbom_names.contains(name.as_str())) {
+    let sbom_inventory = spdx_inventory(&sbom)?;
+    if expected
+        .keys()
+        .any(|required| !sbom_inventory.contains_key(required))
+    {
         return Err("sbom_incomplete");
+    }
+    if sbom_inventory != expected {
+        return Err("sbom_invalid");
     }
 
     let provenance: Provenance =

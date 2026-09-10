@@ -18,10 +18,14 @@ $ asb-tui doctor --format json
 The command exits 3. It does not probe ambient configuration or contact a network service. The
 standalone application now has a Ratatui renderer, an exact-pinned Crossterm lifecycle, and a
 policy-driven draw/input loop. Running `asb-tui` on an interactive supported terminal opens the UI;
-running it through a pipe, with `NO_COLOR`, or with `TERM=dumb` emits a stable plain-text view
-without entering raw or alternate-screen mode. This is source functionality, not platform
+`NO_COLOR` preserves the keyboard-interactive UI while disabling color and Unicode decoration.
+Running through a pipe or with `TERM=dumb` emits a stable plain-text view without entering raw or
+alternate-screen mode. This is source functionality, not platform
 qualification or an installable release. See
 [the terminal dependency decision](docs/TERMINAL_DEPENDENCY_POLICY.md).
+The Unix lifecycle registers restoration handlers before terminal acquisition: `SIGHUP`, `SIGINT`,
+`SIGQUIT`, and `SIGTERM` restore acquired effects before preserving the signal's default exit,
+while `SIGTSTP` restores before suspension and `SIGCONT` re-enters the UI.
 
 See `provenance/dependencies.lock.json` for exact tooling provenance and
 `protocol/v1/capabilities.schema.json` for the proposed external JSON boundary.
@@ -33,6 +37,12 @@ duplicate, malformed, wrong-version, and wrong-type inputs. It also proves the s
 runs with an empty environment and contains no ASB workspace/path dependency. Ratatui
 `TestBackend` snapshots bind compact, standard, wide, and tiny layouts; pseudo-terminal tests bind
 actual draw, quit, panic, plain fallback, and restoration behavior.
+The application-state boundary accepts typed event injection and deterministic projection only;
+the live ASB client, negotiation, polling, and responsiveness contract are intentionally owned by
+the separate integration work, not this renderer foundation.
+`tools/test-promoted-self-test.sh` rebuilds an isolated copy under the fully verified static gate
+fixture and proves the real executable returns a closed, ready response from a controlling PTY;
+the tracked public channel remains source-only and is never rewritten.
 
 The dependency lock has a detached SSH signature under the `asb-tui-release-lock` namespace.
 `verify-release-lock` verifies that signature, requires signed annotated upstream tags, and binds
@@ -129,6 +139,13 @@ claim its own digest. The parent already digest-checks the exact anonymous-file 
 build has closed promotion gates, so even the repository's authentic synthetic fixture cannot be
 installed, launched, or reported as verified. Removal deletes only extension state;
 the lifecycle has no benchmark-process handle and cannot signal or remove an ASB run.
+
+Each candidate probe receives fresh unpredictable config/cache directories bound through retained
+directory descriptors. Install and launch hold the lifecycle's exclusive lock, so probe creation is
+serialized. Normal, rejected, failed-spawn, and crashed probes are cleaned descriptor-relatively;
+cleanup has fixed item, depth, and elapsed-time budgets. Excess crash residue remains quarantined
+under its never-reused private random name and a later exclusive lifecycle open makes another
+bounded cleanup pass.
 
 This is the standalone half of the command contract. Current ASB releases do not yet route
 `asb tui install`, `asb tui`, `asb tui status`, `asb tui upgrade`, or `asb tui remove`; that narrow

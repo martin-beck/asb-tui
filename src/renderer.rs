@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState, policy: RenderPolicy) {
         Span::raw("  Agent Systems Benchmark"),
     ]))
     .alignment(Alignment::Center)
-    .block(Block::default().borders(Borders::ALL));
+    .block(panel_block("", policy));
     frame.render_widget(title, regions[0]);
 
     if model.layout == "wide" && regions[1].width >= 72 {
@@ -76,7 +76,7 @@ fn status_panel(state: &AppState, policy: RenderPolicy) -> Paragraph<'static> {
     ];
     Paragraph::new(lines)
         .wrap(Wrap { trim: true })
-        .block(Block::default().title(" Status ").borders(Borders::ALL))
+        .block(panel_block(" Status ", policy))
 }
 
 fn boundary_panel(policy: RenderPolicy) -> Paragraph<'static> {
@@ -87,7 +87,16 @@ fn boundary_panel(policy: RenderPolicy) -> Paragraph<'static> {
     ])
     .style(muted(policy))
     .wrap(Wrap { trim: true })
-    .block(Block::default().title(" Ownership ").borders(Borders::ALL))
+    .block(panel_block(" Ownership ", policy))
+}
+
+fn panel_block(title: &'static str, policy: RenderPolicy) -> Block<'static> {
+    let block = Block::default().title(title);
+    if policy.unicode {
+        block.borders(Borders::ALL)
+    } else {
+        block
+    }
 }
 
 fn labelled(label: &'static str, value: &'static str, policy: RenderPolicy) -> Line<'static> {
