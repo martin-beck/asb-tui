@@ -188,6 +188,7 @@ impl RenderPolicy {
             tier,
             CapabilityTier::IndexedColor | CapabilityTier::TrueColor
         ) && evidence.tty
+            && !evidence.ssh
             && !evidence.tmux
             && !evidence.screen;
         Ok(Self {
@@ -197,7 +198,7 @@ impl RenderPolicy {
             focus: enhanced,
             bracketed_paste: enhanced,
             synchronized_output: matches!(tier, CapabilityTier::TrueColor) && !evidence.ssh,
-            alternate_screen: evidence.tty,
+            alternate_screen: evidence.tty && !matches!(tier, CapabilityTier::Plain),
         })
     }
 
@@ -303,6 +304,10 @@ mod tests {
         value.ssh = true;
         let policy = RenderPolicy::from_evidence(&value).unwrap();
         assert!(!policy.mouse && !policy.focus && !policy.synchronized_output);
+
+        value.tmux = false;
+        let policy = RenderPolicy::from_evidence(&value).unwrap();
+        assert!(!policy.mouse && !policy.focus && !policy.bracketed_paste);
     }
 
     #[test]
@@ -326,6 +331,7 @@ mod tests {
         let policy = RenderPolicy::from_evidence(&unknown).unwrap();
         assert_eq!(policy.tier, CapabilityTier::Plain);
         assert!(!policy.unicode);
+        assert!(!policy.alternate_screen);
     }
 
     #[test]

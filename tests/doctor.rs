@@ -67,14 +67,14 @@ fn doctor_is_explicitly_unverified_and_content_free() {
 fn unknown_arguments_fail_without_json_or_environment_output() {
     let output = run_isolated(|command| {
         command
-            .arg("run")
+            .arg("unknown")
             .env("PRIVATE_SENTINEL", "must-not-appear");
     });
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     assert_eq!(
         String::from_utf8(output.stderr).expect("UTF-8 usage"),
-        "usage: asb-tui (doctor|compatibility) --format json | doctor --terminal\n"
+        "usage: asb-tui [run] | (doctor|compatibility) --format json | doctor --terminal\n"
     );
 }
 

@@ -398,11 +398,11 @@ fn policy_documents() -> BTreeMap<String, Vec<u8>> {
     let mut documents = BTreeMap::new();
     documents.insert(
         "licenses".into(),
-        br#"{"schema_version":1,"release":"v0.1.0","packages":[{"name":"asb-tui","version":"0.1.0","license":"MIT"},{"name":"agent-workflow-coordinator","version":"0.3.5","license":"MIT"},{"name":"agent-workflow-quality","version":"0.23.0","license":"MIT"}]}"#.to_vec(),
+        br#"{"schema_version":1,"release":"v0.1.0","packages":[{"name":"asb-tui","version":"0.1.0","license":"MIT"},{"name":"agent-workflow-coordinator","version":"0.3.5","license":"MIT"},{"name":"agent-workflow-quality","version":"0.23.0","license":"MIT"},{"name":"foldhash","version":"0.2.0","license":"Zlib"}]}"#.to_vec(),
     );
     documents.insert(
         "sbom".into(),
-        br#"{"spdxVersion":"SPDX-2.3","name":"asb-tui-v0.1.0","packages":[{"name":"asb-tui"},{"name":"agent-workflow-coordinator"},{"name":"agent-workflow-quality"}]}"#.to_vec(),
+        br#"{"spdxVersion":"SPDX-2.3","name":"asb-tui-v0.1.0","packages":[{"name":"asb-tui"},{"name":"agent-workflow-coordinator"},{"name":"agent-workflow-quality"},{"name":"foldhash"}]}"#.to_vec(),
     );
     documents.insert(
         "provenance".into(),
@@ -449,6 +449,29 @@ fn license_sbom_and_provenance_policy_is_bound_to_the_manifest() {
         validate_bundle_documents(&parsed, &denied),
         Err("license_policy_rejected")
     );
+
+    for (accepted, rejected) in [
+        ("\"version\":\"0.2.0\"", "\"version\":\"0.2.1\""),
+        ("\"name\":\"foldhash\"", "\"name\":\"other-zlib\""),
+        ("\"license\":\"Zlib\"", "\"license\":\"BSD-3-Clause\""),
+        (
+            "\"name\":\"agent-workflow-coordinator\",\"version\":\"0.3.5\",\"license\":\"MIT\"",
+            "\"name\":\"agent-workflow-coordinator\",\"version\":\"0.3.5\",\"license\":\"Zlib\"",
+        ),
+    ] {
+        let mut widened = policy_documents();
+        widened.insert(
+            "licenses".into(),
+            String::from_utf8(widened["licenses"].clone())
+                .unwrap()
+                .replace(accepted, rejected)
+                .into_bytes(),
+        );
+        assert_eq!(
+            validate_bundle_documents(&parsed, &widened),
+            Err("license_policy_rejected")
+        );
+    }
 
     let mut incomplete = documents.clone();
     incomplete.insert(

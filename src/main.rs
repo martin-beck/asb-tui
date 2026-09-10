@@ -3,10 +3,13 @@
 #![forbid(unsafe_code)]
 
 use asb_tui::{
+    app::AppState,
     compatibility::evaluate,
     delegated::execute_input,
     lifecycle::local_self_test_response,
+    runtime::run_interactive,
     system_probe::{LocalSystem, detect},
+    terminal::{RenderPolicy, TerminalEvidence},
 };
 use std::{env, process::ExitCode};
 
@@ -19,6 +22,9 @@ const DIAGNOSTIC: &str = concat!(
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
+    if arguments.is_empty() || arguments == ["run"] {
+        return launch();
+    }
     if arguments == ["doctor", "--terminal"] {
         match asb_tui::terminal::doctor(asb_tui::terminal::TerminalEvidence::from_environment()) {
             Ok(report) => {
@@ -70,8 +76,43 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: asb-tui (doctor|compatibility) --format json | doctor --terminal");
+    eprintln!("usage: asb-tui [run] | (doctor|compatibility) --format json | doctor --terminal");
     ExitCode::from(2)
+}
+
+fn launch() -> ExitCode {
+    let mut evidence = TerminalEvidence::from_environment();
+    if evidence.tty
+        && let Ok((columns, lines)) = crossterm::terminal::size()
+        && columns > 0
+        && lines > 0
+    {
+        evidence.columns = Some(columns);
+        evidence.lines = Some(lines);
+    }
+    let Ok(policy) = RenderPolicy::from_evidence(&evidence) else {
+        eprintln!("terminal capability check failed");
+        return ExitCode::from(2);
+    };
+    let mut state =
+        match AppState::new(evidence.columns.unwrap_or(80), evidence.lines.unwrap_or(24)) {
+            Ok(state) => state,
+            Err(_) => {
+                eprintln!("terminal capability check failed");
+                return ExitCode::from(2);
+            }
+        };
+    if !policy.alternate_screen {
+        print!("{}", state.plain_text());
+        return ExitCode::SUCCESS;
+    }
+    match run_interactive(&mut state, policy) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => {
+            eprintln!("terminal application failed");
+            ExitCode::from(2)
+        }
+    }
 }
 
 #[cfg(test)]

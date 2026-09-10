@@ -802,17 +802,20 @@ pub fn validate_bundle_documents(
     }
     let mut names = BTreeSet::new();
     for package in licenses.packages {
+        let permitted_license = matches!(
+            package.license.as_str(),
+            "MIT"
+                | "Apache-2.0"
+                | "MIT OR Apache-2.0"
+                | "Apache-2.0 OR BSL-1.0"
+                | "Unlicense OR MIT"
+                | "(MIT OR Apache-2.0) AND Unicode-3.0"
+        ) || (package.name == "foldhash"
+            && package.version == "0.2.0"
+            && package.license == "Zlib");
         if package.name.is_empty()
             || package.version.is_empty()
-            || !matches!(
-                package.license.as_str(),
-                "MIT"
-                    | "Apache-2.0"
-                    | "MIT OR Apache-2.0"
-                    | "Apache-2.0 OR BSL-1.0"
-                    | "Unlicense OR MIT"
-                    | "(MIT OR Apache-2.0) AND Unicode-3.0"
-            )
+            || !permitted_license
             || !names.insert(package.name)
         {
             return Err("license_policy_rejected");

@@ -176,7 +176,7 @@ fn malformed_and_incomplete_release_locks_fail_closed() {
             "SHA256:wrong",
         ),
         contents.replace(
-            "\"classification\": \"unavailable\"",
+            "\"classification\": \"source_only_unverified\"",
             "\"classification\": \"verified\"",
         ),
         contents.replace("\"license\": \"MIT\"", "\"license\": \"unknown\""),

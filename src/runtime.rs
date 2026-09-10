@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 //! Crossterm input and rollback-safe terminal lifecycle primitives.
 
-use crate::app::Action;
+use crate::{
+    app::{Action, AppError, AppState},
+    renderer,
+    terminal::RenderPolicy,
+};
 use crossterm::{
     cursor::{Hide, Show},
     event::{
@@ -12,6 +16,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{fmt, io, time::Duration};
 
 /// Terminal startup, input, or restoration error.
@@ -36,37 +41,129 @@ impl From<io::Error> for RuntimeError {
     }
 }
 
+impl From<AppError> for RuntimeError {
+    fn from(error: AppError) -> Self {
+        Self(io::Error::other(error))
+    }
+}
+
 trait LifecycleOps {
     fn enter(&mut self) -> io::Result<()>;
     fn restore(&mut self) -> io::Result<()>;
 }
 
-struct CrosstermLifecycle;
+trait TerminalEffects {
+    fn enable_raw(&mut self) -> io::Result<()>;
+    fn enter_screen(&mut self) -> io::Result<()>;
+    fn hide_cursor(&mut self) -> io::Result<()>;
+    fn enable_paste(&mut self) -> io::Result<()>;
+    fn disable_paste(&mut self) -> io::Result<()>;
+    fn show_cursor(&mut self) -> io::Result<()>;
+    fn leave_screen(&mut self) -> io::Result<()>;
+    fn disable_raw(&mut self) -> io::Result<()>;
+}
 
-impl LifecycleOps for CrosstermLifecycle {
+struct SystemEffects;
+
+impl TerminalEffects for SystemEffects {
+    fn enable_raw(&mut self) -> io::Result<()> {
+        enable_raw_mode()
+    }
+
+    fn enter_screen(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), EnterAlternateScreen)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), Hide)
+    }
+
+    fn enable_paste(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), EnableBracketedPaste)
+    }
+
+    fn disable_paste(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), DisableBracketedPaste)
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), Show)
+    }
+
+    fn leave_screen(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), LeaveAlternateScreen)
+    }
+
+    fn disable_raw(&mut self) -> io::Result<()> {
+        disable_raw_mode()
+    }
+}
+
+struct CrosstermLifecycle<E: TerminalEffects = SystemEffects> {
+    effects: E,
+    alternate_screen: bool,
+    bracketed_paste: bool,
+    raw_active: bool,
+    screen_active: bool,
+    cursor_hidden: bool,
+    paste_active: bool,
+}
+
+fn restore_effect(
+    active: &mut bool,
+    operation: impl FnOnce() -> io::Result<()>,
+    first_error: &mut Option<io::Error>,
+) {
+    if !*active {
+        return;
+    }
+    match operation() {
+        Ok(()) => *active = false,
+        Err(error) if first_error.is_none() => *first_error = Some(error),
+        Err(_) => {}
+    }
+}
+
+impl<E: TerminalEffects> LifecycleOps for CrosstermLifecycle<E> {
     fn enter(&mut self) -> io::Result<()> {
-        enable_raw_mode()?;
-        if let Err(error) = execute!(
-            io::stdout(),
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            Hide
-        ) {
-            let _ = disable_raw_mode();
-            return Err(error);
+        self.effects.enable_raw()?;
+        self.raw_active = true;
+        if self.alternate_screen {
+            self.effects.enter_screen()?;
+            self.screen_active = true;
+            self.effects.hide_cursor()?;
+            self.cursor_hidden = true;
+        }
+        if self.bracketed_paste {
+            self.effects.enable_paste()?;
+            self.paste_active = true;
         }
         Ok(())
     }
 
     fn restore(&mut self) -> io::Result<()> {
-        let screen_result = execute!(
-            io::stdout(),
-            Show,
-            DisableBracketedPaste,
-            LeaveAlternateScreen
+        let mut first_error = None;
+        restore_effect(
+            &mut self.paste_active,
+            || self.effects.disable_paste(),
+            &mut first_error,
         );
-        let raw_result = disable_raw_mode();
-        screen_result.and(raw_result)
+        restore_effect(
+            &mut self.cursor_hidden,
+            || self.effects.show_cursor(),
+            &mut first_error,
+        );
+        restore_effect(
+            &mut self.screen_active,
+            || self.effects.leave_screen(),
+            &mut first_error,
+        );
+        restore_effect(
+            &mut self.raw_active,
+            || self.effects.disable_raw(),
+            &mut first_error,
+        );
+        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -88,8 +185,9 @@ impl<O: LifecycleOps> LifecycleGuard<O> {
         if !self.active {
             return Ok(());
         }
+        self.ops.restore()?;
         self.active = false;
-        self.ops.restore()
+        Ok(())
     }
 }
 
@@ -105,10 +203,23 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
-    /// Enter raw input and the alternate screen atomically.
-    pub fn enter() -> Result<Self, RuntimeError> {
+    /// Enter only the raw-input features approved by the render policy.
+    pub fn enter(policy: RenderPolicy) -> Result<Self, RuntimeError> {
+        if !policy.alternate_screen {
+            return Err(RuntimeError(io::Error::other(
+                "interactive terminal policy required",
+            )));
+        }
         Ok(Self {
-            guard: LifecycleGuard::start(CrosstermLifecycle)?,
+            guard: LifecycleGuard::start(CrosstermLifecycle {
+                effects: SystemEffects,
+                alternate_screen: policy.alternate_screen,
+                bracketed_paste: policy.bracketed_paste,
+                raw_active: false,
+                screen_active: false,
+                cursor_hidden: false,
+                paste_active: false,
+            })?,
         })
     }
 
@@ -117,6 +228,21 @@ impl TerminalSession {
         self.guard.restore()?;
         Ok(())
     }
+}
+
+/// Run the single-writer interactive draw loop until the operator quits.
+pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(), RuntimeError> {
+    let mut session = TerminalSession::enter(policy)?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    while !state.should_quit() {
+        terminal.draw(|frame| renderer::render(frame, state, policy))?;
+        if let Some(action) = poll_action(Duration::from_millis(50))? {
+            state.apply(action)?;
+        }
+    }
+    drop(terminal);
+    session.restore()
 }
 
 /// Poll once for a bounded terminal action. Unknown input is ignored.
@@ -203,14 +329,158 @@ mod tests {
     }
 
     #[test]
-    fn restoration_error_does_not_repeat_destructive_cleanup() {
+    fn restoration_error_is_retried_on_drop() {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let mut ops = fake(&calls);
         ops.fail_restore = true;
         let mut guard = LifecycleGuard::start(ops).unwrap();
         assert!(guard.restore().is_err());
         drop(guard);
-        assert_eq!(*calls.borrow(), ["enter", "restore"]);
+        assert_eq!(*calls.borrow(), ["enter", "restore", "restore"]);
+    }
+
+    struct FakeTerminalEffects {
+        calls: Rc<RefCell<Vec<&'static str>>>,
+        fail_on: &'static str,
+        fail_once: bool,
+    }
+
+    impl FakeTerminalEffects {
+        fn effect(&mut self, name: &'static str) -> io::Result<()> {
+            self.calls.borrow_mut().push(name);
+            if name == self.fail_on && self.fail_once {
+                self.fail_once = false;
+                Err(io::Error::other(name))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl TerminalEffects for FakeTerminalEffects {
+        fn enable_raw(&mut self) -> io::Result<()> {
+            self.effect("enable_raw")
+        }
+
+        fn enter_screen(&mut self) -> io::Result<()> {
+            self.effect("enter_screen")
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            self.effect("hide_cursor")
+        }
+
+        fn enable_paste(&mut self) -> io::Result<()> {
+            self.effect("enable_paste")
+        }
+
+        fn disable_paste(&mut self) -> io::Result<()> {
+            self.effect("disable_paste")
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.effect("show_cursor")
+        }
+
+        fn leave_screen(&mut self) -> io::Result<()> {
+            self.effect("leave_screen")
+        }
+
+        fn disable_raw(&mut self) -> io::Result<()> {
+            self.effect("disable_raw")
+        }
+    }
+
+    fn terminal_ops(
+        calls: &Rc<RefCell<Vec<&'static str>>>,
+        fail_on: &'static str,
+    ) -> CrosstermLifecycle<FakeTerminalEffects> {
+        CrosstermLifecycle {
+            effects: FakeTerminalEffects {
+                calls: Rc::clone(calls),
+                fail_on,
+                fail_once: true,
+            },
+            alternate_screen: true,
+            bracketed_paste: true,
+            raw_active: false,
+            screen_active: false,
+            cursor_hidden: false,
+            paste_active: false,
+        }
+    }
+
+    #[test]
+    fn partial_terminal_startup_restores_every_acquired_effect() {
+        for (failure, expected) in [
+            ("enable_raw", vec!["enable_raw"]),
+            (
+                "enter_screen",
+                vec!["enable_raw", "enter_screen", "disable_raw"],
+            ),
+            (
+                "hide_cursor",
+                vec![
+                    "enable_raw",
+                    "enter_screen",
+                    "hide_cursor",
+                    "leave_screen",
+                    "disable_raw",
+                ],
+            ),
+            (
+                "enable_paste",
+                vec![
+                    "enable_raw",
+                    "enter_screen",
+                    "hide_cursor",
+                    "enable_paste",
+                    "show_cursor",
+                    "leave_screen",
+                    "disable_raw",
+                ],
+            ),
+        ] {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            assert!(LifecycleGuard::start(terminal_ops(&calls, failure)).is_err());
+            assert_eq!(*calls.borrow(), expected, "failure at {failure}");
+        }
+    }
+
+    #[test]
+    fn every_failed_restore_effect_is_retried_once_and_then_deactivated() {
+        for failure in [
+            "disable_paste",
+            "show_cursor",
+            "leave_screen",
+            "disable_raw",
+        ] {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let mut guard = LifecycleGuard::start(terminal_ops(&calls, failure)).unwrap();
+            assert!(guard.restore().is_err(), "failure at {failure}");
+            assert_eq!(
+                &calls.borrow()[..8],
+                [
+                    "enable_raw",
+                    "enter_screen",
+                    "hide_cursor",
+                    "enable_paste",
+                    "disable_paste",
+                    "show_cursor",
+                    "leave_screen",
+                    "disable_raw",
+                ],
+                "later cleanup effects must run after {failure}"
+            );
+            guard.restore().unwrap();
+            guard.restore().unwrap();
+            drop(guard);
+            assert_eq!(
+                &calls.borrow()[8..],
+                [failure],
+                "only the failed effect must be retried"
+            );
+        }
     }
 
     #[test]

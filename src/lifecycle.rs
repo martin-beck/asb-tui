@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{IsTerminal, Read, Write},
     os::{
         fd::AsRawFd,
-        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -466,6 +466,25 @@ pub trait FrontendLauncher {
 #[derive(Default)]
 pub struct ProcessLauncher;
 
+fn controlling_terminal() -> Result<(Stdio, Stdio, Stdio), LifecycleIoError> {
+    let terminal = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| LifecycleIoError)?;
+    let metadata = terminal.metadata().map_err(|_| LifecycleIoError)?;
+    if !terminal.is_terminal() || !metadata.file_type().is_char_device() {
+        return Err(LifecycleIoError);
+    }
+    let input = terminal.try_clone().map_err(|_| LifecycleIoError)?;
+    let output = terminal.try_clone().map_err(|_| LifecycleIoError)?;
+    Ok((
+        Stdio::from(input),
+        Stdio::from(output),
+        Stdio::from(terminal),
+    ))
+}
+
 impl FrontendLauncher for ProcessLauncher {
     fn launch_frontend(
         &mut self,
@@ -474,10 +493,11 @@ impl FrontendLauncher for ProcessLauncher {
     ) -> Result<(), LifecycleIoError> {
         let executable = executable_memfd("asb-tui-frontend", executable)?;
         let program = format!("/proc/self/fd/{}", executable.as_raw_fd());
+        let (input, output, error) = controlling_terminal()?;
         let status = Command::new(program)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stdin(input)
+            .stdout(output)
+            .stderr(error)
             .status()
             .map_err(|_| LifecycleIoError)?;
         status.success().then_some(()).ok_or(LifecycleIoError)

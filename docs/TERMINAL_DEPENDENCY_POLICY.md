@@ -119,9 +119,8 @@ boundary.
 The locked graph must pass Cargo build/test, `cargo deny --locked check`, and
 `cargo audit --deny warnings` on Rust 1.93.0. Dependency/build checks run for
 `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`; cross-compilation is not native AArch64
-execution evidence. Repository classification remains `source_only_unverified` until the separate
-renderer, integration, platform, release, and install gates pass.
+execution evidence. The implemented renderer remains `source_only_unverified` until the separate
+integration, platform, release, and install gates pass.
 
-The separately signed release lock therefore continues to report rendering as unavailable. This
-dependency decision does not re-sign that lock or promote an install channel; those changes belong
-to the later renderer and release qualification work.
+The separately signed release lock records that source-only rendering classification. It does not
+promote an install channel or claim platform qualification.

@@ -12,7 +12,7 @@ use asb_tui::{
         remove, status,
     },
 };
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
+use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, process::Command};
 use support::PrivateDirectory;
 
 fn manifest() -> asb_tui::bundle::BundleManifest {
@@ -402,7 +402,25 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
 }
 
 #[test]
-fn process_launcher_runs_exact_bytes_and_reports_frontend_failure() {
+fn process_launcher_requires_a_controlling_terminal() {
+    const CHILD: &str = "ASB_TUI_LAUNCHER_NO_TTY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = Command::new("/usr/bin/setsid")
+            .args([
+                "--fork",
+                "--wait",
+                std::env::current_exe().unwrap().to_str().unwrap(),
+                "--exact",
+                "process_launcher_requires_a_controlling_terminal",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "detached launcher probe failed");
+        return;
+    }
+
     let mut store = Store::default();
     let mut probe = Probe {
         pass: true,
@@ -410,12 +428,9 @@ fn process_launcher_runs_exact_bytes_and_reports_frontend_failure() {
     };
     let installed = install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
     let mut launcher = ProcessLauncher;
-    launcher
-        .launch_frontend(&installed, b"#!/bin/sh\nexit 0\n")
-        .unwrap();
     assert!(
         launcher
-            .launch_frontend(&installed, b"#!/bin/sh\nexit 9\n")
+            .launch_frontend(&installed, b"#!/bin/sh\nexit 0\n")
             .is_err()
     );
 }

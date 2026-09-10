@@ -15,10 +15,13 @@ $ asb-tui doctor --format json
 {"classification":"source_only_unverified","protocol":"asb-cli-capabilities","protocol_version":1,"reason":"installed_asb_compatibility_not_verified"}
 ```
 
-The command exits 3. It does not probe ambient configuration, contact a network service, or claim
-that Ratatui/Crossterm rendering is available. The exact terminal dependency closure is accepted for
-source use under a fail-closed crate-specific policy, but renderer and platform evidence remain
-separate. See [the terminal dependency decision](docs/TERMINAL_DEPENDENCY_POLICY.md).
+The command exits 3. It does not probe ambient configuration or contact a network service. The
+standalone application now has a Ratatui renderer, an exact-pinned Crossterm lifecycle, and a
+policy-driven draw/input loop. Running `asb-tui` on an interactive supported terminal opens the UI;
+running it through a pipe, with `NO_COLOR`, or with `TERM=dumb` emits a stable plain-text view
+without entering raw or alternate-screen mode. This is source functionality, not platform
+qualification or an installable release. See
+[the terminal dependency decision](docs/TERMINAL_DEPENDENCY_POLICY.md).
 
 See `provenance/dependencies.lock.json` for exact tooling provenance and
 `protocol/v1/capabilities.schema.json` for the proposed external JSON boundary.
@@ -27,7 +30,9 @@ See `provenance/dependencies.lock.json` for exact tooling provenance and
 
 `cargo test --locked` exercises the closed capability contract, including unknown, missing,
 duplicate, malformed, wrong-version, and wrong-type inputs. It also proves the standalone binary
-runs with an empty environment and contains no ASB workspace/path dependency.
+runs with an empty environment and contains no ASB workspace/path dependency. Ratatui
+`TestBackend` snapshots bind compact, standard, wide, and tiny layouts; pseudo-terminal tests bind
+actual draw, quit, panic, plain fallback, and restoration behavior.
 
 The dependency lock has a detached SSH signature under the `asb-tui-release-lock` namespace.
 `verify-release-lock` verifies that signature, requires signed annotated upstream tags, and binds
