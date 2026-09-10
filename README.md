@@ -150,13 +150,18 @@ cleanup has fixed item, depth, and elapsed-time budgets. Excess crash residue re
 under its never-reused private random name and a later exclusive lifecycle open makes another
 bounded cleanup pass.
 
-Candidate self-tests run behind the current trusted executable as a distinct process-group leader.
-Before it executes the sealed candidate, that supervisor installs an inherited seccomp filter that
-denies `setsid` and `setpgid`; forks remain possible but cannot escape the owned group. Every
-success and failure path kills that exact group through its retained leader pidfd and drains output
-nonblockingly under fixed deadlines. Cleanup never enumerates `/proc` children or changes the
-process-global subreaper setting, so concurrently spawned unrelated children cannot be classified,
-signalled, or reaped as candidate descendants.
+Candidate self-tests run behind a sealed copy of the current trusted executable as a distinct
+process-group leader. Before it executes the sealed candidate, that supervisor installs an
+inherited seccomp filter that denies `setsid` and `setpgid`; forks, threads, execs, and namespace
+attempts retain the filter and cannot escape the owned group. Cleanup addresses that numeric group
+while its direct leader is deliberately unreaped and retained by pidfd, then uses the pidfd only to
+signal the leader and drains output nonblockingly under fixed deadlines. This prevents PID reuse
+before group cleanup. The standalone lifecycle process has no external SIGCHLD reaper; embedding
+that lifecycle process or reaping its owned supervisor child is unsupported. The hidden integration-
+test seam requires independently authenticated bytes, rejects symlinks and group/world-writable or
+substituted inputs, and executes a sealed copy immune to later same-inode mutation. Cleanup never
+enumerates `/proc` children or changes the process-global subreaper setting, so concurrently spawned
+unrelated children cannot be classified, signalled, or reaped as candidate descendants.
 
 This is the standalone half of the command contract. Current ASB releases do not yet route
 `asb tui install`, `asb tui`, `asb tui status`, `asb tui upgrade`, or `asb tui remove`; that narrow

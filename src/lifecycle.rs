@@ -383,24 +383,101 @@ pub struct ExecutableSelfTest {
 }
 
 impl ExecutableSelfTest {
+    /// Bind a sealed copy of the current standalone executable.
+    ///
+    /// The standalone lifecycle process exclusively owns the supervisor child wait status. An
+    /// embedding process with an independent SIGCHLD handler or child reaper is unsupported.
     pub fn for_store(store: &FilesystemLifecycle) -> Result<Self, LifecycleIoError> {
-        Self::for_store_with_supervisor(store, Path::new("/proc/self/exe"))
-    }
-
-    /// Bind an explicit trusted supervisor executable for an embedding application or test.
-    pub fn for_store_with_supervisor(
-        store: &FilesystemLifecycle,
-        supervisor: &Path,
-    ) -> Result<Self, LifecycleIoError> {
         store.validate_root()?;
-        let supervisor = File::open(supervisor).map_err(|_| LifecycleIoError)?;
-        let metadata = supervisor.metadata().map_err(|_| LifecycleIoError)?;
-        if !metadata.is_file() || metadata.mode() & 0o111 == 0 {
+        let mut executable = File::open("/proc/self/exe").map_err(|_| LifecycleIoError)?;
+        let metadata = executable.metadata().map_err(|_| LifecycleIoError)?;
+        if !metadata.is_file()
+            || metadata.mode() & 0o111 == 0
+            || metadata.len() == 0
+            || metadata.len() > MAX_EXECUTABLE_BYTES
+        {
+            return Err(LifecycleIoError);
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        Read::by_ref(&mut executable)
+            .take(MAX_EXECUTABLE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| LifecycleIoError)?;
+        if bytes.len() as u64 != metadata.len() {
             return Err(LifecycleIoError);
         }
         Ok(Self {
             lifecycle_root: store.directory.try_clone().map_err(|_| LifecycleIoError)?,
-            supervisor,
+            supervisor: executable_memfd("asb-tui-self-test-supervisor", &bytes)?,
+        })
+    }
+
+    /// Bind independently authenticated supervisor bytes for an integration test.
+    ///
+    /// This hidden test seam is not a supported embedding API. `authenticated_bytes` must come
+    /// from a trust decision independent of `supervisor`; reading the same mutable path first is
+    /// not authentication. The selected path must be an owner-controlled, non-symlink regular
+    /// executable. Its exact authenticated bytes are copied into a sealed anonymous file before
+    /// this function returns, so later pathname or same-inode mutation cannot affect execution.
+    #[doc(hidden)]
+    pub fn for_store_with_authenticated_supervisor(
+        store: &FilesystemLifecycle,
+        supervisor: &Path,
+        authenticated_bytes: &[u8],
+    ) -> Result<Self, LifecycleIoError> {
+        store.validate_root()?;
+        if authenticated_bytes.is_empty() || authenticated_bytes.len() as u64 > MAX_EXECUTABLE_BYTES
+        {
+            return Err(LifecycleIoError);
+        }
+        let before = fs::symlink_metadata(supervisor).map_err(|_| LifecycleIoError)?;
+        if !before.is_file()
+            || before.file_type().is_symlink()
+            || before.uid() != rustix::process::getuid().as_raw()
+            || before.mode() & 0o111 == 0
+            || before.mode() & 0o022 != 0
+            || before.len() != authenticated_bytes.len() as u64
+        {
+            return Err(LifecycleIoError);
+        }
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let mut opened = options.open(supervisor).map_err(|_| LifecycleIoError)?;
+        let opened_metadata = opened.metadata().map_err(|_| LifecycleIoError)?;
+        if (before.dev(), before.ino(), before.len(), before.mode())
+            != (
+                opened_metadata.dev(),
+                opened_metadata.ino(),
+                opened_metadata.len(),
+                opened_metadata.mode(),
+            )
+        {
+            return Err(LifecycleIoError);
+        }
+        let mut observed = Vec::with_capacity(authenticated_bytes.len());
+        Read::by_ref(&mut opened)
+            .take(MAX_EXECUTABLE_BYTES + 1)
+            .read_to_end(&mut observed)
+            .map_err(|_| LifecycleIoError)?;
+        let after = opened.metadata().map_err(|_| LifecycleIoError)?;
+        if (
+            opened_metadata.dev(),
+            opened_metadata.ino(),
+            opened_metadata.len(),
+        ) != (after.dev(), after.ino(), after.len())
+            || (opened_metadata.mtime(), opened_metadata.mtime_nsec())
+                != (after.mtime(), after.mtime_nsec())
+            || (opened_metadata.ctime(), opened_metadata.ctime_nsec())
+                != (after.ctime(), after.ctime_nsec())
+            || observed != authenticated_bytes
+        {
+            return Err(LifecycleIoError);
+        }
+        Ok(Self {
+            lifecycle_root: store.directory.try_clone().map_err(|_| LifecycleIoError)?,
+            supervisor: executable_memfd("asb-tui-authenticated-test-supervisor", &observed)?,
         })
     }
 }
@@ -701,8 +778,10 @@ impl CandidateProcess {
         if self.cleaned {
             return self.child.try_wait().ok().flatten().ok_or(LifecycleIoError);
         }
-        let _ = rustix::process::kill_process_group(self.leader, rustix::process::Signal::KILL);
-        let _ = rustix::process::pidfd_send_signal(&self.leader_fd, rustix::process::Signal::KILL);
+        let group_signal =
+            rustix::process::kill_process_group(self.leader, rustix::process::Signal::KILL);
+        let leader_signal =
+            rustix::process::pidfd_send_signal(&self.leader_fd, rustix::process::Signal::KILL);
         let deadline = Instant::now() + PROCESS_CLEANUP_TIME;
         let status = loop {
             if let Some(status) = self.child.try_wait().map_err(|_| LifecycleIoError)? {
@@ -714,7 +793,14 @@ impl CandidateProcess {
             thread::sleep(Duration::from_millis(5));
         };
         self.cleaned = true;
-        Ok(status)
+        let signal_succeeded = |result: rustix::io::Result<()>| {
+            matches!(result, Ok(()) | Err(rustix::io::Errno::SRCH))
+        };
+        if signal_succeeded(group_signal) && signal_succeeded(leader_signal) {
+            Ok(status)
+        } else {
+            Err(LifecycleIoError)
+        }
     }
 }
 

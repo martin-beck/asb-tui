@@ -432,11 +432,57 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
     fs::create_dir(&original).unwrap();
     fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
     let runtime_store = FilesystemLifecycle::open(&original).unwrap();
-    let mut self_test = ExecutableSelfTest::for_store_with_supervisor(
+    let supervisor_bytes = fs::read(env!("CARGO_BIN_EXE_asb-tui")).unwrap();
+    let supervisor_path = directory.path().join("authenticated-supervisor");
+    fs::write(&supervisor_path, &supervisor_bytes).unwrap();
+    fs::set_permissions(&supervisor_path, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let supervisor_link = directory.path().join("supervisor-link");
+    std::os::unix::fs::symlink(&supervisor_path, &supervisor_link).unwrap();
+    assert!(
+        ExecutableSelfTest::for_store_with_authenticated_supervisor(
+            &runtime_store,
+            &supervisor_link,
+            &supervisor_bytes,
+        )
+        .is_err(),
+        "a symlink supervisor was accepted"
+    );
+    for mode in [0o720, 0o702] {
+        fs::set_permissions(&supervisor_path, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(
+            ExecutableSelfTest::for_store_with_authenticated_supervisor(
+                &runtime_store,
+                &supervisor_path,
+                &supervisor_bytes,
+            )
+            .is_err(),
+            "a writable supervisor with mode {mode:o} was accepted"
+        );
+    }
+    fs::set_permissions(&supervisor_path, fs::Permissions::from_mode(0o700)).unwrap();
+    let substituted = directory.path().join("substituted-supervisor");
+    let mut substituted_bytes = supervisor_bytes.clone();
+    substituted_bytes[0] ^= 1;
+    fs::write(&substituted, &substituted_bytes).unwrap();
+    fs::set_permissions(&substituted, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        ExecutableSelfTest::for_store_with_authenticated_supervisor(
+            &runtime_store,
+            &substituted,
+            &supervisor_bytes,
+        )
+        .is_err(),
+        "substituted supervisor bytes were accepted"
+    );
+
+    let mut self_test = ExecutableSelfTest::for_store_with_authenticated_supervisor(
         &runtime_store,
-        std::path::Path::new(env!("CARGO_BIN_EXE_asb-tui")),
+        &supervisor_path,
+        &supervisor_bytes,
     )
     .unwrap();
+    fs::write(&supervisor_path, b"#!/bin/sh\nexit 0\n").unwrap();
     fs::rename(&original, &retained).unwrap();
     fs::create_dir(&original).unwrap();
     fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
@@ -498,23 +544,63 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
     let escaped_marker = directory.path().join("escaped-child.pid");
     let escape_denied = directory.path().join("setsid-denied");
     let regroup_denied = directory.path().join("setpgid-denied");
+    let thread_denied = directory.path().join("thread-setpgid-denied");
+    let namespace_result = directory.path().join("namespace-result");
     let escaped = format!(
         concat!(
             "#!/bin/sh\n",
             "setsid sh -c 'sleep 30' || printf denied >'{}'\n",
             "/usr/bin/python3 -c 'import os; os.setpgid(0, 0)' || printf denied >'{}'\n",
+            "/usr/bin/python3 <<'PY'\n",
+            "import ctypes, errno, threading\n",
+            "libc = ctypes.CDLL(None, use_errno=True)\n",
+            "result = []\n",
+            "def regroup():\n",
+            "    result.append((libc.setpgid(0, 0), ctypes.get_errno()))\n",
+            "thread = threading.Thread(target=regroup)\n",
+            "thread.start()\n",
+            "thread.join()\n",
+            "open(r'{}', 'w').write('denied' if result == [(-1, errno.EPERM)] else repr(result))\n",
+            "PY\n",
+            "/usr/bin/python3 <<'PY'\n",
+            "import ctypes, errno, os\n",
+            "libc = ctypes.CDLL(None, use_errno=True)\n",
+            "result = r'{}'\n",
+            "rc = libc.unshare(0x10000000 | 0x20000000)\n",
+            "if rc != 0:\n",
+            "    open(result, 'w').write('unavailable:%d' % ctypes.get_errno())\n",
+            "else:\n",
+            "    child = os.fork()\n",
+            "    if child == 0:\n",
+            "        session = libc.setsid()\n",
+            "        code = 0 if session == -1 and ctypes.get_errno() == errno.EPERM else 20\n",
+            "        os._exit(code)\n",
+            "    _, status = os.waitpid(child, 0)\n",
+            "    value = 'denied' if os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 else 'escape'\n",
+            "    open(result, 'w').write(value)\n",
+            "PY\n",
             "(sh -c 'sleep 30 & echo $! >\"{}\"' &)\n",
             "while [ ! -s '{}' ]; do :; done\n",
             "exit 7\n"
         ),
         escape_denied.display(),
         regroup_denied.display(),
+        thread_denied.display(),
+        namespace_result.display(),
         escaped_marker.display(),
         escaped_marker.display()
     );
     assert!(!self_test.verify_protocol_and_terminal(&installed, escaped.as_bytes()));
     assert_eq!(fs::read_to_string(&escape_denied).unwrap(), "denied");
     assert_eq!(fs::read_to_string(&regroup_denied).unwrap(), "denied");
+    assert_eq!(fs::read_to_string(&thread_denied).unwrap(), "denied");
+    let namespace = fs::read_to_string(&namespace_result).unwrap();
+    eprintln!("namespace confinement probe: {namespace}");
+    let namespace_unavailable = namespace
+        .strip_prefix("unavailable:")
+        .and_then(|value| value.parse::<i32>().ok())
+        .is_some_and(|errno| matches!(errno, libc::EPERM | libc::EINVAL | libc::ENOSYS));
+    assert!(namespace == "denied" || namespace_unavailable);
     assert_reaped(&escaped_marker);
 
     let success_marker = directory.path().join("success-child.pid");
@@ -563,24 +649,30 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
     }
 
     let ready = directory.path().join("concurrent-ready");
+    let acknowledged = directory.path().join("concurrent-acknowledged");
     let concurrent_candidate = candidate.replace(
         "printf '%s\\n'",
         &format!(
-            "printf ready >'{}'\nsleep 0.2\nprintf '%s\\n'",
-            ready.display()
+            "printf ready >'{}'\nwhile [ ! -s '{}' ]; do sleep 0.005; done\nprintf '%s\\n'",
+            ready.display(),
+            acknowledged.display()
         ),
     );
     let (sender, receiver) = std::sync::mpsc::channel();
     let unrelated_thread = std::thread::spawn(move || {
+        let mut observed_ready = false;
         for _ in 0..100 {
             if ready.exists() {
+                observed_ready = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        sender
-            .send(Command::new("/usr/bin/sleep").arg("30").spawn().unwrap())
-            .unwrap();
+        assert!(observed_ready, "candidate readiness handshake timed out");
+        let mut unrelated = Command::new("/usr/bin/sleep").arg("30").spawn().unwrap();
+        assert!(unrelated.try_wait().unwrap().is_none());
+        fs::write(&acknowledged, b"live").unwrap();
+        sender.send(unrelated).unwrap();
     });
     assert!(self_test.verify_protocol_and_terminal(&installed, concurrent_candidate.as_bytes()));
     unrelated_thread.join().unwrap();
