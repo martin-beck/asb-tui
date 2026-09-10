@@ -476,13 +476,12 @@ pub fn verify_manifest_signature(
         .arg(allowed_signers)
         .output()
         .map_err(|_| "signature_verifier_unavailable")?;
-    if !fingerprint.status.success()
-        || String::from_utf8(fingerprint.stdout)
-            .ok()
-            .and_then(|line| line.split_whitespace().nth(1).map(str::to_owned))
-            .as_deref()
-            != Some(SIGNER_FINGERPRINT)
-    {
+    let fingerprints: Vec<String> = String::from_utf8(fingerprint.stdout)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1).map(str::to_owned))
+        .collect();
+    if !fingerprint.status.success() || fingerprints != [SIGNER_FINGERPRINT] {
         return Err("invalid_trust_anchor");
     }
     let mut child = Command::new("ssh-keygen")

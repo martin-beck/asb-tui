@@ -116,6 +116,36 @@ fn authentic_static_fixture_verifies_offline_before_parsing() {
 }
 
 #[test]
+fn appended_signer_is_rejected_even_when_the_fixture_uses_the_original_key() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let directory = PrivateDirectory::create();
+    let key = directory.path().join("substitute");
+    assert!(
+        Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut allowed = std::fs::read(root.join("provenance/allowed_signers")).unwrap();
+    allowed.extend_from_slice(b"substitute@example.invalid ");
+    allowed.extend_from_slice(&std::fs::read(key.with_extension("pub")).unwrap());
+    let substituted = directory.path().join("allowed_signers");
+    std::fs::write(&substituted, allowed).unwrap();
+    assert_eq!(
+        verify_bundle_manifest(
+            &std::fs::read(root.join("tests/fixtures/bundle/manifest.json")).unwrap(),
+            &root.join("tests/fixtures/bundle/manifest.json.sig"),
+            &substituted,
+            1_800_000_000,
+            expected(),
+        ),
+        Err("invalid_trust_anchor")
+    );
+}
+
+#[test]
 fn rejects_expired_incompatible_mutable_incomplete_and_unknown_metadata() {
     assert_eq!(
         parse_and_validate_manifest(&manifest(), 1_800_000_001, expected()),
