@@ -7,6 +7,7 @@ issue containing credentials, private infrastructure identifiers, unpublished ar
 details. No credential is required by `asb-tui`; benchmark execution and provider credentials remain
 owned by the separately installed ASB program.
 
-Only immutable, authenticated dependency identities are accepted. The current frontend remains an
-`unverified_extension` and rendering is unavailable until its separately reviewed dependency closure
-is pinned.
+Only immutable, authenticated dependency identities are accepted. The Ratatui closure and its
+crate-specific license/duplicate exceptions are documented in
+`docs/TERMINAL_DEPENDENCY_POLICY.md`; widening them requires a new review. The current frontend
+remains an `unverified_extension`, and accepting dependencies does not claim rendering exists.

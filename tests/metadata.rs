@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use serde_json::Value;
-use std::{collections::BTreeMap, fs};
+use std::{collections::BTreeMap, fs, process::Command};
 
 #[test]
 fn sbom_is_closed_over_the_exact_cargo_lock() {
@@ -13,11 +13,18 @@ fn sbom_is_closed_over_the_exact_cargo_lock() {
     )
     .unwrap();
     let packages = sbom["packages"].as_array().unwrap();
-    assert_eq!(packages.len(), 18);
     assert_eq!(lock.matches("[[package]]").count(), packages.len());
     let by_name: BTreeMap<_, _> = packages
         .iter()
-        .map(|package| (package["name"].as_str().unwrap(), package))
+        .map(|package| {
+            (
+                (
+                    package["name"].as_str().unwrap(),
+                    package["versionInfo"].as_str().unwrap(),
+                ),
+                package,
+            )
+        })
         .collect();
     for package in packages
         .iter()
@@ -30,9 +37,20 @@ fn sbom_is_closed_over_the_exact_cargo_lock() {
         assert!(lock.contains(&format!("version = \"{version}\"")));
         assert!(lock.contains(&format!("checksum = \"{digest}\"")));
     }
-    assert_eq!(by_name.len(), packages.len(), "duplicate SBOM package name");
+    assert_eq!(
+        by_name.len(),
+        packages.len(),
+        "duplicate SBOM package identity"
+    );
     let serialized = serde_json::to_string(&sbom).unwrap();
     for private_marker in ["/srv/", "/home/", "PRIVATE", "token"] {
         assert!(!serialized.contains(private_marker));
     }
+
+    let status = Command::new("python3")
+        .args(["tools/generate-rust-sbom.py", "--check"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success(), "generated SPDX inventory is stale");
 }
