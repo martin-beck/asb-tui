@@ -8,8 +8,13 @@ use crate::compatibility::{
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Write,
-    path::Path,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt},
+    },
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -91,6 +96,179 @@ pub trait ArtifactSource {
 pub trait VerifiedCache {
     fn get(&self, sha256: &str, maximum_bytes: u64) -> Option<Vec<u8>>;
     fn insert(&mut self, sha256: &str, bytes: &[u8]) -> Result<(), ArtifactIoError>;
+}
+
+/// HTTPS range source restricted to already-validated immutable GitHub release URLs.
+#[derive(Default)]
+pub struct CurlSource;
+
+impl ArtifactSource for CurlSource {
+    fn read(
+        &mut self,
+        immutable_url: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<u8>, ArtifactIoError> {
+        if !immutable_release_url_shape(immutable_url) || limit == 0 || limit > CHUNK_BYTES {
+            return Err(ArtifactIoError);
+        }
+        let end = offset
+            .checked_add(u64::try_from(limit).map_err(|_| ArtifactIoError)?)
+            .and_then(|value| value.checked_sub(1))
+            .ok_or(ArtifactIoError)?;
+        let mut child = Command::new("curl")
+            .args([
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--location",
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                "--max-redirs",
+                "3",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "30",
+                "--range",
+                &format!("{offset}-{end}"),
+                "--max-filesize",
+                &limit.to_string(),
+                immutable_url,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| ArtifactIoError)?;
+        let mut bytes = Vec::with_capacity(limit);
+        child
+            .stdout
+            .take()
+            .ok_or(ArtifactIoError)?
+            .take(u64::try_from(limit).map_err(|_| ArtifactIoError)? + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ArtifactIoError)?;
+        let status = child.wait().map_err(|_| ArtifactIoError)?;
+        if status.success() && !bytes.is_empty() && bytes.len() <= limit {
+            Ok(bytes)
+        } else {
+            Err(ArtifactIoError)
+        }
+    }
+}
+
+/// Owner-private, content-addressed cache that never overwrites an existing entry.
+pub struct FilesystemCache {
+    directory: File,
+    retained_path: PathBuf,
+}
+
+impl FilesystemCache {
+    pub fn open(root: &Path) -> Result<Self, ArtifactIoError> {
+        let before = fs::symlink_metadata(root).map_err(|_| ArtifactIoError)?;
+        let directory = File::open(root).map_err(|_| ArtifactIoError)?;
+        let metadata = directory.metadata().map_err(|_| ArtifactIoError)?;
+        if !metadata.is_dir()
+            || before.file_type().is_symlink()
+            || (before.dev(), before.ino()) != (metadata.dev(), metadata.ino())
+            || metadata.uid() != rustix::process::getuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(ArtifactIoError);
+        }
+        let retained_path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+        Ok(Self {
+            directory,
+            retained_path,
+        })
+    }
+
+    fn entry(&self, digest: &str) -> Option<PathBuf> {
+        is_hex(digest, 64).then(|| self.retained_path.join(digest))
+    }
+
+    fn validate_directory(&self) -> Result<(), ArtifactIoError> {
+        let metadata = self.directory.metadata().map_err(|_| ArtifactIoError)?;
+        if metadata.is_dir()
+            && metadata.uid() == rustix::process::getuid().as_raw()
+            && metadata.mode() & 0o077 == 0
+        {
+            Ok(())
+        } else {
+            Err(ArtifactIoError)
+        }
+    }
+}
+
+impl VerifiedCache for FilesystemCache {
+    fn get(&self, digest: &str, maximum_bytes: u64) -> Option<Vec<u8>> {
+        self.validate_directory().ok()?;
+        let path = self.entry(digest)?;
+        let before = fs::symlink_metadata(&path).ok()?;
+        if !before.is_file()
+            || before.file_type().is_symlink()
+            || before.uid() != rustix::process::getuid().as_raw()
+            || before.mode() & 0o077 != 0
+            || before.len() > maximum_bytes
+        {
+            return None;
+        }
+        let mut file = File::open(&path).ok()?;
+        let opened = file.metadata().ok()?;
+        if (opened.dev(), opened.ino()) != (before.dev(), before.ino()) {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(usize::try_from(opened.len()).ok()?);
+        Read::by_ref(&mut file)
+            .take(maximum_bytes.checked_add(1)?)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let after = file.metadata().ok()?;
+        ((after.dev(), after.ino(), after.len())
+            == (opened.dev(), opened.ino(), bytes.len() as u64)
+            && bytes.len() as u64 <= maximum_bytes)
+            .then_some(bytes)
+    }
+
+    fn insert(&mut self, digest: &str, bytes: &[u8]) -> Result<(), ArtifactIoError> {
+        self.validate_directory()?;
+        let target = self.entry(digest).ok_or(ArtifactIoError)?;
+        if target.exists() {
+            return Ok(());
+        }
+        let staging = self
+            .retained_path
+            .join(format!(".{digest}.{}.tmp", std::process::id()));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&staging)
+            .map_err(|_| ArtifactIoError)?;
+        let result = (|| {
+            file.write_all(bytes).map_err(|_| ArtifactIoError)?;
+            file.sync_all().map_err(|_| ArtifactIoError)?;
+            fs::hard_link(&staging, &target)
+                .or_else(|error| {
+                    if error.kind() == std::io::ErrorKind::AlreadyExists {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                })
+                .map_err(|_| ArtifactIoError)?;
+            self.directory.sync_all().map_err(|_| ArtifactIoError)
+        })();
+        drop(file);
+        let removed = fs::remove_file(&staging);
+        if result.is_err() || removed.is_err() {
+            return Err(ArtifactIoError);
+        }
+        Ok(())
+    }
 }
 
 /// Authenticate, parse, and validate a manifest in the required order.
@@ -270,12 +448,9 @@ pub fn obtain_artifact(
     let mut failures = 0;
     while bytes.len() < capacity {
         let remaining = capacity - bytes.len();
-        match source.read(
-            &artifact.url,
-            bytes.len() as u64,
-            remaining.min(CHUNK_BYTES),
-        ) {
-            Ok(chunk) if !chunk.is_empty() && chunk.len() <= remaining.min(CHUNK_BYTES) => {
+        let request = remaining.min(CHUNK_BYTES);
+        match source.read(&artifact.url, bytes.len() as u64, request) {
+            Ok(chunk) if chunk.len() == request => {
                 bytes.extend_from_slice(&chunk);
                 failures = 0;
             }
@@ -455,12 +630,18 @@ fn immutable_release_url_shape(url: &str) -> bool {
 }
 
 fn is_version(value: &str) -> bool {
-    value.len() >= 2
-        && value.len() <= 32
-        && value.starts_with('v')
-        && value[1..]
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    let Some(version) = value.strip_prefix('v') else {
+        return false;
+    };
+    if value.len() > 32 {
+        return false;
+    }
+    let mut components = version.split('.');
+    let number = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    number(components.next().unwrap_or_default())
+        && number(components.next().unwrap_or_default())
+        && number(components.next().unwrap_or_default())
+        && components.next().is_none()
 }
 
 fn is_hex(value: &str, length: usize) -> bool {

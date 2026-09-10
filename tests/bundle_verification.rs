@@ -1,16 +1,24 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+mod support;
+
 use asb_tui::{
     bundle::{
-        Artifact, ArtifactIoError, ArtifactKind, ArtifactSource, ExpectedCompatibility,
-        VerifiedCache, obtain_artifact, parse_and_validate_manifest, validate_bundle_documents,
-        verify_bundle_manifest,
+        Artifact, ArtifactIoError, ArtifactKind, ArtifactSource, CurlSource, ExpectedCompatibility,
+        FilesystemCache, VerifiedCache, obtain_artifact, obtain_verified_bundle,
+        parse_and_validate_manifest, validate_bundle_documents, verify_bundle_manifest,
     },
     compatibility::Architecture,
 };
-use std::collections::BTreeMap;
 use std::path::Path;
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    os::unix::fs::PermissionsExt,
+    process::{Command, Stdio},
+};
+use support::PrivateDirectory;
 
 const HELLO_SHA: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 
@@ -144,6 +152,22 @@ fn rejects_expired_incompatible_mutable_incomplete_and_unknown_metadata() {
         parse_and_validate_manifest(unknown.as_bytes(), 1_800_000_000, expected()),
         Err("invalid_manifest")
     );
+
+    let invalid_release = String::from_utf8(manifest())
+        .unwrap()
+        .replace("v0.1.0", "v0..1");
+    assert_eq!(
+        parse_and_validate_manifest(invalid_release.as_bytes(), 1_800_000_000, expected()),
+        Err("invalid_manifest_policy")
+    );
+
+    let over_quota = String::from_utf8(manifest())
+        .unwrap()
+        .replace("\"size\":5", "\"size\":200000000");
+    assert_eq!(
+        parse_and_validate_manifest(over_quota.as_bytes(), 1_800_000_000, expected()),
+        Err("artifact_quota_exceeded")
+    );
 }
 
 #[derive(Default)]
@@ -181,11 +205,7 @@ impl ArtifactSource for Source {
             return Err(ArtifactIoError);
         }
         let start = usize::try_from(offset).unwrap();
-        Ok(self.bytes[start..]
-            .iter()
-            .copied()
-            .take(limit.min(2))
-            .collect())
+        Ok(self.bytes[start..].iter().copied().take(limit).collect())
     }
 }
 
@@ -201,23 +221,27 @@ fn artifact(digest: &str) -> Artifact {
 
 #[test]
 fn bounded_retry_resumes_then_populates_and_reuses_verified_cache() {
+    let expected_bytes = vec![b'a'; 65_537];
+    let expected_digest = digest(&expected_bytes);
     let mut source = Source {
-        bytes: b"hello".to_vec(),
+        bytes: expected_bytes.clone(),
         calls: Vec::new(),
         failures: 2,
     };
     let mut cache = Cache::default();
+    let mut item = artifact(&expected_digest);
+    item.size = expected_bytes.len() as u64;
     assert_eq!(
-        obtain_artifact(&artifact(HELLO_SHA), &mut source, &mut cache),
-        Ok(b"hello".to_vec())
+        obtain_artifact(&item, &mut source, &mut cache),
+        Ok(expected_bytes.clone())
     );
-    assert_eq!(source.calls, [0, 0, 0, 2, 4]);
+    assert_eq!(source.calls, [0, 0, 0, 65_536]);
     assert_eq!(cache.inserts, 1);
 
     let calls = source.calls.len();
     assert_eq!(
-        obtain_artifact(&artifact(HELLO_SHA), &mut source, &mut cache),
-        Ok(b"hello".to_vec())
+        obtain_artifact(&item, &mut source, &mut cache),
+        Ok(expected_bytes)
     );
     assert_eq!(
         source.calls.len(),
@@ -281,6 +305,21 @@ fn policy_documents() -> BTreeMap<String, Vec<u8>> {
     documents
 }
 
+fn digest(bytes: &[u8]) -> String {
+    let mut child = Command::new("sha256sum")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(bytes).unwrap();
+    String::from_utf8(child.wait_with_output().unwrap().stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
 #[test]
 fn license_sbom_and_provenance_policy_is_bound_to_the_manifest() {
     let parsed = parse_and_validate_manifest(&manifest(), 1_800_000_000, expected()).unwrap();
@@ -323,4 +362,92 @@ fn license_sbom_and_provenance_policy_is_bound_to_the_manifest() {
         validate_bundle_documents(&parsed, &substituted),
         Err("provenance_invalid")
     );
+}
+
+#[test]
+fn filesystem_cache_is_owner_private_content_addressed_and_fail_closed() {
+    let directory = PrivateDirectory::create();
+    let mut cache = FilesystemCache::open(directory.path()).unwrap();
+    cache.insert(HELLO_SHA, b"hello").unwrap();
+    assert_eq!(cache.get(HELLO_SHA, 5), Some(b"hello".to_vec()));
+    assert_eq!(cache.get(HELLO_SHA, 4), None);
+    let entry = directory.path().join(HELLO_SHA);
+    assert_eq!(
+        std::fs::metadata(&entry).unwrap().permissions().mode() & 0o077,
+        0
+    );
+    std::fs::write(&entry, b"jello").unwrap();
+    assert_eq!(cache.get(HELLO_SHA, 5), Some(b"jello".to_vec()));
+
+    let public = PrivateDirectory::create();
+    let mut permissions = std::fs::metadata(public.path()).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(public.path(), permissions).unwrap();
+    assert!(FilesystemCache::open(public.path()).is_err());
+}
+
+#[test]
+fn filesystem_cache_remains_bound_to_the_open_directory_after_path_replacement() {
+    let directory = PrivateDirectory::create();
+    let original = directory.path().to_owned();
+    let moved = original.with_extension("retained");
+    let mut cache = FilesystemCache::open(&original).unwrap();
+    std::fs::rename(&original, &moved).unwrap();
+    std::fs::create_dir(&original).unwrap();
+    std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    cache.insert(HELLO_SHA, b"hello").unwrap();
+    assert!(moved.join(HELLO_SHA).is_file());
+    assert!(!original.join(HELLO_SHA).exists());
+
+    std::fs::remove_dir(&original).unwrap();
+    std::fs::rename(&moved, &original).unwrap();
+}
+
+#[test]
+fn production_source_rejects_mutable_or_oversized_requests_before_network_access() {
+    let mut source = CurlSource;
+    assert_eq!(
+        source.read("https://example.invalid/latest", 0, 1),
+        Err(ArtifactIoError)
+    );
+    assert_eq!(
+        source.read(
+            "https://github.com/martin-beck/asb-tui/releases/download/v0.1.0/asb-tui",
+            0,
+            65_537,
+        ),
+        Err(ArtifactIoError)
+    );
+}
+
+struct MappedSource(BTreeMap<String, Vec<u8>>);
+
+impl ArtifactSource for MappedSource {
+    fn read(&mut self, url: &str, offset: u64, limit: usize) -> Result<Vec<u8>, ArtifactIoError> {
+        let bytes = self.0.get(url).ok_or(ArtifactIoError)?;
+        let start = usize::try_from(offset).map_err(|_| ArtifactIoError)?;
+        Ok(bytes[start..].iter().copied().take(limit).collect())
+    }
+}
+
+#[test]
+fn complete_bundle_is_returned_only_after_every_document_and_digest_passes() {
+    let mut parsed = parse_and_validate_manifest(&manifest(), 1_800_000_000, expected()).unwrap();
+    let mut payloads = policy_documents();
+    payloads.insert("asb-tui".into(), b"executable".to_vec());
+    payloads.insert("source".into(), b"source archive".to_vec());
+    let mut by_url = BTreeMap::new();
+    for artifact in &mut parsed.artifacts {
+        let bytes = payloads.get(&artifact.name).unwrap();
+        artifact.size = bytes.len() as u64;
+        artifact.sha256 = digest(bytes);
+        by_url.insert(artifact.url.clone(), bytes.clone());
+    }
+    let mut source = MappedSource(by_url);
+    let mut cache = Cache::default();
+    let verified = obtain_verified_bundle(&parsed, &mut source, &mut cache).unwrap();
+    assert_eq!(verified.len(), 5);
+    assert_eq!(verified["asb-tui"], b"executable");
+    assert_eq!(cache.inserts, 5);
 }

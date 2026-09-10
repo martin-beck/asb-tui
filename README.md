@@ -67,3 +67,23 @@ without presenting caller-asserted facts as local detection.
 
 The closed offline/test input and public output contracts are
 `protocol/v1/compatibility-probe.schema.json` and `protocol/v1/compatibility-report.schema.json`.
+
+## Bundle verification
+
+The closed `protocol/v1/bundle-manifest.schema.json` contract binds a signed release to its source
+commit and tree, exact ASB/protocol/coordinator/quality compatibility, and five required artifacts:
+the executable, source archive, license report, SPDX SBOM, and provenance statement. Only immutable
+versioned GitHub release URLs are accepted. Expired, future-issued, mutable, oversized, incomplete,
+or mismatched manifests fail before retrieval.
+
+`verify_bundle_manifest` authenticates the complete manifest under the dedicated
+`asb-tui-bundle-v1` SSH namespace before parsing it. `obtain_verified_bundle` uses bounded HTTPS
+range requests with three retries per offset, resumes only at verified byte boundaries, enforces
+per-artifact and aggregate quotas, checks every SHA-256 digest, and applies license, SPDX, and
+reproducible-provenance policy before returning bytes for extraction or execution. The production
+cache requires an existing owner-private directory, uses content-addressed owner-only files, and
+never overwrites an entry. Cache bytes are size- and digest-checked on every reuse.
+
+The committed signed fixture permits offline verification tests. It is synthetic release metadata,
+not a published or installable bundle. The implementation does not extract, install, or execute an
+artifact; those lifecycle operations belong to the separately reviewed installation boundary.

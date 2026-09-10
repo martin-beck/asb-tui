@@ -59,6 +59,8 @@ def validate(schema: dict[str, Any], value: Any, location: str = "$") -> None:
             if key in properties:
                 validate(properties[key], child, f"{location}.{key}")
     if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0) or len(value) > schema.get("maxItems", len(value)):
+            raise ValueError(f"{location}: array length")
         for index, child in enumerate(value):
             validate(schema.get("items", {}), child, f"{location}[{index}]")
         if schema.get("uniqueItems") and len({json.dumps(item, sort_keys=True) for item in value}) != len(value):
@@ -90,6 +92,10 @@ def main() -> None:
             raise ValueError(f"negative compatibility fixture unexpectedly validates: {fixture}")
     for fixture in ["report-compatible.json", "report-unsupported.json"]:
         validate(report_schema, load(f"tests/fixtures/compatibility/{fixture}"))
+    validate(
+        load("protocol/v1/bundle-manifest.schema.json"),
+        load("tests/fixtures/bundle/manifest.json"),
+    )
 
 
 if __name__ == "__main__":
