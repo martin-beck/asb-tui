@@ -125,6 +125,7 @@ fn every_checked_out_workflow_rejects_tracked_and_untracked_dirt() {
             env!("CARGO_MANIFEST_DIR")
         ))
         .unwrap();
+        assert!(workflow.contains("CARGO_TARGET_DIR: ${{ runner.temp }}/asb-tui-target"));
         assert!(workflow.contains("git diff --exit-code"));
         assert!(workflow.contains("test -z \"$(git status --porcelain)\""));
     }

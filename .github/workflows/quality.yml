@@ -28,6 +28,8 @@ jobs:
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.93.0 --profile minimal --component clippy,rustfmt
       - name: Verify formatting, lint, tests, and documentation
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/asb-tui-target
         run: |
           cargo +1.93.0 fmt --all --check
           cargo +1.93.0 clippy --locked --all-targets -- -D warnings
