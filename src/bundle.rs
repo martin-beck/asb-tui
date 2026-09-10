@@ -676,6 +676,51 @@ pub fn obtain_verified_bundle(
     Ok(verified)
 }
 
+/// Verify a complete, already downloaded artifact directory without trusting filenames or bytes.
+pub fn verify_local_bundle_artifacts(
+    manifest: &BundleManifest,
+    root: &Path,
+) -> Result<BTreeMap<String, Vec<u8>>, &'static str> {
+    let metadata = fs::symlink_metadata(root).map_err(|_| "artifact_directory_unavailable")?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("artifact_directory_unavailable");
+    }
+    let mut verified = BTreeMap::new();
+    for artifact in &manifest.artifacts {
+        let path = root.join(&artifact.name);
+        let before = fs::symlink_metadata(&path).map_err(|_| "artifact_unavailable")?;
+        if !before.is_file()
+            || before.file_type().is_symlink()
+            || before.len() != artifact.size
+            || before.len() > MAX_ARTIFACT_BYTES
+        {
+            return Err("artifact_invalid");
+        }
+        let mut file = File::open(&path).map_err(|_| "artifact_unavailable")?;
+        let opened = file.metadata().map_err(|_| "artifact_unavailable")?;
+        if (before.dev(), before.ino()) != (opened.dev(), opened.ino()) {
+            return Err("artifact_invalid");
+        }
+        let mut bytes =
+            Vec::with_capacity(usize::try_from(opened.len()).map_err(|_| "artifact_invalid")?);
+        Read::by_ref(&mut file)
+            .take(artifact.size + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "artifact_unavailable")?;
+        let after = file.metadata().map_err(|_| "artifact_unavailable")?;
+        if (after.dev(), after.ino(), after.len())
+            != (opened.dev(), opened.ino(), bytes.len() as u64)
+            || bytes.len() as u64 != artifact.size
+            || sha256(&bytes)? != artifact.sha256
+        {
+            return Err("artifact_digest_mismatch");
+        }
+        verified.insert(artifact.name.clone(), bytes);
+    }
+    validate_bundle_documents(manifest, &verified)?;
+    Ok(verified)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LicenseReport {

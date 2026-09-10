@@ -7,8 +7,8 @@ use asb_tui::{
     bundle::{ExpectedCompatibility, parse_and_validate_manifest},
     compatibility::Architecture,
     lifecycle::{
-        FilesystemLifecycle, FrontendLauncher, Installation, LifecycleIoError, LifecycleStore,
-        SelfTest, install, launch, remove, status,
+        ExecutableSelfTest, FilesystemLifecycle, FrontendLauncher, Installation, LifecycleIoError,
+        LifecycleStore, ProcessLauncher, SelfTest, install, launch, remove, status,
     },
 };
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
@@ -117,7 +117,7 @@ impl SelfTest for Probe {
 struct Launcher(usize);
 
 impl FrontendLauncher for Launcher {
-    fn launch_frontend(&mut self, _: &Installation) -> Result<(), LifecycleIoError> {
+    fn launch_frontend(&mut self, _: &Installation, _: &[u8]) -> Result<(), LifecycleIoError> {
         self.0 += 1;
         Ok(())
     }
@@ -287,4 +287,53 @@ fn filesystem_rejects_public_or_symlink_roots() {
     std::os::unix::fs::symlink(directory.path(), &link).unwrap();
     assert!(FilesystemLifecycle::open(&link).is_err());
     fs::remove_file(link).unwrap();
+}
+
+#[test]
+fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response() {
+    let mut store = Store::default();
+    let mut probe = Probe {
+        pass: true,
+        calls: 0,
+    };
+    let installed = install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
+    let response = format!(
+        concat!(
+            "{{\"schema_version\":1,\"classification\":\"unverified_extension\",",
+            "\"release\":\"{}\",\"protocol_version\":1,",
+            "\"coordinator_version\":\"{}\",\"coordinator_commit\":\"{}\",",
+            "\"quality_version\":\"{}\",\"quality_commit\":\"{}\",\"ready\":true}}"
+        ),
+        installed.release,
+        installed.coordinator_version,
+        installed.coordinator_commit,
+        installed.quality_version,
+        installed.quality_commit
+    );
+    let candidate = format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", response);
+    let mut self_test = ExecutableSelfTest;
+    assert!(self_test.verify_protocol_and_terminal(&installed, candidate.as_bytes()));
+
+    let hostile = candidate.replace("\"ready\":true", "\"ready\":true,\"host\":\"secret\"");
+    assert!(!self_test.verify_protocol_and_terminal(&installed, hostile.as_bytes()));
+    assert!(!self_test.verify_protocol_and_terminal(&installed, b"not executable"));
+}
+
+#[test]
+fn process_launcher_runs_exact_bytes_and_reports_frontend_failure() {
+    let mut store = Store::default();
+    let mut probe = Probe {
+        pass: true,
+        calls: 0,
+    };
+    let installed = install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
+    let mut launcher = ProcessLauncher;
+    launcher
+        .launch_frontend(&installed, b"#!/bin/sh\nexit 0\n")
+        .unwrap();
+    assert!(
+        launcher
+            .launch_frontend(&installed, b"#!/bin/sh\nexit 9\n")
+            .is_err()
+    );
 }

@@ -86,5 +86,24 @@ cache requires an existing owner-private directory, uses content-addressed owner
 never overwrites an entry. Cache bytes are size- and digest-checked on every reuse.
 
 The committed signed fixture permits offline verification tests. It is synthetic release metadata,
-not a published or installable bundle. The implementation does not extract, install, or execute an
-artifact; those lifecycle operations belong to the separately reviewed installation boundary.
+not a published or installable bundle. Installation accepts only a complete separately staged
+artifact directory whose bytes match an authenticated manifest.
+
+## Delegated lifecycle
+
+`asb-tui lifecycle --format json` accepts one bounded JSON request on standard input for the
+`install`, `upgrade`, `status`, `launch`, or `remove` operation. The closed request and response
+contracts are `protocol/v1/lifecycle-request.schema.json` and
+`protocol/v1/lifecycle-response.schema.json`. Responses contain fixed reason codes and verified
+release identities, never caller paths, environment values, or artifact contents.
+
+Install and upgrade authenticate the manifest first, verify all five locally staged bundle
+artifacts against their signed sizes and SHA-256 digests, enforce license/SBOM/provenance policy,
+write only to the requested owner-private extension root, and execute the exact candidate bytes in
+an anonymous file for the protocol/terminal self-test before atomic activation. Launch rechecks the
+active digest and self-test and executes those exact bytes. Removal deletes only extension state;
+the lifecycle has no benchmark-process handle and cannot signal or remove an ASB run.
+
+This is the standalone half of the command contract. Current ASB releases do not yet route
+`asb tui install`, `asb tui`, `asb tui status`, `asb tui upgrade`, or `asb tui remove`; that narrow
+product-side router must land independently before those top-level commands are claimed available.

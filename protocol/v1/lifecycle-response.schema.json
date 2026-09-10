@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/martin-beck/asb-tui/blob/main/protocol/v1/lifecycle-response.schema.json",
+  "title": "ASB TUI delegated lifecycle response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "classification", "ok", "code"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "classification": { "const": "unverified_extension" },
+    "ok": { "type": "boolean" },
+    "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "installed": { "type": "boolean" },
+    "verified": { "type": "boolean" },
+    "release": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$", "maxLength": 32 },
+    "executable_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

@@ -13,13 +13,19 @@ use std::{
     io::{Read, Write},
     os::{
         fd::AsRawFd,
-        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
 const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_STATE_BYTES: u64 = 64 * 1024;
+const SELF_TEST_OUTPUT_BYTES: u64 = 64 * 1024;
+const SELF_TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -218,8 +224,138 @@ pub trait SelfTest {
     ) -> bool;
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutableSelfTestResponse {
+    schema_version: u64,
+    classification: String,
+    release: String,
+    protocol_version: u64,
+    coordinator_version: String,
+    coordinator_commit: String,
+    quality_version: String,
+    quality_commit: String,
+    ready: bool,
+}
+
+/// Executes the exact candidate bytes from an anonymous file and validates its closed response.
+#[derive(Default)]
+pub struct ExecutableSelfTest;
+
+impl SelfTest for ExecutableSelfTest {
+    fn verify_protocol_and_terminal(&mut self, installation: &Installation, bytes: &[u8]) -> bool {
+        executable_self_test(installation, bytes).is_ok()
+    }
+}
+
+fn executable_self_test(installation: &Installation, bytes: &[u8]) -> Result<(), LifecycleIoError> {
+    let executable = executable_memfd("asb-tui-self-test", bytes)?;
+    let program = format!("/proc/self/fd/{}", executable.as_raw_fd());
+    let mut child = Command::new(program)
+        .args([
+            "lifecycle-self-test",
+            "--release",
+            installation.release.as_str(),
+            "--format",
+            "json",
+        ])
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| LifecycleIoError)?;
+    let mut stdout = child.stdout.take().ok_or(LifecycleIoError)?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = Read::by_ref(&mut stdout)
+            .take(SELF_TEST_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
+        let _ = sender.send(result);
+    });
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|_| LifecycleIoError)? {
+            break status;
+        }
+        if started.elapsed() >= SELF_TEST_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(LifecycleIoError);
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let remaining = SELF_TEST_TIMEOUT
+        .checked_sub(started.elapsed())
+        .ok_or(LifecycleIoError)?;
+    let output = receiver
+        .recv_timeout(remaining)
+        .map_err(|_| LifecycleIoError)?
+        .map_err(|_| LifecycleIoError)?;
+    let response: ExecutableSelfTestResponse =
+        serde_json::from_slice(&output).map_err(|_| LifecycleIoError)?;
+    if status.success()
+        && output.len() <= SELF_TEST_OUTPUT_BYTES as usize
+        && response.schema_version == 1
+        && response.classification == "unverified_extension"
+        && response.release == installation.release
+        && response.protocol_version == 1
+        && response.coordinator_version == installation.coordinator_version
+        && response.coordinator_commit == installation.coordinator_commit
+        && response.quality_version == installation.quality_version
+        && response.quality_commit == installation.quality_commit
+        && response.ready
+    {
+        Ok(())
+    } else {
+        Err(LifecycleIoError)
+    }
+}
+
+fn executable_memfd(name: &str, bytes: &[u8]) -> Result<File, LifecycleIoError> {
+    let descriptor = rustix::fs::memfd_create(name, rustix::fs::MemfdFlags::empty())
+        .map_err(|_| LifecycleIoError)?;
+    let mut executable: File = descriptor.into();
+    executable.write_all(bytes).map_err(|_| LifecycleIoError)?;
+    executable.sync_all().map_err(|_| LifecycleIoError)?;
+    executable
+        .set_permissions(fs::Permissions::from_mode(0o700))
+        .map_err(|_| LifecycleIoError)?;
+    Ok(executable)
+}
+
 pub trait FrontendLauncher {
-    fn launch_frontend(&mut self, installation: &Installation) -> Result<(), LifecycleIoError>;
+    fn launch_frontend(
+        &mut self,
+        installation: &Installation,
+        executable: &[u8],
+    ) -> Result<(), LifecycleIoError>;
+}
+
+/// Runs only the already verified bytes; it does not own or signal benchmark processes.
+#[derive(Default)]
+pub struct ProcessLauncher;
+
+impl FrontendLauncher for ProcessLauncher {
+    fn launch_frontend(
+        &mut self,
+        _installation: &Installation,
+        executable: &[u8],
+    ) -> Result<(), LifecycleIoError> {
+        let executable = executable_memfd("asb-tui-frontend", executable)?;
+        let program = format!("/proc/self/fd/{}", executable.as_raw_fd());
+        let status = Command::new(program)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|_| LifecycleIoError)?;
+        status.success().then_some(()).ok_or(LifecycleIoError)
+    }
 }
 
 impl LifecycleStore for FilesystemLifecycle {
@@ -484,6 +620,6 @@ pub fn launch(
         return Err("launch_self_test_failed");
     }
     launcher
-        .launch_frontend(&installation)
+        .launch_frontend(&installation, &executable)
         .map_err(|_| "frontend_launch_failed")
 }

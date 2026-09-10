@@ -8,6 +8,7 @@ use asb_tui::{
         Artifact, ArtifactIoError, ArtifactKind, ArtifactSource, CurlSource, ExpectedCompatibility,
         FilesystemCache, VerifiedCache, obtain_artifact, obtain_verified_bundle,
         parse_and_validate_manifest, validate_bundle_documents, verify_bundle_manifest,
+        verify_local_bundle_artifacts,
     },
     compatibility::Architecture,
 };
@@ -471,6 +472,42 @@ fn license_sbom_and_provenance_policy_is_bound_to_the_manifest() {
     assert_eq!(
         validate_bundle_documents(&parsed, &substituted),
         Err("provenance_invalid")
+    );
+}
+
+#[test]
+fn local_artifact_directory_requires_complete_inode_stable_digest_valid_files() {
+    let directory = PrivateDirectory::create();
+    let mut artifacts = policy_documents();
+    artifacts.insert("asb-tui".into(), b"hello".to_vec());
+    artifacts.insert("source".into(), b"source archive".to_vec());
+    let mut value: serde_json::Value = serde_json::from_slice(&manifest()).unwrap();
+    for artifact in value["artifacts"].as_array_mut().unwrap() {
+        let name = artifact["name"].as_str().unwrap().to_owned();
+        let bytes = &artifacts[&name];
+        artifact["size"] = (bytes.len() as u64).into();
+        artifact["sha256"] = digest(bytes).into();
+        std::fs::write(directory.path().join(&name), bytes).unwrap();
+    }
+    let parsed = parse_and_validate_manifest(
+        &serde_json::to_vec(&value).unwrap(),
+        1_800_000_000,
+        expected(),
+    )
+    .unwrap();
+    let verified = verify_local_bundle_artifacts(&parsed, directory.path()).unwrap();
+    assert_eq!(verified.len(), 5);
+
+    std::fs::write(directory.path().join("source"), b"source archivf").unwrap();
+    assert_eq!(
+        verify_local_bundle_artifacts(&parsed, directory.path()),
+        Err("artifact_digest_mismatch")
+    );
+    std::fs::remove_file(directory.path().join("source")).unwrap();
+    std::os::unix::fs::symlink("asb-tui", directory.path().join("source")).unwrap();
+    assert_eq!(
+        verify_local_bundle_artifacts(&parsed, directory.path()),
+        Err("artifact_invalid")
     );
 }
 

@@ -96,6 +96,14 @@ def main() -> None:
         load("protocol/v1/bundle-manifest.schema.json"),
         load("tests/fixtures/bundle/manifest.json"),
     )
+    validate(
+        load("protocol/v1/lifecycle-request.schema.json"),
+        load("tests/fixtures/lifecycle/status-request.json"),
+    )
+    validate(
+        load("protocol/v1/lifecycle-response.schema.json"),
+        load("tests/fixtures/lifecycle/status-response.json"),
+    )
 
 
 if __name__ == "__main__":
