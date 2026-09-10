@@ -80,6 +80,14 @@ impl BundleManifest {
     pub fn artifacts(&self) -> &[Artifact] {
         &self.artifacts
     }
+
+    pub(crate) fn source_identity(&self) -> (&str, &str) {
+        (&self.source_commit, &self.source_tree)
+    }
+}
+
+pub(crate) fn digest_bytes(bytes: &[u8]) -> Result<String, &'static str> {
+    sha256(bytes)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

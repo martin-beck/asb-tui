@@ -6,6 +6,7 @@
 
 pub mod bundle;
 pub mod compatibility;
+pub mod lifecycle;
 pub mod system_probe;
 
 use serde::Deserialize;
