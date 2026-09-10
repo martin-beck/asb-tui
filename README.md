@@ -16,8 +16,9 @@ $ asb-tui doctor --format json
 ```
 
 The command exits 3. It does not probe ambient configuration, contact a network service, or claim
-that Ratatui/Crossterm rendering is available. Those dependencies remain unavailable until their
-separately reviewed immutable closure is accepted.
+that Ratatui/Crossterm rendering is available. The exact terminal dependency closure is accepted for
+source use under a fail-closed crate-specific policy, but renderer and platform evidence remain
+separate. See [the terminal dependency decision](docs/TERMINAL_DEPENDENCY_POLICY.md).
 
 See `provenance/dependencies.lock.json` for exact tooling provenance and
 `protocol/v1/capabilities.schema.json` for the proposed external JSON boundary.
