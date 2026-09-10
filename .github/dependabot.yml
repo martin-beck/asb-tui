@@ -1,0 +1,18 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    cooldown:
+      default-days: 7
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+  - package-ecosystem: github-actions
+    directory: /
+    cooldown:
+      default-days: 7
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2

@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "Optional standalone terminal frontend for Agent Systems Benchmark"
+repository = "https://github.com/martin-beck/asb-tui"
+homepage = "https://github.com/martin-beck/asb-tui"
+documentation = "https://docs.rs/asb-tui"
+readme = "README.md"
+keywords = ["benchmark", "terminal", "frontend"]
+categories = ["command-line-utilities"]
+publish = false
 rust-version = "1.93"
 
 [dependencies]
+serde = { version = "=1.0.219", features = ["derive"] }
+serde_json = "=1.0.143"

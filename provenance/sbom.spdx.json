@@ -1,0 +1,30 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "creationInfo": {
+    "created": "2026-09-10T00:00:00Z",
+    "creators": ["Organization: Huawei Technologies Co., Ltd."],
+    "licenseListVersion": "3.27.0"
+  },
+  "dataLicense": "CC0-1.0",
+  "documentNamespace": "https://github.com/martin-beck/asb-tui/sbom/0.1.0",
+  "name": "asb-tui-0.1.0",
+  "packages": [
+    {"SPDXID":"SPDXRef-asb-tui","copyrightText":"Copyright (c) 2026 Huawei Technologies Co., Ltd.","downloadLocation":"NOASSERTION","filesAnalyzed":false,"licenseConcluded":"MIT","licenseDeclared":"MIT","name":"asb-tui","versionInfo":"0.1.0"},
+    {"SPDXID":"SPDXRef-itoa","checksums":[{"algorithm":"SHA256","checksumValue":"8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/itoa/1.0.18/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"MIT OR Apache-2.0","name":"itoa","versionInfo":"1.0.18"},
+    {"SPDXID":"SPDXRef-memchr","checksums":[{"algorithm":"SHA256","checksumValue":"cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/memchr/2.8.3/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"Unlicense OR MIT","name":"memchr","versionInfo":"2.8.3"},
+    {"SPDXID":"SPDXRef-proc-macro2","checksums":[{"algorithm":"SHA256","checksumValue":"985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/proc-macro2/1.0.107/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"MIT OR Apache-2.0","name":"proc-macro2","versionInfo":"1.0.107"},
+    {"SPDXID":"SPDXRef-quote","checksums":[{"algorithm":"SHA256","checksumValue":"1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/quote/1.0.47/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"MIT OR Apache-2.0","name":"quote","versionInfo":"1.0.47"},
+    {"SPDXID":"SPDXRef-ryu","checksums":[{"algorithm":"SHA256","checksumValue":"9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/ryu/1.0.23/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"Apache-2.0 OR BSL-1.0","name":"ryu","versionInfo":"1.0.23"},
+    {"SPDXID":"SPDXRef-serde","checksums":[{"algorithm":"SHA256","checksumValue":"5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/serde/1.0.219/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"MIT OR Apache-2.0","name":"serde","versionInfo":"1.0.219"},
+    {"SPDXID":"SPDXRef-serde-derive","checksums":[{"algorithm":"SHA256","checksumValue":"5b0276cf7f2c73365f7157c8123c21cd9a50fbbd844757af28ca1f5925fc2a00"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/serde_derive/1.0.219/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"MIT OR Apache-2.0","name":"serde_derive","versionInfo":"1.0.219"},
+    {"SPDXID":"SPDXRef-serde-json","checksums":[{"algorithm":"SHA256","checksumValue":"d401abef1d108fbd9cbaebc3e46611f4b1021f714a0597a71f41ee463f5f4a5a"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/serde_json/1.0.143/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"MIT OR Apache-2.0","name":"serde_json","versionInfo":"1.0.143"},
+    {"SPDXID":"SPDXRef-syn","checksums":[{"algorithm":"SHA256","checksumValue":"872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/syn/2.0.119/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"MIT OR Apache-2.0","name":"syn","versionInfo":"2.0.119"},
+    {"SPDXID":"SPDXRef-unicode-ident","checksums":[{"algorithm":"SHA256","checksumValue":"e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"}],"copyrightText":"NOASSERTION","downloadLocation":"https://crates.io/api/v1/crates/unicode-ident/1.0.24/download","filesAnalyzed":false,"licenseConcluded":"NOASSERTION","licenseDeclared":"(MIT OR Apache-2.0) AND Unicode-3.0","name":"unicode-ident","versionInfo":"1.0.24"}
+  ],
+  "relationships": [
+    {"relatedSpdxElement":"SPDXRef-asb-tui","relationshipType":"DESCRIBES","spdxElementId":"SPDXRef-DOCUMENT"},
+    {"relatedSpdxElement":"SPDXRef-serde","relationshipType":"DEPENDS_ON","spdxElementId":"SPDXRef-asb-tui"},
+    {"relatedSpdxElement":"SPDXRef-serde-json","relationshipType":"DEPENDS_ON","spdxElementId":"SPDXRef-asb-tui"}
+  ],
+  "spdxVersion": "SPDX-2.3"
+}

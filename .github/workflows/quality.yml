@@ -1,0 +1,76 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
+name: Repository quality
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Rust, supply-chain, and privacy gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install exact Rust toolchain
+        run: rustup toolchain install 1.93.0 --profile minimal --component clippy,rustfmt
+      - name: Verify formatting, lint, tests, and documentation
+        run: |
+          cargo +1.93.0 fmt --all --check
+          cargo +1.93.0 clippy --locked --all-targets -- -D warnings
+          cargo +1.93.0 test --locked
+          cargo +1.93.0 doc --locked --no-deps
+          python3 -m json.tool provenance/dependencies.lock.json >/dev/null
+          python3 -m json.tool provenance/sbom.spdx.json >/dev/null
+      - name: Run digest-pinned shell quality
+        run: tools/run-shell-quality.sh
+      - name: Enforce DCO for introduced commits
+        if: github.event_name == 'pull_request'
+        env:
+          RANGE_BASE: ${{ github.event.pull_request.base.sha }}
+          RANGE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          while IFS= read -r revision; do
+            expected=$(git show -s --format='Signed-off-by: %an <%ae>' "$revision")
+            git show -s --format=%B "$revision" | grep -Fqx -- "$expected"
+          done < <(git rev-list "$RANGE_BASE..$RANGE_HEAD")
+      - name: Verify SSH signatures for introduced commits
+        if: github.event_name == 'pull_request'
+        env:
+          RANGE_BASE: ${{ github.event.pull_request.base.sha }}
+          RANGE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git config gpg.ssh.allowedSignersFile "$PWD/provenance/allowed_signers"
+          while IFS= read -r revision; do
+            git verify-commit "$revision"
+          done < <(git rev-list "$RANGE_BASE..$RANGE_HEAD")
+      - name: Reject private material
+        run: |
+          ! git grep -InE '(BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_)'
+          ! git grep -InE '(development[-_ ]host(name)?|runner[-_ ]host(name)?)[=:][^[:space:]]+'
+      - name: Scan introduced history with digest-pinned Gitleaks
+        env:
+          RANGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          RANGE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          log_opts="$RANGE_HEAD"
+          if [[ "$RANGE_BASE" =~ ^[0-9a-f]{40}$ ]] &&
+             [[ "$RANGE_BASE" != 0000000000000000000000000000000000000000 ]]; then
+            log_opts="$RANGE_BASE..$RANGE_HEAD"
+          fi
+          tools/run-gitleaks.sh --log-opts="$log_opts"
+      - name: Verify clean tree
+        run: git diff --exit-code

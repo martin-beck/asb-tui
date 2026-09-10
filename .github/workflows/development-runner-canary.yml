@@ -1,0 +1,31 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
+name: Development runner canary
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asb-tui-development-runner-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: Verify checkout-free protected execution
+    if: github.repository == 'martin-beck/asb-tui' && github.ref == 'refs/heads/main'
+    runs-on: [asb-development-v1-x86_64-ubuntu2404]
+    timeout-minutes: 5
+    steps:
+      - name: Verify protected checkout-free execution boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = martin-beck/asb-tui
+          test "$GITHUB_REF" = refs/heads/main
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ARCH" = X64
+          printf '%s\n' 'protected development runner canary passed'

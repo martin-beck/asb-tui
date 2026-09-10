@@ -1,5 +1,6 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 // SPDX-License-Identifier: MIT
+#![forbid(unsafe_code)]
 
 use std::{env, process::ExitCode};
 
