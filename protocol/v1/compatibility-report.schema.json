@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/martin-beck/asb-tui/protocol/v1/compatibility-report.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "classification": { "enum": ["compatible", "unsupported"] },
+    "bundle": { "enum": [null, "asb-tui-v1-linux-x86_64", "asb-tui-v1-linux-aarch64"] },
+    "platform": {
+      "additionalProperties": false,
+      "properties": {
+        "os": { "enum": ["linux", "macos", "windows"] },
+        "distribution": { "enum": ["ubuntu2404", "debian12", "other", "not_applicable"] },
+        "architecture": { "enum": ["x86_64", "aarch64", "other"] }
+      },
+      "required": ["os", "distribution", "architecture"],
+      "type": "object"
+    },
+    "asb_version": { "maxLength": 64, "minLength": 1, "type": "string" },
+    "protocol_version": { "type": "integer", "minimum": 0 },
+    "terminal": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": { "maximum": 65535, "minimum": 0, "type": "integer" },
+        "rows": { "maximum": 65535, "minimum": 0, "type": "integer" },
+        "color": { "enum": ["none", "ansi16", "ansi256", "truecolor"] },
+        "unicode": { "type": "boolean" },
+        "resize_events": { "type": "boolean" },
+        "channel": { "enum": ["tty", "pipe"] },
+        "ssh": { "type": "boolean" },
+        "multiplexer": { "enum": ["none", "tmux", "screen"] }
+      },
+      "required": ["columns", "rows", "color", "unicode", "resize_events", "channel", "ssh", "multiplexer"],
+      "type": "object"
+    },
+    "reasons": {
+      "items": {
+        "enum": [
+          "filesystem_incompatible", "inconsistent_platform", "non_interactive_channel",
+          "release_verifier_unavailable", "resize_events_unavailable", "storage_unavailable",
+          "terminal_features_unavailable", "terminal_too_small", "tooling_identity_mismatch",
+          "unsupported_architecture", "unsupported_distribution", "unsupported_os",
+          "unsupported_protocol"
+        ]
+      },
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": ["schema_version", "classification", "bundle", "platform", "asb_version", "protocol_version", "terminal", "reasons"],
+  "title": "asb-tui compatibility report v1",
+  "type": "object"
+}

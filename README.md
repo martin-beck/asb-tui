@@ -38,3 +38,21 @@ implement the proposed external capability protocol.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before reporting or changing
 the boundary.
+
+## Compatibility detection
+
+`asb-tui compatibility --format json` reads one closed v1 probe document from standard input and
+emits a deterministic report. The probe normalizes the operating system, Linux distribution,
+architecture, installed ASB and protocol versions, exact coordinator/quality commits, terminal
+dimensions and features, TTY/SSH/tmux/screen context, and filesystem/runtime prerequisites. It never
+accepts a hostname, address, credential, arbitrary environment value, or filesystem path.
+
+Only Linux Ubuntu 24.04 or Debian 12 probes on x86_64 or AArch64, external protocol v1, the exact
+dependency identities in `provenance/dependencies.lock.json`, an interactive Unicode/color terminal
+of at least 80 by 24 with resize events, and all storage/verifier requirements select a bundle.
+Unsupported probes return fixed reason codes and exit 3; malformed or unknown input returns a generic
+diagnostic and exits 2. Selection is compatibility evaluation, not native platform qualification or
+permission to install an unverified bundle.
+
+The closed input and output contracts are `protocol/v1/compatibility-probe.schema.json` and
+`protocol/v1/compatibility-report.schema.json`.

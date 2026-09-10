@@ -4,6 +4,8 @@
 
 //! Closed capability parsing and authenticated immutable release discovery.
 
+pub mod compatibility;
+
 use serde::Deserialize;
 use std::{
     collections::BTreeSet,

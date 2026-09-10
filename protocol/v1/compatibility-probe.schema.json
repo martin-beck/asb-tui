@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/martin-beck/asb-tui/protocol/v1/compatibility-probe.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "platform": {
+      "additionalProperties": false,
+      "properties": {
+        "os": { "enum": ["linux", "macos", "windows"] },
+        "distribution": { "enum": ["ubuntu2404", "debian12", "other", "not_applicable"] },
+        "architecture": { "enum": ["x86_64", "aarch64", "other"] }
+      },
+      "required": ["os", "distribution", "architecture"],
+      "type": "object"
+    },
+    "asb": {
+      "additionalProperties": false,
+      "properties": {
+        "version": { "maxLength": 64, "minLength": 1, "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$", "type": "string" },
+        "protocol_version": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["version", "protocol_version"],
+      "type": "object"
+    },
+    "dependencies": {
+      "additionalProperties": false,
+      "properties": {
+        "coordinator_version": { "const": "v0.3.5" },
+        "coordinator_commit": { "const": "510817b93feb80dde13e5a6c61d657954fae2346" },
+        "quality_version": { "const": "v0.23.0" },
+        "quality_commit": { "const": "8a9f056b7fc7926b9465a0f7a09225d4da1c572a" }
+      },
+      "required": ["coordinator_version", "coordinator_commit", "quality_version", "quality_commit"],
+      "type": "object"
+    },
+    "terminal": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": { "maximum": 65535, "minimum": 0, "type": "integer" },
+        "rows": { "maximum": 65535, "minimum": 0, "type": "integer" },
+        "color": { "enum": ["none", "ansi16", "ansi256", "truecolor"] },
+        "unicode": { "type": "boolean" },
+        "resize_events": { "type": "boolean" },
+        "channel": { "enum": ["tty", "pipe"] },
+        "ssh": { "type": "boolean" },
+        "multiplexer": { "enum": ["none", "tmux", "screen"] }
+      },
+      "required": ["columns", "rows", "color", "unicode", "resize_events", "channel", "ssh", "multiplexer"],
+      "type": "object"
+    },
+    "runtime": {
+      "additionalProperties": false,
+      "properties": {
+        "config_writable": { "type": "boolean" },
+        "cache_writable": { "type": "boolean" },
+        "atomic_rename": { "type": "boolean" },
+        "executable_files": { "type": "boolean" },
+        "git_available": { "type": "boolean" },
+        "ssh_keygen_available": { "type": "boolean" }
+      },
+      "required": ["config_writable", "cache_writable", "atomic_rename", "executable_files", "git_available", "ssh_keygen_available"],
+      "type": "object"
+    }
+  },
+  "required": ["schema_version", "platform", "asb", "dependencies", "terminal", "runtime"],
+  "title": "asb-tui compatibility probe v1",
+  "type": "object"
+}
