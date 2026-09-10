@@ -26,6 +26,9 @@ qualification or an installable release. See
 The Unix lifecycle registers restoration handlers before terminal acquisition: `SIGHUP`, `SIGINT`,
 `SIGQUIT`, and `SIGTERM` restore acquired effects before preserving the signal's default exit,
 while `SIGTSTP` restores before suspension and `SIGCONT` re-enters the UI.
+Every backend size query is checked before Ratatui allocates a frame: dimensions are limited to
+4096 cells per axis and 262144 cells in total. A zero-sized transient uses the deterministic 1x1
+compact fallback; an oversized initial terminal or resize fails closed and restores the terminal.
 
 See `provenance/dependencies.lock.json` for exact tooling provenance and
 `protocol/v1/capabilities.schema.json` for the proposed external JSON boundary.
@@ -146,6 +149,13 @@ serialized. Normal, rejected, failed-spawn, and crashed probes are cleaned descr
 cleanup has fixed item, depth, and elapsed-time budgets. Excess crash residue remains quarantined
 under its never-reused private random name and a later exclusive lifecycle open makes another
 bounded cleanup pass.
+
+Candidate self-tests run as a distinct process group while the direct leader remains pidfd-bound
+and unreaped. The single-request lifecycle process enters a serialized Linux subreaper window only
+when it has no preexisting child; unrelated child spawning is forbidden during that window. Every
+success and failure path kills the candidate group, adopts and pidfd-kills session escapes, reaps
+descendants, and drains output nonblockingly under fixed deadlines before restoring the prior
+subreaper setting. `/proc` enumeration or identity uncertainty fails the self-test closed.
 
 This is the standalone half of the command contract. Current ASB releases do not yet route
 `asb tui install`, `asb tui`, `asb tui status`, `asb tui upgrade`, or `asb tui remove`; that narrow

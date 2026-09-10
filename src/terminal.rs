@@ -8,8 +8,19 @@ use std::{
     io::{IsTerminal, stdin, stdout},
 };
 
-/// Maximum terminal dimension accepted from an environment hint.
-pub const MAX_TERMINAL_DIMENSION: u16 = 16_384;
+/// Maximum single terminal dimension accepted for a rendered frame.
+pub const MAX_TERMINAL_DIMENSION: u16 = 4_096;
+/// Maximum cell buffer Ratatui may allocate for one terminal frame.
+pub const MAX_TERMINAL_CELLS: u32 = 262_144;
+
+/// Return whether nonzero dimensions fit the renderer's allocation budget.
+pub fn frame_dimensions_are_safe(columns: u16, lines: u16) -> bool {
+    columns > 0
+        && lines > 0
+        && columns <= MAX_TERMINAL_DIMENSION
+        && lines <= MAX_TERMINAL_DIMENSION
+        && u32::from(columns) * u32::from(lines) <= MAX_TERMINAL_CELLS
+}
 
 /// Responsive layout selected from the current authoritative dimensions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -38,8 +49,12 @@ pub struct ResponsiveLayout {
 impl ResponsiveLayout {
     /// Select a safe layout; missing dimensions use the compact fallback.
     pub fn from_dimensions(columns: Option<u16>, lines: Option<u16>) -> Self {
-        let columns = columns.unwrap_or(1).max(1);
-        let lines = lines.unwrap_or(1).max(1);
+        let (columns, lines) = match (columns, lines) {
+            (Some(columns), Some(lines)) if frame_dimensions_are_safe(columns, lines) => {
+                (columns, lines)
+            }
+            _ => (1, 1),
+        };
         let class = if columns < 40 || lines < 8 {
             LayoutClass::Compact
         } else if columns < 100 || lines < 20 {
@@ -112,6 +127,11 @@ impl TerminalEvidence {
             if dimension == 0 || dimension > MAX_TERMINAL_DIMENSION {
                 return Err(TerminalError::InvalidEvidence);
             }
+        }
+        if let (Some(columns), Some(lines)) = (self.columns, self.lines)
+            && !frame_dimensions_are_safe(columns, lines)
+        {
+            return Err(TerminalError::InvalidEvidence);
         }
         Ok(())
     }
@@ -349,6 +369,9 @@ mod tests {
         value.term = Some("xterm".into());
         value.lines = Some(MAX_TERMINAL_DIMENSION + 1);
         assert_eq!(value.validate(), Err(TerminalError::InvalidEvidence));
+        value.lines = Some(4_096);
+        value.columns = Some(4_096);
+        assert_eq!(value.validate(), Err(TerminalError::InvalidEvidence));
     }
 
     #[test]
@@ -368,6 +391,14 @@ mod tests {
         assert_eq!(
             ResponsiveLayout::from_dimensions(None, None).class,
             LayoutClass::Compact
+        );
+        assert_eq!(
+            ResponsiveLayout::from_dimensions(Some(u16::MAX), Some(u16::MAX)),
+            ResponsiveLayout {
+                columns: 1,
+                lines: 1,
+                class: LayoutClass::Compact,
+            }
         );
     }
 

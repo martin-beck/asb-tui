@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //! Deterministic single-writer frontend state and renderer-neutral frame model.
 
-use crate::terminal::{LayoutClass, ResponsiveLayout};
+use crate::terminal::{LayoutClass, ResponsiveLayout, frame_dimensions_are_safe};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -97,7 +97,7 @@ pub struct AppState {
 impl AppState {
     /// Create a disconnected frontend projection for the current terminal size.
     pub fn new(columns: u16, lines: u16) -> Result<Self, AppError> {
-        if columns == 0 || lines == 0 {
+        if !frame_dimensions_are_safe(columns, lines) {
             return Err(AppError::InvalidDimensions);
         }
         Ok(Self {
@@ -113,7 +113,7 @@ impl AppState {
     pub fn apply(&mut self, action: Action) -> Result<(), AppError> {
         match action {
             Action::Resize { columns, lines } => {
-                if columns == 0 || lines == 0 {
+                if !frame_dimensions_are_safe(columns, lines) {
                     return Err(AppError::InvalidDimensions);
                 }
                 self.layout = ResponsiveLayout::from_dimensions(Some(columns), Some(lines));
@@ -228,6 +228,14 @@ mod tests {
         assert_eq!(
             state.apply(Action::Control(event(3, ControlEventKind::RunStarted))),
             Err(AppError::InvalidEventOrder)
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            state.apply(Action::Resize {
+                columns: 4_096,
+                lines: 4_096,
+            }),
+            Err(AppError::InvalidDimensions)
         );
         assert_eq!(state, before);
         assert_eq!(state.frame_model().last_event, "runner_ready");
@@ -392,6 +400,10 @@ mod tests {
     fn zero_dimensions_are_rejected_at_construction() {
         assert_eq!(AppState::new(0, 24), Err(AppError::InvalidDimensions));
         assert_eq!(AppState::new(80, 0), Err(AppError::InvalidDimensions));
+        assert_eq!(
+            AppState::new(4_096, 4_096),
+            Err(AppError::InvalidDimensions)
+        );
         assert_eq!(
             AppError::InvalidDimensions.to_string(),
             "invalid terminal dimensions"

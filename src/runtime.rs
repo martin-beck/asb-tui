@@ -5,7 +5,7 @@
 use crate::{
     app::{Action, AppError, AppState},
     renderer,
-    terminal::RenderPolicy,
+    terminal::{RenderPolicy, frame_dimensions_are_safe},
 };
 use crossterm::{
     cursor::{Hide, Show},
@@ -16,12 +16,81 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{
+    Terminal,
+    backend::{Backend, ClearType, CrosstermBackend, WindowSize},
+    buffer::Cell,
+    layout::{Position, Size},
+};
 use signal_hook::{
     consts::signal::{SIGCONT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP},
     iterator::Signals,
 };
 use std::{fmt, io, time::Duration};
+
+struct BoundedBackend<B>(B);
+
+fn bounded_size(size: Size) -> io::Result<Size> {
+    if size.width == 0 || size.height == 0 {
+        return Ok(Size::new(1, 1));
+    }
+    frame_dimensions_are_safe(size.width, size.height)
+        .then_some(size)
+        .ok_or_else(|| io::Error::other("terminal frame exceeds allocation policy"))
+}
+
+impl<B: Backend<Error = io::Error>> Backend for BoundedBackend<B> {
+    type Error = io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        self.0.draw(content)
+    }
+
+    fn append_lines(&mut self, count: u16) -> Result<(), Self::Error> {
+        self.0.append_lines(count)
+    }
+
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
+        self.0.get_cursor_position()
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> Result<(), Self::Error> {
+        self.0.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.0.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
+        self.0.clear_region(clear_type)
+    }
+
+    fn size(&self) -> Result<Size, Self::Error> {
+        bounded_size(self.0.size()?)
+    }
+
+    fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
+        let window = self.0.window_size()?;
+        bounded_size(window.columns_rows)?;
+        Ok(window)
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.flush()
+    }
+}
 
 /// Terminal startup, input, or restoration error.
 #[derive(Debug)]
@@ -238,7 +307,7 @@ impl TerminalSession {
 pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(), RuntimeError> {
     let mut signals = Signals::new([SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGCONT])?;
     let mut session = TerminalSession::enter(policy)?;
-    let backend = CrosstermBackend::new(io::stdout());
+    let backend = BoundedBackend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
     while !state.should_quit() {
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
@@ -255,7 +324,7 @@ pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(),
 fn handle_signals(
     signals: &mut Signals,
     session: &mut TerminalSession,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<BoundedBackend<CrosstermBackend<io::Stdout>>>,
     policy: RenderPolicy,
 ) -> Result<(), RuntimeError> {
     for signal in signals.pending() {
@@ -295,7 +364,7 @@ pub fn poll_action(timeout: Duration) -> Result<Option<Action>, RuntimeError> {
 
 fn action_from_event(event: Event) -> Option<Action> {
     match event {
-        Event::Resize(columns, lines) if columns > 0 && lines > 0 => {
+        Event::Resize(columns, lines) if frame_dimensions_are_safe(columns, lines) => {
             Some(Action::Resize { columns, lines })
         }
         Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -565,6 +634,14 @@ mod tests {
             })
         );
         assert_eq!(action_from_event(Event::Resize(0, 24)), None);
+    }
+
+    #[test]
+    fn backend_size_policy_precedes_frame_allocation() {
+        assert_eq!(bounded_size(Size::new(0, 0)).unwrap(), Size::new(1, 1));
+        assert_eq!(bounded_size(Size::new(80, 24)).unwrap(), Size::new(80, 24));
+        assert!(bounded_size(Size::new(u16::MAX, u16::MAX)).is_err());
+        assert!(bounded_size(Size::new(4_096, 4_096)).is_err());
     }
 
     #[test]

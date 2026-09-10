@@ -468,6 +468,93 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
     assert_eq!(runtime_artifacts(), 0, "crashed probe residue remained");
     assert!(!self_test.verify_protocol_and_terminal(&installed, b"not executable"));
     assert_eq!(runtime_artifacts(), 0, "spawn failure residue remained");
+
+    let assert_reaped = |marker: &std::path::Path| {
+        for _ in 0..100 {
+            if let Ok(pid) = fs::read_to_string(marker).map(|value| value.trim().to_owned())
+                && !std::path::Path::new(&format!("/proc/{pid}")).exists()
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("candidate descendant remained live: {}", marker.display());
+    };
+
+    let rejected_marker = directory.path().join("rejected-child.pid");
+    let rejected = format!(
+        "#!/bin/sh\nsleep 30 & echo $! >'{}'\nexit 7\n",
+        rejected_marker.display()
+    );
+    let started = std::time::Instant::now();
+    assert!(!self_test.verify_protocol_and_terminal(&installed, rejected.as_bytes()));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert_reaped(&rejected_marker);
+
+    let escaped_marker = directory.path().join("escaped-child.pid");
+    let escaped = format!(
+        "#!/bin/sh\nsetsid sh -c 'echo $$ >\"{}\"; sleep 30' &\nexit 7\n",
+        escaped_marker.display()
+    );
+    assert!(!self_test.verify_protocol_and_terminal(&installed, escaped.as_bytes()));
+    assert_reaped(&escaped_marker);
+
+    let success_marker = directory.path().join("success-child.pid");
+    let success_with_child = candidate.replace(
+        "printf '%s\\n'",
+        &format!(
+            "sleep 30 & echo $! >'{}'\nprintf '%s\\n'",
+            success_marker.display()
+        ),
+    );
+    assert!(self_test.verify_protocol_and_terminal(&installed, success_with_child.as_bytes()));
+    assert_reaped(&success_marker);
+
+    let timeout_marker = directory.path().join("timeout-child.pid");
+    let timeout = format!(
+        "#!/bin/sh\nsleep 30 & echo $! >'{}'\nsleep 30\n",
+        timeout_marker.display()
+    );
+    assert!(!self_test.verify_protocol_and_terminal(&installed, timeout.as_bytes()));
+    assert_reaped(&timeout_marker);
+
+    for (name, body) in [
+        ("malformed", "printf 'not-json\\n'"),
+        ("oversized", "head -c 70000 /dev/zero"),
+        ("signalled", "kill -TERM $$"),
+    ] {
+        let marker = directory.path().join(format!("{name}-child.pid"));
+        let probe = format!(
+            "#!/bin/sh\nsleep 30 & echo $! >'{}'\n{body}\n",
+            marker.display()
+        );
+        assert!(!self_test.verify_protocol_and_terminal(&installed, probe.as_bytes()));
+        assert_reaped(&marker);
+    }
+
+    for repetition in 0..10 {
+        let marker = directory
+            .path()
+            .join(format!("race-child-{repetition}.pid"));
+        let probe = format!(
+            "#!/bin/sh\nsleep 30 & echo $! >'{}'\nexit 7\n",
+            marker.display()
+        );
+        assert!(!self_test.verify_protocol_and_terminal(&installed, probe.as_bytes()));
+        assert_reaped(&marker);
+    }
+
+    let mut unrelated = Command::new("/usr/bin/sleep").arg("30").spawn().unwrap();
+    assert!(
+        !self_test.verify_protocol_and_terminal(&installed, candidate.as_bytes()),
+        "self-test must refuse a process-global subreaper window with a preexisting child"
+    );
+    assert!(
+        unrelated.try_wait().unwrap().is_none(),
+        "preexisting unrelated child was signalled or reaped"
+    );
+    unrelated.kill().unwrap();
+    unrelated.wait().unwrap();
 }
 
 #[test]

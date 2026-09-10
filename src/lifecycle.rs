@@ -13,16 +13,17 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{IsTerminal, Read, Write},
+    io::{self, IsTerminal, Read, Write},
     os::{
-        fd::AsRawFd,
+        fd::{AsFd, AsRawFd, OwnedFd},
         unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        unix::process::CommandExt,
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -634,6 +635,218 @@ fn private_probe_directories(root: &File) -> Result<ProbeDirectories, LifecycleI
     Ok(probes)
 }
 
+static SELF_TEST_PROCESS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+const PROCESS_CLEANUP_TIME: Duration = Duration::from_millis(750);
+
+struct SubreaperGuard {
+    previous: Option<rustix::process::Pid>,
+}
+
+impl SubreaperGuard {
+    fn enter() -> Result<Self, LifecycleIoError> {
+        let previous = rustix::process::child_subreaper().map_err(|_| LifecycleIoError)?;
+        rustix::process::set_child_subreaper(Some(rustix::process::Pid::INIT))
+            .map_err(|_| LifecycleIoError)?;
+        Ok(Self { previous })
+    }
+}
+
+impl Drop for SubreaperGuard {
+    fn drop(&mut self) {
+        let _ = rustix::process::set_child_subreaper(self.previous);
+    }
+}
+
+fn process_identity(pid: rustix::process::Pid) -> Result<Option<(u32, u64)>, LifecycleIoError> {
+    let path = format!("/proc/{}/stat", pid.as_raw_nonzero());
+    let stat = match fs::read_to_string(path) {
+        Ok(stat) => stat,
+        Err(_) => {
+            let pidfd =
+                match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::NONBLOCK) {
+                    Ok(pidfd) => pidfd,
+                    Err(rustix::io::Errno::SRCH) | Err(rustix::io::Errno::NOENT) => {
+                        return Ok(None);
+                    }
+                    Err(_) => return Err(LifecycleIoError),
+                };
+            let exited = rustix::process::waitid(
+                rustix::process::WaitId::PidFd(pidfd.as_fd()),
+                rustix::process::WaitIdOptions::EXITED
+                    | rustix::process::WaitIdOptions::NOHANG
+                    | rustix::process::WaitIdOptions::NOWAIT,
+            )
+            .map_err(|_| LifecycleIoError)?
+            .is_some();
+            if exited {
+                let _ = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG);
+                return Ok(None);
+            }
+            return Err(LifecycleIoError);
+        }
+    };
+    let fields: Vec<_> = stat
+        .rsplit_once(") ")
+        .ok_or(LifecycleIoError)?
+        .1
+        .split_whitespace()
+        .collect();
+    Ok(Some((
+        fields
+            .get(1)
+            .ok_or(LifecycleIoError)?
+            .parse()
+            .map_err(|_| LifecycleIoError)?,
+        fields
+            .get(19)
+            .ok_or(LifecycleIoError)?
+            .parse()
+            .map_err(|_| LifecycleIoError)?,
+    )))
+}
+
+fn listed_children(tasks_root: &Path) -> Result<BTreeSet<i32>, LifecycleIoError> {
+    let tasks = fs::read_dir(tasks_root).map_err(|_| LifecycleIoError)?;
+    let mut children = BTreeSet::new();
+    for task in tasks {
+        let task = task.map_err(|_| LifecycleIoError)?;
+        let value =
+            fs::read_to_string(task.path().join("children")).map_err(|_| LifecycleIoError)?;
+        for value in value.split_whitespace() {
+            children.insert(value.parse().map_err(|_| LifecycleIoError)?);
+        }
+    }
+    Ok(children)
+}
+
+fn adopted_candidate_children_at(
+    tasks_root: &Path,
+    leader_start: u64,
+) -> Result<BTreeSet<i32>, LifecycleIoError> {
+    let self_pid = std::process::id();
+    let mut candidates = BTreeSet::new();
+    for raw_pid in listed_children(tasks_root)? {
+        let pid = rustix::process::Pid::from_raw(raw_pid).ok_or(LifecycleIoError)?;
+        if let Some((parent, start)) = process_identity(pid)?
+            && parent == self_pid
+            && start >= leader_start
+        {
+            candidates.insert(raw_pid);
+        }
+    }
+    Ok(candidates)
+}
+
+fn adopted_candidate_children(leader_start: u64) -> Result<BTreeSet<i32>, LifecycleIoError> {
+    adopted_candidate_children_at(Path::new("/proc/self/task"), leader_start)
+}
+
+struct CandidateProcess {
+    child: std::process::Child,
+    leader: rustix::process::Pid,
+    leader_fd: OwnedFd,
+    leader_start: u64,
+    cleaned: bool,
+}
+
+impl CandidateProcess {
+    fn spawn(command: &mut Command) -> Result<Self, LifecycleIoError> {
+        command.process_group(0);
+        let mut child = command.spawn().map_err(|_| LifecycleIoError)?;
+        let leader = rustix::process::Pid::from_raw(child.id() as i32).ok_or(LifecycleIoError)?;
+        let leader_fd =
+            match rustix::process::pidfd_open(leader, rustix::process::PidfdFlags::NONBLOCK) {
+                Ok(fd) => fd,
+                Err(_) => {
+                    let _ =
+                        rustix::process::kill_process_group(leader, rustix::process::Signal::KILL);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(LifecycleIoError);
+                }
+            };
+        let leader_start = match process_identity(leader) {
+            Ok(Some((_, start))) => start,
+            Ok(None) | Err(_) => {
+                let _ = rustix::process::kill_process_group(leader, rustix::process::Signal::KILL);
+                let _ =
+                    rustix::process::pidfd_send_signal(&leader_fd, rustix::process::Signal::KILL);
+                let _ = child.wait();
+                return Err(LifecycleIoError);
+            }
+        };
+        Ok(Self {
+            child,
+            leader,
+            leader_fd,
+            leader_start,
+            cleaned: false,
+        })
+    }
+
+    fn exited_without_reaping(&self) -> Result<bool, LifecycleIoError> {
+        rustix::process::waitid(
+            rustix::process::WaitId::PidFd(self.leader_fd.as_fd()),
+            rustix::process::WaitIdOptions::EXITED
+                | rustix::process::WaitIdOptions::NOHANG
+                | rustix::process::WaitIdOptions::NOWAIT,
+        )
+        .map(|status| status.is_some())
+        .map_err(|_| LifecycleIoError)
+    }
+
+    fn terminate_tree(&mut self) -> Result<std::process::ExitStatus, LifecycleIoError> {
+        if self.cleaned {
+            return self.child.try_wait().ok().flatten().ok_or(LifecycleIoError);
+        }
+        let _ = rustix::process::kill_process_group(self.leader, rustix::process::Signal::KILL);
+        let _ = rustix::process::pidfd_send_signal(&self.leader_fd, rustix::process::Signal::KILL);
+        let deadline = Instant::now() + PROCESS_CLEANUP_TIME;
+        let status = loop {
+            if let Some(status) = self.child.try_wait().map_err(|_| LifecycleIoError)? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                return Err(LifecycleIoError);
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        let mut quiet_passes = 0;
+        while Instant::now() < deadline && quiet_passes < 3 {
+            let descendants = adopted_candidate_children(self.leader_start)?;
+            if descendants.is_empty() {
+                quiet_passes += 1;
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            quiet_passes = 0;
+            for raw_pid in descendants {
+                let Some(pid) = rustix::process::Pid::from_raw(raw_pid) else {
+                    continue;
+                };
+                if let Ok(pidfd) =
+                    rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::NONBLOCK)
+                {
+                    let _ =
+                        rustix::process::pidfd_send_signal(pidfd, rustix::process::Signal::KILL);
+                }
+                let _ = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG);
+            }
+        }
+        if !adopted_candidate_children(self.leader_start)?.is_empty() {
+            return Err(LifecycleIoError);
+        }
+        self.cleaned = true;
+        Ok(status)
+    }
+}
+
+impl Drop for CandidateProcess {
+    fn drop(&mut self) {
+        let _ = self.terminate_tree();
+    }
+}
+
 fn executable_self_test(
     installation: &Installation,
     bytes: &[u8],
@@ -685,36 +898,77 @@ fn executable_self_test(
             command.env(normalized, "present");
         }
     }
-    let mut child = command.spawn().map_err(|_| LifecycleIoError)?;
-    let mut stdout = child.stdout.take().ok_or(LifecycleIoError)?;
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = Read::by_ref(&mut stdout)
-            .take(SELF_TEST_OUTPUT_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map(|_| bytes);
-        let _ = sender.send(result);
-    });
+    let _process_lock = SELF_TEST_PROCESS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| LifecycleIoError)?;
+    // The lifecycle command is a single-request process. Refuse to enter the process-global
+    // subreaper window if any unrelated child already exists; no other product child spawn is
+    // permitted until this serialized self-test and its complete descendant cleanup finish.
+    if !listed_children(Path::new("/proc/self/task"))?.is_empty() {
+        return Err(LifecycleIoError);
+    }
+    let _subreaper = SubreaperGuard::enter()?;
+    let mut child = CandidateProcess::spawn(&mut command)?;
+    let mut stdout = child.child.stdout.take().ok_or(LifecycleIoError)?;
+    let flags = rustix::fs::fcntl_getfl(&stdout).map_err(|_| LifecycleIoError)?;
+    rustix::fs::fcntl_setfl(&stdout, flags | rustix::fs::OFlags::NONBLOCK)
+        .map_err(|_| LifecycleIoError)?;
     let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|_| LifecycleIoError)? {
-            break status;
+    let mut output = Vec::new();
+    let mut eof = false;
+    loop {
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => {
+                    eof = true;
+                    break;
+                }
+                Ok(count) => {
+                    output.extend_from_slice(&chunk[..count]);
+                    if output.len() > SELF_TEST_OUTPUT_BYTES as usize {
+                        let _ = child.terminate_tree();
+                        return Err(LifecycleIoError);
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(_) => {
+                    let _ = child.terminate_tree();
+                    return Err(LifecycleIoError);
+                }
+            }
+        }
+        if child.exited_without_reaping()? {
+            break;
         }
         if started.elapsed() >= SELF_TEST_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.terminate_tree();
             return Err(LifecycleIoError);
         }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let remaining = SELF_TEST_TIMEOUT
-        .checked_sub(started.elapsed())
-        .ok_or(LifecycleIoError)?;
-    let output = receiver
-        .recv_timeout(remaining)
-        .map_err(|_| LifecycleIoError)?
-        .map_err(|_| LifecycleIoError)?;
+        thread::sleep(Duration::from_millis(5));
+    }
+    let status = child.terminate_tree()?;
+    let drain_deadline = Instant::now() + PROCESS_CLEANUP_TIME;
+    while !eof && Instant::now() < drain_deadline {
+        let mut chunk = [0_u8; 4096];
+        match stdout.read(&mut chunk) {
+            Ok(0) => eof = true,
+            Ok(count) => {
+                output.extend_from_slice(&chunk[..count]);
+                if output.len() > SELF_TEST_OUTPUT_BYTES as usize {
+                    return Err(LifecycleIoError);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return Err(LifecycleIoError),
+        }
+    }
+    if !eof {
+        return Err(LifecycleIoError);
+    }
     let response: ExecutableSelfTestResponse =
         serde_json::from_slice(&output).map_err(|_| LifecycleIoError)?;
     if status.success()
@@ -1172,5 +1426,13 @@ mod tests {
         );
         drop(root_fd);
         fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn process_enumeration_failure_is_not_treated_as_clean() {
+        assert!(
+            adopted_candidate_children_at(Path::new("/definitely-missing-asb-tui-proc-task"), 0,)
+                .is_err()
+        );
     }
 }

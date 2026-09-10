@@ -305,6 +305,68 @@ fn no_color_tty_remains_interactive_without_color_or_unicode() {
     }
 }
 
+#[test]
+fn huge_initial_pty_size_fails_before_ratatui_allocation() {
+    let binary = env!("CARGO_BIN_EXE_asb-tui");
+    let command = format!(
+        "stty cols 65535 rows 65535 || exit 89; before=$(stty -g) || exit 90; {binary}; status=$?; after=$(stty -g) || exit 91; test \"$before\" = \"$after\" || exit 92; printf '\\nASB_TERMIOS_RESTORED\\n'; test $status -eq 2"
+    );
+    let output = Command::new("/usr/bin/timeout")
+        .args([
+            "--signal=KILL",
+            "10s",
+            "/usr/bin/script",
+            "-q",
+            "-e",
+            "-c",
+            &command,
+            "/dev/null",
+        ])
+        .env("TERM", "xterm-256color")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "huge initial PTY probe failed");
+    assert_termios_restored(&output.stdout);
+    assert!(
+        !output
+            .stdout
+            .windows(b"\x1b[?1049h".len())
+            .any(|window| window == b"\x1b[?1049h"),
+        "oversized initial terminal entered the alternate screen"
+    );
+}
+
+#[test]
+fn runtime_resize_storm_fails_closed_and_restores_termios() {
+    let binary = env!("CARGO_BIN_EXE_asb-tui");
+    let command = format!(
+        "stty cols 80 rows 24; before=$(stty -g) || exit 90; wait_raw() {{ i=0; while test \"$(stty -g)\" = \"$before\"; do i=$((i+1)); test $i -lt 500 || exit 94; sleep 0.01; done; }}; {binary} </dev/tty >/dev/tty 2>/dev/tty & pid=$!; wait_raw; i=0; while test $i -lt 32; do stty cols 65535 rows 65535; kill -WINCH $pid 2>/dev/null || break; i=$((i+1)); done; i=0; while kill -0 $pid 2>/dev/null; do i=$((i+1)); test $i -lt 500 || {{ kill -KILL $pid; exit 93; }}; sleep 0.01; done; wait $pid; status=$?; stty cols 80 rows 24; after=$(stty -g) || exit 91; test \"$before\" = \"$after\" || exit 92; printf '\\nASB_TERMIOS_RESTORED\\n'; test $status -eq 2"
+    );
+    let output = Command::new("/usr/bin/timeout")
+        .args([
+            "--signal=KILL",
+            "15s",
+            "/usr/bin/script",
+            "-q",
+            "-e",
+            "-c",
+            &command,
+            "/dev/null",
+        ])
+        .env("TERM", "xterm-256color")
+        .env("COLORTERM", "truecolor")
+        .env_remove("NO_COLOR")
+        .env_remove("SSH_CONNECTION")
+        .env_remove("SSH_TTY")
+        .env_remove("TMUX")
+        .env_remove("STY")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "resize-storm PTY probe failed");
+    assert_terminal_boundaries(&output.stdout);
+    assert_termios_restored(&output.stdout);
+}
+
 fn wait_for_marker(path: &std::path::Path) -> bool {
     for _ in 0..500 {
         if path.is_file() {
