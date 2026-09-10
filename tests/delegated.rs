@@ -188,4 +188,18 @@ fn install_request_creates_private_root_then_fails_closed_on_bundle_policy() {
     std::os::unix::fs::symlink(&manifest, &link).unwrap();
     let response = execute(install_request(&directory, &link, &artifacts));
     assert_eq!(response.code, "manifest_unavailable");
+
+    let upgrade = execute(LifecycleRequest::Upgrade {
+        schema_version: 1,
+        install_root: directory.path().join("install"),
+        manifest: directory.path().join("missing-upgrade-manifest"),
+        signature: repository.join("tests/fixtures/bundle/manifest.json.sig"),
+        allowed_signers: repository.join("provenance/allowed_signers"),
+        artifacts,
+        now_unix: 1_800_000_000,
+        expected_bundle: "asb-tui-v1-linux-x86_64".into(),
+        architecture: Architecture::X86_64,
+        asb_version: "0.1.0".into(),
+    });
+    assert_eq!(upgrade.code, "manifest_unavailable");
 }
