@@ -1,0 +1,5 @@
+{
+  "operation": "status",
+  "schema_version": 1,
+  "install_root": "/user-selected/private-extension-root"
+}

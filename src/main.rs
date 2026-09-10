@@ -4,6 +4,8 @@
 
 use asb_tui::{
     compatibility::evaluate,
+    delegated::execute_input,
+    lifecycle::local_self_test_response,
     system_probe::{LocalSystem, detect},
 };
 use std::{env, process::ExitCode};
@@ -17,6 +19,29 @@ const DIAGNOSTIC: &str = concat!(
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
+    if arguments == ["lifecycle", "--format", "json"] {
+        let response = execute_input(std::io::stdin().lock());
+        println!(
+            "{}",
+            serde_json::to_string(&response).expect("serialize lifecycle response")
+        );
+        return ExitCode::from(if response.ok { 0 } else { 3 });
+    }
+    if let [command, release_flag, release, format_flag, format] = arguments.as_slice()
+        && command == "lifecycle-self-test"
+        && release_flag == "--release"
+        && format_flag == "--format"
+        && format == "json"
+    {
+        let Some(response) = local_self_test_response(release) else {
+            return usage();
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&response).expect("serialize self-test response")
+        );
+        return ExitCode::from(if response.ready { 0 } else { 3 });
+    }
     if arguments == ["compatibility", "--format", "json"] {
         let report = evaluate(detect(&LocalSystem));
         println!(
@@ -29,6 +54,10 @@ fn main() -> ExitCode {
         println!("{DIAGNOSTIC}");
         return ExitCode::from(3);
     }
+    usage()
+}
+
+fn usage() -> ExitCode {
     eprintln!("usage: asb-tui (doctor|compatibility) --format json");
     ExitCode::from(2)
 }
