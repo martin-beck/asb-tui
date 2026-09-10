@@ -59,7 +59,7 @@ jobs:
           done < <(git rev-list "$RANGE_BASE..$RANGE_HEAD")
       - name: Reject private material
         run: |
-          ! git grep -InE '(BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_)'
+          ! git grep -InE '([B]EGIN (RSA|OPENSSH|EC) PRIVATE KEY|gh[pousr]_[A-Za-z0-9_]{20,}|github[_]pat_)'
           ! git grep -InE '(development[-_ ]host(name)?|runner[-_ ]host(name)?)[=:][^[:space:]]+'
       - name: Scan introduced history with digest-pinned Gitleaks
         env:

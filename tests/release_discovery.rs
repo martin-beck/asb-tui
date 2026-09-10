@@ -244,6 +244,7 @@ esac
             quality,
         ])
         .env("PATH", format!("{}:/usr/bin:/bin", directory.display()))
+        .current_dir(&directory)
         .output()
         .expect("run release verifier command");
     assert!(

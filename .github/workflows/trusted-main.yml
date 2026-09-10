@@ -1,0 +1,85 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
+name: Trusted main verification
+
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asb-tui-trusted-main
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify exact trusted main revision
+    if: >-
+      github.repository == 'martin-beck/asb-tui' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [asb-development-v1-x86_64-ubuntu2404]
+    timeout-minutes: 20
+    env:
+      EXPECTED_EVENT: ${{ github.event_name }}
+      EXPECTED_REF: ${{ github.ref }}
+      EXPECTED_REPOSITORY: ${{ github.repository }}
+      EXPECTED_SHA: ${{ github.sha }}
+    steps:
+      - name: Reject every untrusted trigger before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_REPOSITORY" = martin-beck/asb-tui
+          test "$EXPECTED_REF" = refs/heads/main
+          case "$EXPECTED_EVENT" in push | workflow_dispatch) ;; *) exit 1 ;; esac
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Bind checkout to event SHA and current public main
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_sha=$(git rev-parse HEAD)
+          remote_main=$(git ls-remote --exit-code origin refs/heads/main | awk '{print $1}')
+          tools/verify-trusted-trigger.sh \
+            "$EXPECTED_EVENT" "$EXPECTED_REPOSITORY" "$EXPECTED_REF" \
+            "$EXPECTED_SHA" "$checkout_sha" "$remote_main"
+          test -z "$(git status --porcelain)"
+      - name: Install exact Rust toolchain
+        run: rustup toolchain install 1.93.0 --profile minimal --component clippy,llvm-tools-preview,rustfmt
+      - name: Install pinned Rust quality tools
+        uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-llvm-cov@0.9.0
+      - name: Run complete locked Rust and supply-chain gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.93.0 fmt --all --check
+          cargo +1.93.0 clippy --locked --all-targets -- -D warnings
+          cargo +1.93.0 test --locked
+          RUSTDOCFLAGS='-D warnings' cargo +1.93.0 doc --locked --no-deps
+          cargo +1.93.0 build --locked --release
+          cargo deny --locked check
+          cargo audit --deny warnings
+          cargo llvm-cov --locked --all-targets --fail-under-lines 90
+      - name: Run schema, shell, workflow, provenance, and privacy gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m json.tool protocol/v1/capabilities.schema.json >/dev/null
+          python3 -m json.tool provenance/dependencies.lock.json >/dev/null
+          python3 -m json.tool provenance/sbom.spdx.json >/dev/null
+          tools/run-shell-quality.sh
+          tools/run-workflow-quality.sh
+          tools/run-gitleaks.sh --log-opts="$EXPECTED_SHA"
+          ! git grep -InE '([B]EGIN (RSA|OPENSSH|EC) PRIVATE KEY|gh[pousr]_[A-Za-z0-9_]{20,}|github[_]pat_)'
+          ! git grep -InE '(development[-_ ]host(name)?|runner[-_ ]host(name)?)[=:][^[:space:]]+'
+          git diff --exit-code
