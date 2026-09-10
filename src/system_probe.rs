@@ -11,9 +11,11 @@ use crate::{
     },
     is_safe_version, parse_capability_response,
 };
+#[cfg(all(unix, test))]
+use rustix::fd::AsRawFd;
 #[cfg(unix)]
 use rustix::{
-    fd::{AsRawFd, OwnedFd},
+    fd::OwnedFd,
     fs::{self as unix_fs, AtFlags, Mode, OFlags},
     io::dup,
     process::{Pid, Signal, getuid, kill_process_group},
@@ -545,13 +547,11 @@ impl PrivateDirectory {
             Ok(fd) => fd,
             Err(_) => return false,
         };
-        let path = format!("/proc/self/fd/{}/destination", inherited.as_raw_fd());
-        let observed = bounded_command(&path, &[]);
-        let result = observed.is_some_and(|value| value.success)
+        let observed =
+            bounded_command_with_stdin("/proc/self/fd/0/destination", &[], Stdio::from(inherited));
+        observed.is_some_and(|value| value.success)
             && unix_fs::statat(&self.directory, "destination", AtFlags::SYMLINK_NOFOLLOW)
-                .is_ok_and(|metadata| (metadata.st_dev, metadata.st_ino) == expected);
-        drop(inherited);
-        result
+                .is_ok_and(|metadata| (metadata.st_dev, metadata.st_ino) == expected)
     }
 
     #[cfg(not(unix))]
