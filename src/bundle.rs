@@ -61,14 +61,35 @@ pub struct BundleCompatibility {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BundleManifest {
-    pub schema_version: u64,
-    pub release: String,
-    pub source_commit: String,
-    pub source_tree: String,
-    pub issued_unix: u64,
-    pub expires_unix: u64,
-    pub compatibility: BundleCompatibility,
-    pub artifacts: Vec<Artifact>,
+    schema_version: u64,
+    release: String,
+    source_commit: String,
+    source_tree: String,
+    issued_unix: u64,
+    expires_unix: u64,
+    compatibility: BundleCompatibility,
+    components: Vec<BundleComponent>,
+    artifacts: Vec<Artifact>,
+}
+
+impl BundleManifest {
+    pub fn release(&self) -> &str {
+        &self.release
+    }
+
+    pub fn artifacts(&self) -> &[Artifact] {
+        &self.artifacts
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BundleComponent {
+    pub name: String,
+    pub version: String,
+    pub commit: String,
+    pub tree: String,
+    pub artifact_sha256: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -307,7 +328,74 @@ pub fn parse_and_validate_manifest(
     }
     validate_compatibility(&manifest.compatibility, expected)?;
     validate_artifacts(&manifest.artifacts, &manifest.release)?;
+    validate_components(&manifest)?;
     Ok(manifest)
+}
+
+fn validate_components(manifest: &BundleManifest) -> Result<(), &'static str> {
+    if manifest.components.len() != 3 {
+        return Err("incomplete_component_set");
+    }
+    let executable_digest = manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "asb-tui")
+        .map(|artifact| artifact.sha256.as_str())
+        .ok_or("incomplete_artifact_set")?;
+    let expected = BTreeMap::from([
+        (
+            "asb-tui",
+            (
+                manifest.release.as_str(),
+                manifest.source_commit.as_str(),
+                manifest.source_tree.as_str(),
+                executable_digest,
+            ),
+        ),
+        (
+            "agent-workflow-coordinator",
+            (
+                COORDINATOR_VERSION,
+                COORDINATOR_COMMIT,
+                "41d08ed42333cb47b07c2c401a9167b56c7cfb81",
+                "a51e58ed71dd93979acc55560fc8208db7131d8e6d0a6b7b805fa383fef25b34",
+            ),
+        ),
+        (
+            "agent-workflow-quality",
+            (
+                QUALITY_VERSION,
+                QUALITY_COMMIT,
+                "ca77db478f0737142690d37683d826710cd953b0",
+                "9d480cabe955a5faf88f6f1c8dfd2bfe63045445173c86f93d200a00c97fff89",
+            ),
+        ),
+    ]);
+    let mut observed = BTreeMap::new();
+    for component in &manifest.components {
+        if !is_hex(&component.commit, 40)
+            || !is_hex(&component.tree, 40)
+            || !is_hex(&component.artifact_sha256, 64)
+            || observed
+                .insert(
+                    component.name.as_str(),
+                    (
+                        component.version.as_str(),
+                        component.commit.as_str(),
+                        component.tree.as_str(),
+                        component.artifact_sha256.as_str(),
+                    ),
+                )
+                .is_some()
+        {
+            return Err("invalid_component");
+        }
+    }
+    if observed == expected {
+        Ok(())
+    } else {
+        Err("component_identity_mismatch")
+    }
 }
 
 fn validate_compatibility(

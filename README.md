@@ -71,7 +71,8 @@ The closed offline/test input and public output contracts are
 ## Bundle verification
 
 The closed `protocol/v1/bundle-manifest.schema.json` contract binds a signed release to its source
-commit and tree, exact ASB/protocol/coordinator/quality compatibility, and five required artifacts:
+commit and tree, exact ASB/protocol/coordinator/quality compatibility, immutable commit/tree/build
+digests for all three components, and five required artifacts:
 the executable, source archive, license report, SPDX SBOM, and provenance statement. Only immutable
 versioned GitHub release URLs are accepted. Expired, future-issued, mutable, oversized, incomplete,
 or mismatched manifests fail before retrieval.

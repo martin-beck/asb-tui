@@ -50,6 +50,11 @@ fn manifest() -> Vec<u8> {
             "quality_version":"v0.23.0",
             "quality_commit":"8a9f056b7fc7926b9465a0f7a09225d4da1c572a"
           }},
+          "components":[
+            {{"name":"asb-tui","version":"v0.1.0","commit":"{commit}","tree":"{tree}","artifact_sha256":"{HELLO_SHA}"}},
+            {{"name":"agent-workflow-coordinator","version":"v0.3.5","commit":"510817b93feb80dde13e5a6c61d657954fae2346","tree":"41d08ed42333cb47b07c2c401a9167b56c7cfb81","artifact_sha256":"a51e58ed71dd93979acc55560fc8208db7131d8e6d0a6b7b805fa383fef25b34"}},
+            {{"name":"agent-workflow-quality","version":"v0.23.0","commit":"8a9f056b7fc7926b9465a0f7a09225d4da1c572a","tree":"ca77db478f0737142690d37683d826710cd953b0","artifact_sha256":"9d480cabe955a5faf88f6f1c8dfd2bfe63045445173c86f93d200a00c97fff89"}}
+          ],
           "artifacts":[
             {artifact},
             {source},
@@ -78,7 +83,7 @@ fn entry(name: &str, kind: &str, file: &str) -> String {
 #[test]
 fn accepts_complete_immutable_compatible_manifest() {
     let parsed = parse_and_validate_manifest(&manifest(), 1_800_000_000, expected()).unwrap();
-    assert_eq!(parsed.artifacts.len(), 5);
+    assert_eq!(parsed.artifacts().len(), 5);
 }
 
 #[test]
@@ -167,6 +172,15 @@ fn rejects_expired_incompatible_mutable_incomplete_and_unknown_metadata() {
     assert_eq!(
         parse_and_validate_manifest(over_quota.as_bytes(), 1_800_000_000, expected()),
         Err("artifact_quota_exceeded")
+    );
+
+    let substituted_component = String::from_utf8(manifest()).unwrap().replace(
+        "41d08ed42333cb47b07c2c401a9167b56c7cfb81",
+        "cccccccccccccccccccccccccccccccccccccccc",
+    );
+    assert_eq!(
+        parse_and_validate_manifest(substituted_component.as_bytes(), 1_800_000_000, expected(),),
+        Err("component_identity_mismatch")
     );
 }
 
@@ -433,15 +447,23 @@ impl ArtifactSource for MappedSource {
 
 #[test]
 fn complete_bundle_is_returned_only_after_every_document_and_digest_passes() {
-    let mut parsed = parse_and_validate_manifest(&manifest(), 1_800_000_000, expected()).unwrap();
     let mut payloads = policy_documents();
     payloads.insert("asb-tui".into(), b"executable".to_vec());
     payloads.insert("source".into(), b"source archive".to_vec());
+    let mut document: serde_json::Value = serde_json::from_slice(&manifest()).unwrap();
+    for artifact in document["artifacts"].as_array_mut().unwrap() {
+        let name = artifact["name"].as_str().unwrap();
+        let bytes = payloads.get(name).unwrap();
+        artifact["size"] = serde_json::Value::from(bytes.len() as u64);
+        artifact["sha256"] = serde_json::Value::from(digest(bytes));
+    }
+    let executable_digest = document["artifacts"][0]["sha256"].clone();
+    document["components"][0]["artifact_sha256"] = executable_digest;
+    let manifest_bytes = serde_json::to_vec(&document).unwrap();
+    let parsed = parse_and_validate_manifest(&manifest_bytes, 1_800_000_000, expected()).unwrap();
     let mut by_url = BTreeMap::new();
-    for artifact in &mut parsed.artifacts {
+    for artifact in parsed.artifacts() {
         let bytes = payloads.get(&artifact.name).unwrap();
-        artifact.size = bytes.len() as u64;
-        artifact.sha256 = digest(bytes);
         by_url.insert(artifact.url.clone(), bytes.clone());
     }
     let mut source = MappedSource(by_url);

@@ -4,7 +4,7 @@
   "title": "asb-tui signed bundle manifest v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "release", "source_commit", "source_tree", "issued_unix", "expires_unix", "compatibility", "artifacts"],
+  "required": ["schema_version", "release", "source_commit", "source_tree", "issued_unix", "expires_unix", "compatibility", "components", "artifacts"],
   "properties": {
     "schema_version": {"const": 1},
     "release": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$", "maxLength": 32},
@@ -25,6 +25,24 @@
         "coordinator_commit": {"const": "510817b93feb80dde13e5a6c61d657954fae2346"},
         "quality_version": {"const": "v0.23.0"},
         "quality_commit": {"const": "8a9f056b7fc7926b9465a0f7a09225d4da1c572a"}
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version", "commit", "tree", "artifact_sha256"],
+        "properties": {
+          "name": {"type": "string", "enum": ["asb-tui", "agent-workflow-coordinator", "agent-workflow-quality"]},
+          "version": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$", "maxLength": 32},
+          "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
       }
     },
     "artifacts": {
