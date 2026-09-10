@@ -839,4 +839,26 @@ mod tests {
         );
         assert!(!LocalSystem.resize_events_verified());
     }
+
+    #[test]
+    fn local_probe_exercises_only_the_normalized_privacy_boundary() {
+        let probe = detect(&LocalSystem);
+        assert_eq!(probe.schema_version, 1);
+        assert!(!probe.terminal.resize_events);
+        let report = serde_json::to_value(crate::compatibility::evaluate(probe)).unwrap();
+        let object = report.as_object().unwrap();
+        assert_eq!(
+            object.keys().cloned().collect::<Vec<_>>(),
+            [
+                "asb_version",
+                "bundle",
+                "classification",
+                "platform",
+                "protocol_version",
+                "reasons",
+                "schema_version",
+                "terminal",
+            ]
+        );
+    }
 }
