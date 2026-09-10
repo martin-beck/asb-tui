@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "classification": "compatible",
+  "bundle": "asb-tui-v1-linux-x86_64",
+  "platform": { "os": "linux", "distribution": "ubuntu2404", "architecture": "x86_64" },
+  "asb_version": "0.1.0",
+  "protocol_version": 1,
+  "terminal": { "columns": 120, "rows": 40, "color": "truecolor", "unicode": true, "resize_events": true, "channel": "tty", "ssh": false, "multiplexer": "none" },
+  "reasons": []
+}

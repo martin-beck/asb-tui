@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "platform": { "os": "linux", "distribution": "ubuntu2404", "architecture": "x86_64" },
+  "asb": { "version": "0.1.0", "protocol_version": 1 },
+  "dependencies": {
+    "coordinator_version": "v0.3.5",
+    "coordinator_commit": "510817b93feb80dde13e5a6c61d657954fae2346",
+    "quality_version": "v0.23.0",
+    "quality_commit": "8a9f056b7fc7926b9465a0f7a09225d4da1c572a"
+  },
+  "terminal": {
+    "columns": 120,
+    "rows": 40,
+    "color": "truecolor",
+    "unicode": true,
+    "resize_events": true,
+    "channel": "tty",
+    "ssh": false,
+    "multiplexer": "none"
+  },
+  "runtime": {
+    "config_writable": true,
+    "cache_writable": true,
+    "atomic_rename": true,
+    "executable_files": true,
+    "git_available": true,
+    "ssh_keygen_available": true
+  }
+}

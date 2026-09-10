@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "platform": { "os": "windows", "distribution": "ubuntu2404", "architecture": "other" },
+  "asb": { "version": "0.1.0", "protocol_version": 2 },
+  "dependencies": {
+    "coordinator_version": "v0.0.0",
+    "coordinator_commit": "0000000000000000000000000000000000000000",
+    "quality_version": "v0.0.0",
+    "quality_commit": "0000000000000000000000000000000000000000"
+  },
+  "terminal": {
+    "columns": 79,
+    "rows": 23,
+    "color": "none",
+    "unicode": false,
+    "resize_events": false,
+    "channel": "pipe",
+    "ssh": true,
+    "multiplexer": "screen"
+  },
+  "runtime": {
+    "config_writable": false,
+    "cache_writable": false,
+    "atomic_rename": false,
+    "executable_files": false,
+    "git_available": false,
+    "ssh_keygen_available": false
+  }
+}

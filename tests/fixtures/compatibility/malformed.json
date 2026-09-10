@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "platform": { "os": "linux", "distribution": "ubuntu2404", "architecture": "x86_64", "host": "must-not-echo" },
+  "asb": { "version": "0.1.0", "protocol_version": 1 }
+}

@@ -35,6 +35,7 @@ jobs:
           cargo +1.93.0 clippy --locked --all-targets -- -D warnings
           cargo +1.93.0 test --locked
           cargo +1.93.0 doc --locked --no-deps
+          python3 tools/validate-compatibility-schemas.py
           python3 -m json.tool provenance/dependencies.lock.json >/dev/null
           python3 -m json.tool provenance/sbom.spdx.json >/dev/null
       - name: Run digest-pinned shell quality

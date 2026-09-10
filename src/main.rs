@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 #![forbid(unsafe_code)]
 
+use asb_tui::{
+    compatibility::evaluate,
+    system_probe::{LocalSystem, detect},
+};
 use std::{env, process::ExitCode};
 
 const DIAGNOSTIC: &str = concat!(
@@ -13,11 +17,19 @@ const DIAGNOSTIC: &str = concat!(
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
+    if arguments == ["compatibility", "--format", "json"] {
+        let report = evaluate(detect(&LocalSystem));
+        println!(
+            "{}",
+            serde_json::to_string(&report).expect("serialize report")
+        );
+        return ExitCode::from(if report.bundle.is_some() { 0 } else { 3 });
+    }
     if arguments == ["doctor", "--format", "json"] {
         println!("{DIAGNOSTIC}");
         return ExitCode::from(3);
     }
-    eprintln!("usage: asb-tui doctor --format json");
+    eprintln!("usage: asb-tui (doctor|compatibility) --format json");
     ExitCode::from(2)
 }
 

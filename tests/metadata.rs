@@ -13,7 +13,8 @@ fn sbom_is_closed_over_the_exact_cargo_lock() {
     )
     .unwrap();
     let packages = sbom["packages"].as_array().unwrap();
-    assert_eq!(packages.len(), 11);
+    assert_eq!(packages.len(), 18);
+    assert_eq!(lock.matches("[[package]]").count(), packages.len());
     let by_name: BTreeMap<_, _> = packages
         .iter()
         .map(|package| (package["name"].as_str().unwrap(), package))

@@ -4,6 +4,9 @@
 
 //! Closed capability parsing and authenticated immutable release discovery.
 
+pub mod compatibility;
+pub mod system_probe;
+
 use serde::Deserialize;
 use std::{
     collections::BTreeSet,
@@ -28,10 +31,43 @@ pub struct Capabilities {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityResponse {
-    protocol: String,
-    protocol_version: u64,
-    asb_version: String,
+    pub protocol: String,
+    pub protocol_version: u64,
+    pub asb_version: String,
     pub capabilities: Capabilities,
+}
+
+impl Capabilities {
+    pub(crate) fn supports_tui(&self) -> bool {
+        self.analysis
+            && self.artifacts
+            && self.cancel
+            && self.events
+            && self.history
+            && self.launch
+            && self.planning
+            && self.repeat
+    }
+}
+
+pub(crate) fn is_safe_version(value: &str) -> bool {
+    if value.is_empty() || value.len() > 64 || !value.is_ascii() {
+        return false;
+    }
+    let (core, suffix) = value
+        .split_once('-')
+        .map_or((value, None), |(core, suffix)| (core, Some(suffix)));
+    let mut components = core.split('.');
+    let valid_number =
+        |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    valid_number(components.next().unwrap_or_default())
+        && valid_number(components.next().unwrap_or_default())
+        && valid_number(components.next().unwrap_or_default())
+        && components.next().is_none()
+        && suffix.is_none_or(|suffix| !suffix.is_empty())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
 }
 
 /// Parse and semantically validate the closed ASB capability response v1.
@@ -44,7 +80,7 @@ pub fn parse_capability_response(input: &str) -> Result<CapabilityResponse, Stri
     if response.protocol_version != 1 {
         return Err("unsupported capability protocol version".into());
     }
-    if response.asb_version.is_empty() || response.asb_version.chars().count() > 64 {
+    if !is_safe_version(&response.asb_version) {
         return Err("invalid ASB version".into());
     }
     Ok(response)

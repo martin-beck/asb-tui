@@ -38,3 +38,32 @@ implement the proposed external capability protocol.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before reporting or changing
 the boundary.
+
+## Compatibility detection
+
+`asb-tui compatibility --format json` runs a bounded local probe and emits a deterministic report.
+It normalizes the compiled operating system and architecture, a size-limited `/etc/os-release`,
+time- and output-limited `asb --version` and external capability discovery, exact embedded
+coordinator/quality identities, terminal dimensions and features, TTY/SSH/tmux/screen context, and
+executable filesystem/runtime prerequisites. Environment values are mapped only to closed enums or
+booleans and are never emitted. Hostnames, addresses, credentials, and paths are not report fields.
+Commands run with a fixed minimal environment, two-second deadline, 16 KiB output bound, and an
+owned process group that is reaped on failure.
+
+Only Linux Ubuntu 24.04 or Debian 12 probes on x86_64 or AArch64, ASB 0.1.0 with positively observed
+external protocol v1, the exact
+dependency identities in `provenance/dependencies.lock.json`, an interactive Unicode/color terminal
+of at least 80 by 24 with resize events, and all storage/verifier requirements select a bundle.
+Unsupported probes return fixed reason codes and exit 3; malformed or unknown input returns a generic
+diagnostic and exits 2. Selection is compatibility evaluation, not native platform qualification or
+permission to install an unverified bundle.
+
+The production probe never treats a one-time terminal-size snapshot as resize evidence. On an
+interactive channel it creates an isolated synthetic PTY, changes only that PTY's size, and requires
+both the exact new size and the resulting bounded `WINCH` observation from identity-checked
+helpers. Any setup, event, timeout, output, or descendant-cleanup failure reports
+`resize_events_unavailable`. Deterministic fixture injection exercises the same selection path
+without presenting caller-asserted facts as local detection.
+
+The closed offline/test input and public output contracts are
+`protocol/v1/compatibility-probe.schema.json` and `protocol/v1/compatibility-report.schema.json`.
