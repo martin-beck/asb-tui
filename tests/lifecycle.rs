@@ -110,7 +110,7 @@ struct Probe {
 impl SelfTest for Probe {
     fn verify_protocol_and_terminal(&mut self, installation: &Installation, bytes: &[u8]) -> bool {
         self.calls += 1;
-        installation.classification == "unverified_extension" && bytes == b"hello" && self.pass
+        installation.classification == "verified_extension" && bytes == b"hello" && self.pass
     }
 }
 
@@ -139,7 +139,8 @@ fn install_stages_rereads_self_tests_then_activates() {
     assert_eq!(probe.calls, 1);
     assert_eq!(store.benchmark_processes, 3);
     assert_eq!(status(&store).release, Some(installed.release));
-    assert!(status(&store).verified);
+    assert!(!status(&store).verified);
+    assert_eq!(status(&store).reason, "installation_verification_failed");
 }
 
 #[test]
@@ -200,8 +201,11 @@ fn launch_rechecks_self_test_and_remove_never_touches_benchmark_processes() {
     };
     install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
     let mut launcher = Launcher::default();
-    launch(&store, &mut probe, &mut launcher).unwrap();
-    assert_eq!(launcher.0, 1);
+    assert_eq!(
+        launch(&store, &mut probe, &mut launcher),
+        Err("installation_verification_failed")
+    );
+    assert_eq!(launcher.0, 0);
     assert_eq!(store.benchmark_processes, 2);
 
     let mut rejected = Probe {
@@ -210,9 +214,9 @@ fn launch_rechecks_self_test_and_remove_never_touches_benchmark_processes() {
     };
     assert_eq!(
         launch(&store, &mut rejected, &mut launcher),
-        Err("launch_self_test_failed")
+        Err("installation_verification_failed")
     );
-    assert_eq!(launcher.0, 1);
+    assert_eq!(launcher.0, 0);
     remove(&mut store).unwrap();
     assert_eq!(store.benchmark_processes, 2);
     assert_eq!(status(&store).reason, "extension_not_installed");
@@ -227,7 +231,7 @@ fn filesystem_install_is_private_atomic_idempotent_and_removable() {
         calls: 0,
     };
     let installed = install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
-    assert!(status(&store).verified);
+    assert!(!status(&store).verified);
     assert_eq!(
         fs::metadata(directory.path().join("active.json"))
             .unwrap()
@@ -247,7 +251,7 @@ fn filesystem_install_is_private_atomic_idempotent_and_removable() {
         0o700
     );
     install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
-    assert!(status(&store).verified);
+    assert!(!status(&store).verified);
     remove(&mut store).unwrap();
     assert_eq!(status(&store).reason, "extension_not_installed");
     assert_eq!(
@@ -269,15 +273,19 @@ fn filesystem_upgrade_reconnect_and_existing_version_reuse_are_verified() {
             .into(),
         source_commit: "a".repeat(40),
         source_tree: "b".repeat(40),
+        target: "x86_64-unknown-linux-gnu".into(),
+        bundle: "asb-tui-v1-linux-x86_64".into(),
+        asb_version: "0.1.0".into(),
+        protocol_version: 1,
         coordinator_version: "v0.3.5".into(),
         coordinator_commit: "510817b93feb80dde13e5a6c61d657954fae2346".into(),
         quality_version: "v0.23.0".into(),
         quality_commit: "8a9f056b7fc7926b9465a0f7a09225d4da1c572a".into(),
-        classification: "unverified_extension".into(),
+        classification: "verified_extension".into(),
     };
     store.stage(&first, b"world").unwrap();
     store.activate(&first).unwrap();
-    assert!(status(&store).verified);
+    assert!(!status(&store).verified);
 
     first.release = "v1.1.0".into();
     first.executable_sha256 =
@@ -335,6 +343,28 @@ fn filesystem_rejects_public_or_symlink_roots() {
 }
 
 #[test]
+fn filesystem_rejects_symlink_or_public_lifecycle_lock() {
+    let directory = PrivateDirectory::create();
+    let target = directory.path().join("target-lock");
+    fs::write(&target, b"").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    let lock = directory.path().join(".lifecycle.lock");
+    std::os::unix::fs::symlink(&target, &lock).unwrap();
+    assert!(FilesystemLifecycle::open(directory.path()).is_err());
+    fs::remove_file(&lock).unwrap();
+    fs::write(&lock, b"").unwrap();
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(FilesystemLifecycle::open(directory.path()).is_err());
+}
+
+#[test]
+fn filesystem_rejects_concurrent_lifecycle_owner_without_waiting() {
+    let directory = PrivateDirectory::create();
+    let _store = FilesystemLifecycle::open(directory.path()).unwrap();
+    assert!(FilesystemLifecycle::open(directory.path()).is_err());
+}
+
+#[test]
 fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response() {
     let mut store = Store::default();
     let mut probe = Probe {
@@ -344,12 +374,19 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
     let installed = install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
     let response = format!(
         concat!(
-            "{{\"schema_version\":1,\"classification\":\"unverified_extension\",",
-            "\"release\":\"{}\",\"protocol_version\":1,",
+            "{{\"schema_version\":1,\"classification\":\"verified_extension\",",
+            "\"release\":\"{}\",\"target\":\"{}\",",
+            "\"source_commit\":\"{}\",\"source_tree\":\"{}\",",
+            "\"asb_version\":\"{}\",",
+            "\"protocol_version\":1,",
             "\"coordinator_version\":\"{}\",\"coordinator_commit\":\"{}\",",
             "\"quality_version\":\"{}\",\"quality_commit\":\"{}\",\"ready\":true}}"
         ),
         installed.release,
+        installed.target,
+        installed.source_commit,
+        installed.source_tree,
+        installed.asb_version,
         installed.coordinator_version,
         installed.coordinator_commit,
         installed.quality_version,
@@ -389,7 +426,6 @@ fn local_self_test_response_validates_release_and_reports_observed_readiness() {
     assert!(local_self_test_response("v1.2").is_none());
     assert!(local_self_test_response("v1.two.3").is_none());
     let response = local_self_test_response("v1.2.3").unwrap();
-    assert_eq!(response.release, "v1.2.3");
-    assert_eq!(response.protocol_version, 1);
+    assert_eq!(response.classification, "source_only_unverified");
     assert!(!response.ready);
 }

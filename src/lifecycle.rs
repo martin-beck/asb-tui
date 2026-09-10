@@ -6,6 +6,9 @@ use crate::{
     bundle::{BundleManifest, digest_bytes},
     compatibility::evaluate,
     compatibility::{COORDINATOR_COMMIT, COORDINATOR_VERSION, QUALITY_COMMIT, QUALITY_VERSION},
+    release_channel::{
+        ReleaseClassification, channel_permits_install, compiled_target, promoted_self_identity,
+    },
     system_probe::{LocalSystem, detect},
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +40,10 @@ pub struct Installation {
     pub executable_sha256: String,
     pub source_commit: String,
     pub source_tree: String,
+    pub target: String,
+    pub bundle: String,
+    pub asb_version: String,
+    pub protocol_version: u64,
     pub coordinator_version: String,
     pub coordinator_commit: String,
     pub quality_version: String,
@@ -50,6 +57,12 @@ pub struct LifecycleStatus {
     pub verified: bool,
     pub release: Option<String>,
     pub executable_sha256: Option<String>,
+    pub target: Option<String>,
+    pub bundle: Option<String>,
+    pub asb_version: Option<String>,
+    pub protocol_version: Option<u64>,
+    pub source_commit: Option<String>,
+    pub source_tree: Option<String>,
     pub reason: &'static str,
 }
 
@@ -66,6 +79,14 @@ pub struct FilesystemLifecycle {
 
 impl FilesystemLifecycle {
     pub fn open(root: &Path) -> Result<Self, LifecycleIoError> {
+        Self::open_with_mode(root, true)
+    }
+
+    pub fn open_read_only(root: &Path) -> Result<Self, LifecycleIoError> {
+        Self::open_with_mode(root, false)
+    }
+
+    fn open_with_mode(root: &Path, update: bool) -> Result<Self, LifecycleIoError> {
         let before = fs::symlink_metadata(root).map_err(|_| LifecycleIoError)?;
         let directory = File::open(root).map_err(|_| LifecycleIoError)?;
         let metadata = directory.metadata().map_err(|_| LifecycleIoError)?;
@@ -78,18 +99,49 @@ impl FilesystemLifecycle {
             return Err(LifecycleIoError);
         }
         let retained_path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(retained_path.join(".lifecycle.lock"))
+        let lock_path = retained_path.join(".lifecycle.lock");
+        let lock_before = match fs::symlink_metadata(&lock_path) {
+            Ok(value) if value.is_file() && !value.file_type().is_symlink() => Some(value),
+            Ok(_) => return Err(LifecycleIoError),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && update => None,
+            Err(_) => return Err(LifecycleIoError),
+        };
+        let mut lock_options = OpenOptions::new();
+        lock_options.read(true).write(update).truncate(false);
+        if update {
+            lock_options.create(true).mode(0o600);
+        }
+        let lock = lock_options
+            .open(&lock_path)
             .map_err(|_| LifecycleIoError)?;
-        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
-            .map_err(|_| LifecycleIoError)?;
+        let lock_after_path = fs::symlink_metadata(&lock_path).map_err(|_| LifecycleIoError)?;
+        let lock_after_open = lock.metadata().map_err(|_| LifecycleIoError)?;
+        if !lock_after_path.is_file()
+            || lock_after_path.file_type().is_symlink()
+            || (lock_after_path.dev(), lock_after_path.ino())
+                != (lock_after_open.dev(), lock_after_open.ino())
+            || lock_after_open.uid() != rustix::process::getuid().as_raw()
+            || lock_after_open.mode() & 0o077 != 0
+            || lock_before.is_some_and(|before| {
+                (before.dev(), before.ino()) != (lock_after_open.dev(), lock_after_open.ino())
+            })
+        {
+            return Err(LifecycleIoError);
+        }
+        rustix::fs::flock(
+            &lock,
+            if update {
+                rustix::fs::FlockOperation::NonBlockingLockExclusive
+            } else {
+                rustix::fs::FlockOperation::NonBlockingLockShared
+            },
+        )
+        .map_err(|_| LifecycleIoError)?;
         let versions = retained_path.join("versions");
         if !versions.exists() {
+            if !update {
+                return Err(LifecycleIoError);
+            }
             let mut builder = fs::DirBuilder::new();
             builder
                 .mode(0o700)
@@ -104,10 +156,12 @@ impl FilesystemLifecycle {
         {
             return Err(LifecycleIoError);
         }
-        for entry in fs::read_dir(&versions).map_err(|_| LifecycleIoError)? {
-            let entry = entry.map_err(|_| LifecycleIoError)?;
-            if entry.file_name().to_string_lossy().starts_with(".stage-") {
-                fs::remove_dir_all(entry.path()).map_err(|_| LifecycleIoError)?;
+        if update {
+            for entry in fs::read_dir(&versions).map_err(|_| LifecycleIoError)? {
+                let entry = entry.map_err(|_| LifecycleIoError)?;
+                if entry.file_name().to_string_lossy().starts_with(".stage-") {
+                    fs::remove_dir_all(entry.path()).map_err(|_| LifecycleIoError)?;
+                }
             }
         }
         Ok(Self {
@@ -232,6 +286,10 @@ struct ExecutableSelfTestResponse {
     schema_version: u64,
     classification: String,
     release: String,
+    target: String,
+    source_commit: String,
+    source_tree: String,
+    asb_version: String,
     protocol_version: u64,
     coordinator_version: String,
     coordinator_commit: String,
@@ -245,6 +303,10 @@ pub struct LocalSelfTestResponse<'a> {
     pub schema_version: u64,
     pub classification: &'static str,
     pub release: &'a str,
+    pub target: String,
+    pub source_commit: String,
+    pub source_tree: String,
+    pub asb_version: &'static str,
     pub protocol_version: u64,
     pub coordinator_version: &'static str,
     pub coordinator_commit: &'static str,
@@ -257,16 +319,32 @@ pub fn local_self_test_response(release: &str) -> Option<LocalSelfTestResponse<'
     if !valid_release(release) {
         return None;
     }
+    let identity = promoted_self_identity(release);
+    let classification = if identity.is_some() {
+        ReleaseClassification::VerifiedExtension
+    } else {
+        ReleaseClassification::SourceOnlyUnverified
+    };
     Some(LocalSelfTestResponse {
         schema_version: 1,
-        classification: "unverified_extension",
+        classification: classification.as_str(),
         release,
+        target: compiled_target().into(),
+        source_commit: identity
+            .as_ref()
+            .map_or_else(String::new, |value| value.source_commit.clone()),
+        source_tree: identity
+            .as_ref()
+            .map_or_else(String::new, |value| value.source_tree.clone()),
+        asb_version: "0.1.0",
         protocol_version: 1,
         coordinator_version: COORDINATOR_VERSION,
         coordinator_commit: COORDINATOR_COMMIT,
         quality_version: QUALITY_VERSION,
         quality_commit: QUALITY_COMMIT,
-        ready: evaluate(detect(&LocalSystem)).bundle.is_some(),
+        ready: identity.is_some()
+            && compiled_target() != "unsupported"
+            && evaluate(detect(&LocalSystem)).bundle.is_some(),
     })
 }
 
@@ -345,8 +423,12 @@ fn executable_self_test(installation: &Installation, bytes: &[u8]) -> Result<(),
     if status.success()
         && output.len() <= SELF_TEST_OUTPUT_BYTES as usize
         && response.schema_version == 1
-        && response.classification == "unverified_extension"
+        && response.classification == "verified_extension"
         && response.release == installation.release
+        && response.target == installation.target
+        && response.source_commit == installation.source_commit
+        && response.source_tree == installation.source_tree
+        && response.asb_version == installation.asb_version
         && response.protocol_version == 1
         && response.coordinator_version == installation.coordinator_version
         && response.coordinator_commit == installation.coordinator_commit
@@ -582,17 +664,27 @@ pub fn install(
         return Err("verified_executable_mismatch");
     }
     let (source_commit, source_tree) = manifest.source_identity();
+    let compatibility = manifest.compatibility();
+    let target = match compatibility.architecture {
+        crate::compatibility::Architecture::X86_64 => "x86_64-unknown-linux-gnu",
+        crate::compatibility::Architecture::Aarch64 => "aarch64-unknown-linux-gnu",
+        crate::compatibility::Architecture::Other => return Err("verified_target_invalid"),
+    };
     let installation = Installation {
         schema_version: 1,
         release: manifest.release().to_owned(),
         executable_sha256: declared.sha256.clone(),
         source_commit: source_commit.to_owned(),
         source_tree: source_tree.to_owned(),
+        target: target.into(),
+        bundle: compatibility.bundle.clone(),
+        asb_version: compatibility.asb_version.clone(),
+        protocol_version: compatibility.protocol_version,
         coordinator_version: COORDINATOR_VERSION.into(),
         coordinator_commit: COORDINATOR_COMMIT.into(),
         quality_version: QUALITY_VERSION.into(),
         quality_commit: QUALITY_COMMIT.into(),
-        classification: "unverified_extension".into(),
+        classification: ReleaseClassification::VerifiedExtension.as_str().into(),
     };
     store
         .stage(&installation, executable)
@@ -624,11 +716,24 @@ pub fn status(store: &impl LifecycleStore) -> LifecycleStatus {
             verified: false,
             release: None,
             executable_sha256: None,
+            target: None,
+            bundle: None,
+            asb_version: None,
+            protocol_version: None,
+            source_commit: None,
+            source_tree: None,
             reason: "extension_not_installed",
         };
     };
     let valid = installation.schema_version == 1
-        && installation.classification == "unverified_extension"
+        && installation.classification == "verified_extension"
+        && installation.target == compiled_target()
+        && installation.asb_version == "0.1.0"
+        && installation.protocol_version == 1
+        && ((installation.target == "x86_64-unknown-linux-gnu"
+            && installation.bundle == "asb-tui-v1-linux-x86_64")
+            || (installation.target == "aarch64-unknown-linux-gnu"
+                && installation.bundle == "asb-tui-v1-linux-aarch64"))
         && installation.coordinator_version == COORDINATOR_VERSION
         && installation.coordinator_commit == COORDINATOR_COMMIT
         && installation.quality_version == QUALITY_VERSION
@@ -638,12 +743,19 @@ pub fn status(store: &impl LifecycleStore) -> LifecycleStatus {
             .ok()
             .and_then(|bytes| digest_bytes(&bytes).ok())
             .as_deref()
-            == Some(&installation.executable_sha256);
+            == Some(&installation.executable_sha256)
+        && channel_permits_install();
     LifecycleStatus {
         installed: true,
         verified: valid,
         release: Some(installation.release),
         executable_sha256: Some(installation.executable_sha256),
+        target: Some(installation.target),
+        bundle: Some(installation.bundle),
+        asb_version: Some(installation.asb_version),
+        protocol_version: Some(installation.protocol_version),
+        source_commit: Some(installation.source_commit),
+        source_tree: Some(installation.source_tree),
         reason: if valid {
             "verified_installation"
         } else {
@@ -668,6 +780,9 @@ pub fn launch(
     let executable = store
         .active_executable(&installation)
         .map_err(|_| "installation_verification_failed")?;
+    if !channel_permits_install() {
+        return Err("installation_verification_failed");
+    }
     if digest_bytes(&executable)? != installation.executable_sha256
         || !self_test.verify_protocol_and_terminal(&installation, &executable)
     {

@@ -7,12 +7,28 @@
   "required": ["schema_version", "classification", "ok", "code"],
   "properties": {
     "schema_version": { "const": 1 },
-    "classification": { "const": "unverified_extension" },
+    "classification": { "enum": ["source_only_unverified", "verified_extension"] },
     "ok": { "type": "boolean" },
     "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
     "installed": { "type": "boolean" },
     "verified": { "type": "boolean" },
     "release": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$", "maxLength": 32 },
-    "executable_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
-  }
+    "executable_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "target": { "enum": ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] },
+    "bundle": { "enum": ["asb-tui-v1-linux-x86_64", "asb-tui-v1-linux-aarch64"] },
+    "asb_version": { "const": "0.1.0" },
+    "protocol_version": { "const": 1 },
+    "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "source_tree": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["installed"], "properties": { "installed": { "const": true } } },
+      "then": { "required": ["verified", "release", "executable_sha256", "target", "bundle", "asb_version", "protocol_version", "source_commit", "source_tree"] }
+    },
+    {
+      "if": { "required": ["verified"], "properties": { "verified": { "const": true } } },
+      "then": { "properties": { "classification": { "const": "verified_extension" } } }
+    }
+  ]
 }

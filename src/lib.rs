@@ -8,6 +8,7 @@ pub mod bundle;
 pub mod compatibility;
 pub mod delegated;
 pub mod lifecycle;
+pub mod release_channel;
 pub mod system_probe;
 
 use serde::Deserialize;

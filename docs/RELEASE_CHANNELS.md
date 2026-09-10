@@ -10,9 +10,11 @@ top-level `asb tui` command. Do not install a binary copied from CI, a pull requ
 URL, or a synthetic test fixture.
 
 Developers may clone an immutable revision and run `cargo test --locked`. This verifies the source
-contract; it does not promote the revision or qualify a user workflow. The lifecycle JSON API can
-only operate on a separately staged, completely signed bundle. Until promotion, public install,
-upgrade, launch, status, and remove workflows are unavailable and must fail closed.
+contract; it does not promote the revision or qualify a user workflow. The lifecycle JSON API
+authenticates separately staged bundles, but a source-only build embeds no promoted bundle identity.
+Even an authentic test fixture therefore fails with `release_channel_unverified` before creating an
+installation root. Until promotion, public install, upgrade, launch, status, and remove workflows
+are unavailable and must fail closed.
 
 ## Verified-channel promotion
 
@@ -31,6 +33,14 @@ commit and tree satisfy every item below:
 - the manifest is signed under the `asb-tui-bundle-v1` namespace by an allowed release signer;
 - an independent verifier validates the downloaded artifacts before publication; and
 - installation, upgrade, rollback, removal, interrupted recovery, and active-run isolation pass.
+
+The release build **must** set both `ASB_TUI_SOURCE_COMMIT` and `ASB_TUI_SOURCE_TREE` to the
+lowercase 40-hex commit and tree selected for the signed tag. A candidate compiled without either
+value, or with values that do not match the signed external manifest, is not releasable. Final
+qualification must exercise the real release-compiled executable through the delegated lifecycle:
+the parent digest-checks those exact bytes against the signed manifest, executes them from the
+anonymous file, and requires the candidate self-test to return the injected source identity,
+release, target, and protocol. A unit-test helper or source-only binary is not release evidence.
 
 The release page must keep the source archive, executable, license report, SPDX SBOM, provenance
 statement, and signed manifest together at immutable versioned URLs. CI artifacts are temporary
@@ -51,3 +61,23 @@ local artifacts are cleaned up.
 
 `release/channel-status.json` is the machine-readable audit state. The repository quality gate
 validates it and rejects a verified classification while any required promotion condition is false.
+It deliberately contains no source commit/tree, manifest digest or executable digest: embedding
+those values in the tracked source or final executable would create an impossible cryptographic
+self-reference. Dynamic release identities live in the separately signed bundle manifest. The
+release builder injects the source commit/tree as mandatory immutable build metadata through
+`ASB_TUI_SOURCE_COMMIT` and `ASB_TUI_SOURCE_TREE`, and the parent verifies the final executable
+digest before running the candidate from an anonymous file. This separates the bootstrap trust
+anchor (embedded static signer and promotion policy) from the candidate identity (external signed
+manifest plus injected source identity) without requiring a candidate to assert its own digest.
+
+## Stable delegated JSON contract
+
+The unreleased lifecycle v1 request was corrected before an ASB router consumed it. Install and
+upgrade requests provide staged manifest, signature and artifact paths plus the expected target,
+ASB version, protocol version, release, source commit/tree and executable digest. They cannot
+provide a trust anchor or verification timestamp. The superseded shape containing
+`allowed_signers` or `now_unix`, unknown fields, unsupported schema versions, and malformed
+identities returns one closed JSON response and exits 3 without filesystem mutation. Invalid usage
+exits 2. Successful lifecycle operations exit 0; policy and compatibility failures exit 3.
+Signer rotation requires a reviewed `trust_policy_version` change and a new release binary; it
+cannot be delegated through lifecycle JSON.

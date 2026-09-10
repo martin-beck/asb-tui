@@ -55,7 +55,7 @@ fn doctor_is_explicitly_unverified_and_content_free() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("UTF-8 diagnostic"),
         concat!(
-            "{\"classification\":\"unverified_extension\",",
+            "{\"classification\":\"source_only_unverified\",",
             "\"protocol\":\"asb-cli-capabilities\",",
             "\"protocol_version\":1,",
             "\"reason\":\"installed_asb_compatibility_not_verified\"}\n"
@@ -95,9 +95,15 @@ fn lifecycle_self_test_is_closed_and_fails_when_terminal_or_protocol_is_unavaila
     assert!(output.stderr.is_empty());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["classification"], "source_only_unverified");
     assert_eq!(value["release"], "v1.2.3");
+    assert_eq!(value["target"], "x86_64-unknown-linux-gnu");
+    assert_eq!(value["source_commit"], "");
+    assert_eq!(value["source_tree"], "");
+    assert_eq!(value["asb_version"], "0.1.0");
+    assert_eq!(value["protocol_version"], 1);
     assert_eq!(value["ready"], false);
-    assert_eq!(value.as_object().unwrap().len(), 9);
+    assert_eq!(value.as_object().unwrap().len(), 13);
 }
 
 #[test]

@@ -24,6 +24,7 @@ const MAX_BUNDLE_BYTES: u64 = 512 * 1024 * 1024;
 const CHUNK_BYTES: usize = 64 * 1024;
 const MAX_ATTEMPTS: usize = 3;
 const SIGNER_FINGERPRINT: &str = "SHA256:a36V6yPvRZyxnQ2113tiA/MlHt7mPfJEXAGByBXVkuE";
+const TRUSTED_ALLOWED_SIGNERS: &[u8] = include_bytes!("../provenance/allowed_signers");
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -83,6 +84,17 @@ impl BundleManifest {
 
     pub(crate) fn source_identity(&self) -> (&str, &str) {
         (&self.source_commit, &self.source_tree)
+    }
+
+    pub(crate) fn compatibility(&self) -> &BundleCompatibility {
+        &self.compatibility
+    }
+
+    pub(crate) fn executable_sha256(&self) -> Option<&str> {
+        self.artifacts
+            .iter()
+            .find(|artifact| artifact.name == "asb-tui")
+            .map(|artifact| artifact.sha256.as_str())
     }
 }
 
@@ -393,6 +405,35 @@ pub fn verify_bundle_manifest(
         return Err("invalid_manifest_size");
     }
     verify_manifest_signature(input, signature, allowed_signers)?;
+    parse_and_validate_manifest(input, now_unix, expected)
+}
+
+/// Authenticate a manifest with the release binary's compile-time trust anchor.
+///
+/// Production lifecycle callers cannot replace or extend this signer set.
+pub fn verify_bundle_manifest_with_trusted_signer(
+    input: &[u8],
+    signature: &Path,
+    now_unix: u64,
+    expected: ExpectedCompatibility<'_>,
+) -> Result<BundleManifest, &'static str> {
+    if input.is_empty() || input.len() > MAX_MANIFEST_BYTES {
+        return Err("invalid_manifest_size");
+    }
+    let mut anchor: File = rustix::fs::memfd_create(
+        "asb-tui-trusted-release-signers",
+        rustix::fs::MemfdFlags::empty(),
+    )
+    .map_err(|_| "signature_verifier_unavailable")?
+    .into();
+    anchor
+        .write_all(TRUSTED_ALLOWED_SIGNERS)
+        .map_err(|_| "signature_verifier_unavailable")?;
+    anchor
+        .sync_all()
+        .map_err(|_| "signature_verifier_unavailable")?;
+    let anchor_path = PathBuf::from(format!("/proc/self/fd/{}", anchor.as_raw_fd()));
+    verify_manifest_signature(input, signature, &anchor_path)?;
     parse_and_validate_manifest(input, now_unix, expected)
 }
 

@@ -43,7 +43,7 @@ fn standalone_binary_runs_without_asb_or_ambient_environment() {
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
-            .contains("unverified_extension")
+            .contains("source_only_unverified")
     );
     assert_eq!(profile_artifacts(repository), before);
     drop(directory);

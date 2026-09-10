@@ -14,19 +14,21 @@
     },
     {
       "type": "object", "additionalProperties": false,
-      "required": ["operation", "schema_version", "install_root", "manifest", "signature", "allowed_signers", "artifacts", "now_unix", "expected_bundle", "architecture", "asb_version"],
+      "required": ["operation", "schema_version", "install_root", "manifest", "signature", "artifacts", "target", "asb_version", "protocol_version", "expected_release", "expected_source_commit", "expected_source_tree", "expected_executable_sha256"],
       "properties": {
         "operation": { "enum": ["install", "upgrade"] },
         "schema_version": { "const": 1 },
         "install_root": { "type": "string", "minLength": 1, "maxLength": 4096 },
         "manifest": { "type": "string", "minLength": 1, "maxLength": 4096 },
         "signature": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "allowed_signers": { "type": "string", "minLength": 1, "maxLength": 4096 },
         "artifacts": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "now_unix": { "type": "integer", "minimum": 0 },
-        "expected_bundle": { "enum": ["asb-tui-v1-linux-x86_64", "asb-tui-v1-linux-aarch64"] },
-        "architecture": { "enum": ["x86_64", "aarch64"] },
-        "asb_version": { "const": "0.1.0" }
+        "target": { "enum": ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] },
+        "asb_version": { "const": "0.1.0" },
+        "protocol_version": { "const": 1 },
+        "expected_release": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$", "maxLength": 32 },
+        "expected_source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "expected_source_tree": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "expected_executable_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     }
   ]

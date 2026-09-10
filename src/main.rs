@@ -11,7 +11,7 @@ use asb_tui::{
 use std::{env, process::ExitCode};
 
 const DIAGNOSTIC: &str = concat!(
-    "{\"classification\":\"unverified_extension\",",
+    "{\"classification\":\"source_only_unverified\",",
     "\"protocol\":\"asb-cli-capabilities\",",
     "\"protocol_version\":1,",
     "\"reason\":\"installed_asb_compatibility_not_verified\"}"
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn diagnostic_is_content_free_and_explicitly_unverified() {
-        assert!(DIAGNOSTIC.contains("unverified_extension"));
+        assert!(DIAGNOSTIC.contains("source_only_unverified"));
         assert!(DIAGNOSTIC.contains("installed_asb_compatibility_not_verified"));
         assert!(!DIAGNOSTIC.contains('/'));
         assert!(!DIAGNOSTIC.contains("token"));
