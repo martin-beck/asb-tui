@@ -5,8 +5,9 @@ mod support;
 
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 use support::PrivateDirectory;
@@ -74,4 +75,47 @@ fn unknown_arguments_fail_without_json_or_environment_output() {
         String::from_utf8(output.stderr).expect("UTF-8 usage"),
         "usage: asb-tui (doctor|compatibility) --format json\n"
     );
+}
+
+#[test]
+fn lifecycle_self_test_is_closed_and_fails_when_terminal_or_protocol_is_unavailable() {
+    let output = run_isolated(|command| {
+        command
+            .args([
+                "lifecycle-self-test",
+                "--release",
+                "v1.2.3",
+                "--format",
+                "json",
+            ])
+            .env_clear();
+    });
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["release"], "v1.2.3");
+    assert_eq!(value["ready"], false);
+    assert_eq!(value.as_object().unwrap().len(), 9);
+}
+
+#[test]
+fn lifecycle_command_rejects_invalid_input_with_one_generic_response() {
+    let directory = PrivateDirectory::create();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asb-tui"))
+        .args(["lifecycle", "--format", "json"])
+        .current_dir(directory.path())
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"{}").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["code"], "request_invalid");
+    assert_eq!(value["ok"], false);
 }

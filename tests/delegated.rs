@@ -114,4 +114,22 @@ fn runtime_rejects_relative_paths_and_caller_asserted_compatibility() {
     });
     assert_eq!(invalid.code, "request_compatibility_invalid");
     assert!(!directory.path().join("install").exists());
+
+    let unsupported = execute(LifecycleRequest::Status {
+        schema_version: 2,
+        install_root: directory.path().to_owned(),
+    });
+    assert_eq!(unsupported.code, "request_version_unsupported");
+
+    let launch = execute(LifecycleRequest::Launch {
+        schema_version: 1,
+        install_root: directory.path().to_owned(),
+    });
+    assert_eq!(launch.code, "extension_not_installed");
+
+    let remove = execute(LifecycleRequest::Remove {
+        schema_version: 1,
+        install_root: "relative".into(),
+    });
+    assert_eq!(remove.code, "request_path_invalid");
 }
