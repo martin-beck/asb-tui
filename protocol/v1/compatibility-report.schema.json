@@ -9,15 +9,15 @@
     "platform": {
       "additionalProperties": false,
       "properties": {
-        "os": { "enum": ["linux", "macos", "windows"] },
+        "os": { "enum": ["linux", "macos", "windows", "other"] },
         "distribution": { "enum": ["ubuntu2404", "debian12", "other", "not_applicable"] },
         "architecture": { "enum": ["x86_64", "aarch64", "other"] }
       },
       "required": ["os", "distribution", "architecture"],
       "type": "object"
     },
-    "asb_version": { "maxLength": 64, "minLength": 1, "type": "string" },
-    "protocol_version": { "type": "integer", "minimum": 0 },
+    "asb_version": { "type": ["string", "null"], "maxLength": 64, "minLength": 1, "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$" },
+    "protocol_version": { "type": ["integer", "null"], "minimum": 0 },
     "terminal": {
       "additionalProperties": false,
       "properties": {
@@ -36,8 +36,9 @@
     "reasons": {
       "items": {
         "enum": [
-          "filesystem_incompatible", "inconsistent_platform", "non_interactive_channel",
-          "release_verifier_unavailable", "resize_events_unavailable", "storage_unavailable",
+          "asb_version_unavailable", "filesystem_incompatible", "inconsistent_platform",
+          "non_interactive_channel", "protocol_unavailable", "release_verifier_unavailable",
+          "resize_events_unavailable", "storage_unavailable", "unsupported_asb_version",
           "terminal_features_unavailable", "terminal_too_small", "tooling_identity_mismatch",
           "unsupported_architecture", "unsupported_distribution", "unsupported_os",
           "unsupported_protocol"

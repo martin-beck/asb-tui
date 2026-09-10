@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 //! Deterministic, privacy-safe standalone compatibility evaluation.
 
+use crate::is_safe_version;
 use serde::{Deserialize, Serialize};
 
 pub const COORDINATOR_COMMIT: &str = "510817b93feb80dde13e5a6c61d657954fae2346";
@@ -15,6 +16,7 @@ pub enum OperatingSystem {
     Linux,
     Macos,
     Windows,
+    Other,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -69,8 +71,8 @@ pub struct PlatformProbe {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AsbProbe {
-    pub version: String,
-    pub protocol_version: u64,
+    pub version: Option<String>,
+    pub protocol_version: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -123,8 +125,8 @@ pub struct CompatibilityReport {
     pub classification: &'static str,
     pub bundle: Option<&'static str>,
     pub platform: PlatformProbe,
-    pub asb_version: String,
-    pub protocol_version: u64,
+    pub asb_version: Option<String>,
+    pub protocol_version: Option<u64>,
     pub terminal: TerminalReport,
     pub reasons: Vec<&'static str>,
 }
@@ -151,7 +153,12 @@ pub fn parse_probe(input: &str) -> Result<CompatibilityProbe, String> {
     if probe.schema_version != 1 {
         return Err("unsupported compatibility probe version".into());
     }
-    if !is_safe_version(&probe.asb.version) {
+    if probe
+        .asb
+        .version
+        .as_deref()
+        .is_some_and(|version| !is_safe_version(version))
+    {
         return Err("invalid ASB version".into());
     }
     Ok(probe)
@@ -182,8 +189,15 @@ pub fn evaluate(probe: CompatibilityProbe) -> CompatibilityReport {
     if probe.platform.architecture == Architecture::Other {
         reasons.push("unsupported_architecture");
     }
-    if probe.asb.protocol_version != 1 {
-        reasons.push("unsupported_protocol");
+    match probe.asb.version.as_deref() {
+        None => reasons.push("asb_version_unavailable"),
+        Some("0.1.0") => {}
+        Some(_) => reasons.push("unsupported_asb_version"),
+    }
+    match probe.asb.protocol_version {
+        None => reasons.push("protocol_unavailable"),
+        Some(1) => {}
+        Some(_) => reasons.push("unsupported_protocol"),
     }
     if probe.dependencies.coordinator_version != COORDINATOR_VERSION
         || probe.dependencies.coordinator_commit != COORDINATOR_COMMIT
@@ -248,24 +262,4 @@ pub fn evaluate(probe: CompatibilityProbe) -> CompatibilityReport {
         },
         reasons,
     }
-}
-
-fn is_safe_version(value: &str) -> bool {
-    if value.is_empty() || value.len() > 64 || !value.is_ascii() {
-        return false;
-    }
-    let (core, suffix) = value
-        .split_once('-')
-        .map_or((value, None), |(core, suffix)| (core, Some(suffix)));
-    let mut components = core.split('.');
-    let valid_number =
-        |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
-    valid_number(components.next().unwrap_or_default())
-        && valid_number(components.next().unwrap_or_default())
-        && valid_number(components.next().unwrap_or_default())
-        && components.next().is_none()
-        && suffix.is_none_or(|suffix| !suffix.is_empty())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
 }

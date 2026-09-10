@@ -7,7 +7,7 @@
     "platform": {
       "additionalProperties": false,
       "properties": {
-        "os": { "enum": ["linux", "macos", "windows"] },
+        "os": { "enum": ["linux", "macos", "windows", "other"] },
         "distribution": { "enum": ["ubuntu2404", "debian12", "other", "not_applicable"] },
         "architecture": { "enum": ["x86_64", "aarch64", "other"] }
       },
@@ -17,8 +17,8 @@
     "asb": {
       "additionalProperties": false,
       "properties": {
-        "version": { "maxLength": 64, "minLength": 1, "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$", "type": "string" },
-        "protocol_version": { "type": "integer", "minimum": 0 }
+        "version": { "anyOf": [{ "type": "null" }, { "maxLength": 64, "minLength": 1, "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$", "type": "string" }] },
+        "protocol_version": { "type": ["integer", "null"], "minimum": 0 }
       },
       "required": ["version", "protocol_version"],
       "type": "object"

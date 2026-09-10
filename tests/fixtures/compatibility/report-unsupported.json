@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "classification": "unsupported",
+  "bundle": null,
+  "platform": { "os": "other", "distribution": "not_applicable", "architecture": "other" },
+  "asb_version": null,
+  "protocol_version": null,
+  "terminal": { "columns": 0, "rows": 0, "color": "none", "unicode": false, "resize_events": false, "channel": "pipe", "ssh": true, "multiplexer": "tmux" },
+  "reasons": ["asb_version_unavailable", "protocol_unavailable", "unsupported_architecture", "unsupported_os"]
+}

@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 #![forbid(unsafe_code)]
 
-use asb_tui::compatibility::{evaluate, parse_probe};
-use std::{env, io::Read, process::ExitCode};
+use asb_tui::{
+    compatibility::evaluate,
+    system_probe::{LocalSystem, detect},
+};
+use std::{env, process::ExitCode};
 
 const DIAGNOSTIC: &str = concat!(
     "{\"classification\":\"unverified_extension\",",
@@ -15,23 +18,7 @@ const DIAGNOSTIC: &str = concat!(
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
     if arguments == ["compatibility", "--format", "json"] {
-        let mut input = String::new();
-        if std::io::stdin()
-            .take(65_537)
-            .read_to_string(&mut input)
-            .is_err()
-        {
-            eprintln!("compatibility probe is unreadable");
-            return ExitCode::from(2);
-        }
-        let probe = match parse_probe(&input) {
-            Ok(probe) => probe,
-            Err(error) => {
-                eprintln!("{error}");
-                return ExitCode::from(2);
-            }
-        };
-        let report = evaluate(probe);
+        let report = evaluate(detect(&LocalSystem));
         println!(
             "{}",
             serde_json::to_string(&report).expect("serialize report")

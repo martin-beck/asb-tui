@@ -195,29 +195,17 @@ fn malformed_unknown_oversized_and_hostile_versions_are_generic() {
 }
 
 #[test]
-fn executable_report_uses_stdin_and_stable_exit_classes() {
-    let compatible = run_cli(COMPATIBLE);
-    assert_eq!(compatible.status.code(), Some(0));
-    assert!(compatible.stderr.is_empty());
-    let report: serde_json::Value = serde_json::from_slice(&compatible.stdout).unwrap();
-    assert_eq!(report["classification"], "compatible");
-
-    let mismatch = run_cli(MISMATCH);
-    assert_eq!(mismatch.status.code(), Some(3));
-    assert!(mismatch.stderr.is_empty());
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&mismatch.stdout).unwrap()["classification"],
-        "unsupported"
-    );
-
-    let malformed = run_cli(MALFORMED);
-    assert_eq!(malformed.status.code(), Some(2));
-    assert!(malformed.stdout.is_empty());
-    assert_eq!(malformed.stderr, b"invalid compatibility probe\n");
+fn executable_report_ignores_stdin_and_uses_stable_exit_classes() {
+    let detected = run_cli("untrusted input is ignored");
+    assert_eq!(detected.status.code(), Some(3));
+    assert!(detected.stderr.is_empty());
+    let report: serde_json::Value = serde_json::from_slice(&detected.stdout).unwrap();
+    assert_eq!(report["classification"], "unsupported");
+    assert_eq!(report["bundle"], serde_json::Value::Null);
     assert!(
-        !String::from_utf8(malformed.stderr)
+        !String::from_utf8(detected.stdout)
             .unwrap()
-            .contains("must-not-echo")
+            .contains("untrusted input")
     );
 }
 
@@ -230,6 +218,8 @@ fn schemas_and_fixtures_are_closed_json_documents() {
         "tests/fixtures/compatibility/compatible.json",
         "tests/fixtures/compatibility/mismatch.json",
         "tests/fixtures/compatibility/malformed.json",
+        "tests/fixtures/compatibility/report-compatible.json",
+        "tests/fixtures/compatibility/report-unsupported.json",
     ] {
         let value: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(format!("{}/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap(),
