@@ -4,6 +4,7 @@
 
 //! Closed capability parsing and authenticated immutable release discovery.
 
+pub mod bundle;
 pub mod compatibility;
 pub mod system_probe;
 

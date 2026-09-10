@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "release": "v0.1.0",
+  "source_commit": "a7ca8e07f177fc6a647b3297df624137cfb85e86",
+  "source_tree": "8556090e21336df0766263e6244084865f92d1a3",
+  "issued_unix": 1789000000,
+  "expires_unix": 1800000001,
+  "compatibility": {
+    "bundle": "asb-tui-v1-linux-x86_64",
+    "architecture": "x86_64",
+    "asb_version": "0.1.0",
+    "protocol_version": 1,
+    "coordinator_version": "v0.3.5",
+    "coordinator_commit": "510817b93feb80dde13e5a6c61d657954fae2346",
+    "quality_version": "v0.23.0",
+    "quality_commit": "8a9f056b7fc7926b9465a0f7a09225d4da1c572a"
+  },
+  "components": [
+    {
+      "name": "asb-tui",
+      "version": "v0.1.0",
+      "commit": "a7ca8e07f177fc6a647b3297df624137cfb85e86",
+      "tree": "8556090e21336df0766263e6244084865f92d1a3",
+      "artifact_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    {
+      "name": "agent-workflow-coordinator",
+      "version": "v0.3.5",
+      "commit": "510817b93feb80dde13e5a6c61d657954fae2346",
+      "tree": "41d08ed42333cb47b07c2c401a9167b56c7cfb81",
+      "artifact_sha256": "a51e58ed71dd93979acc55560fc8208db7131d8e6d0a6b7b805fa383fef25b34"
+    },
+    {
+      "name": "agent-workflow-quality",
+      "version": "v0.23.0",
+      "commit": "8a9f056b7fc7926b9465a0f7a09225d4da1c572a",
+      "tree": "ca77db478f0737142690d37683d826710cd953b0",
+      "artifact_sha256": "9d480cabe955a5faf88f6f1c8dfd2bfe63045445173c86f93d200a00c97fff89"
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "asb-tui",
+      "kind": "executable",
+      "url": "https://github.com/martin-beck/asb-tui/releases/download/v0.1.0/asb-tui",
+      "size": 5,
+      "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    {
+      "name": "source",
+      "kind": "source",
+      "url": "https://github.com/martin-beck/asb-tui/releases/download/v0.1.0/source.tar.gz",
+      "size": 5,
+      "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    {
+      "name": "licenses",
+      "kind": "license_report",
+      "url": "https://github.com/martin-beck/asb-tui/releases/download/v0.1.0/licenses.json",
+      "size": 5,
+      "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    {
+      "name": "sbom",
+      "kind": "sbom",
+      "url": "https://github.com/martin-beck/asb-tui/releases/download/v0.1.0/sbom.spdx.json",
+      "size": 5,
+      "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    {
+      "name": "provenance",
+      "kind": "provenance",
+      "url": "https://github.com/martin-beck/asb-tui/releases/download/v0.1.0/provenance.json",
+      "size": 5,
+      "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    }
+  ]
+}
