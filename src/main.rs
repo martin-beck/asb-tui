@@ -19,6 +19,18 @@ const DIAGNOSTIC: &str = concat!(
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
+    if arguments == ["doctor", "--terminal"] {
+        match asb_tui::terminal::doctor(asb_tui::terminal::TerminalEvidence::from_environment()) {
+            Ok(report) => {
+                println!("{report}");
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                eprintln!("terminal doctor failed: {error}");
+                return ExitCode::from(2);
+            }
+        }
+    }
     if arguments == ["lifecycle", "--format", "json"] {
         let response = execute_input(std::io::stdin().lock());
         println!(
@@ -58,7 +70,7 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: asb-tui (doctor|compatibility) --format json");
+    eprintln!("usage: asb-tui (doctor|compatibility) --format json | doctor --terminal");
     ExitCode::from(2)
 }
 

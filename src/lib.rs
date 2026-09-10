@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: MIT
 #![forbid(unsafe_code)]
 
-//! Closed capability parsing and authenticated immutable release discovery.
+//! Closed capability parsing, authenticated release discovery, and standalone frontend state.
 
+pub mod app;
 pub mod bundle;
 pub mod compatibility;
 pub mod delegated;
 pub mod lifecycle;
 pub mod release_channel;
+pub mod runtime;
 pub mod system_probe;
+pub mod terminal;
 
 use serde::Deserialize;
 use std::{
