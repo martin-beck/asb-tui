@@ -73,4 +73,6 @@ jobs:
           fi
           tools/run-gitleaks.sh --log-opts="$log_opts"
       - name: Verify clean tree
-        run: git diff --exit-code
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)"

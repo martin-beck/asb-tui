@@ -116,3 +116,22 @@ fn every_referenced_action_is_commit_sha_pinned() {
         }
     }
 }
+
+#[test]
+fn every_checked_out_workflow_rejects_tracked_and_untracked_dirt() {
+    for path in ["quality.yml", "trusted-main.yml"] {
+        let workflow = fs::read_to_string(format!(
+            "{}/.github/workflows/{path}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        assert!(workflow.contains("git diff --exit-code"));
+        assert!(workflow.contains("test -z \"$(git status --porcelain)\""));
+    }
+    let trusted = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/.github/workflows/trusted-main.yml"
+    ))
+    .unwrap();
+    assert!(trusted.contains("tools/run-coverage-clean.sh"));
+}
