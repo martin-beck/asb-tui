@@ -78,6 +78,8 @@ jobs:
           set -euo pipefail
           python3 -m json.tool protocol/v1/capabilities.schema.json >/dev/null
           python3 tools/validate-compatibility-schemas.py
+          python3 tools/validate-release-channel.py
+          python3 tools/validate-publication.py
           python3 -m json.tool provenance/dependencies.lock.json >/dev/null
           python3 -m json.tool provenance/sbom.spdx.json >/dev/null
           tools/run-shell-quality.sh

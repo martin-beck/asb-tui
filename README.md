@@ -1,3 +1,5 @@
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<!-- SPDX-License-Identifier: MIT -->
 # asb-tui
 
 `asb-tui` is an optional, independently installed terminal frontend for Agent Systems Benchmark.
@@ -38,6 +40,12 @@ implement the proposed external capability protocol.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before reporting or changing
 the boundary.
+
+The current public channel is source-only and explicitly unverified. It has no installable GitHub
+release, package publication, or supported top-level ASB command. See
+[release channels](docs/RELEASE_CHANNELS.md) for the audit result, public lifecycle expectations,
+promotion and rollback gates, and [the capability matrix](docs/CAPABILITY_MATRIX.md) for exact
+evidence limits.
 
 ## Compatibility detection
 

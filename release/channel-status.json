@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "classification": "optional_unverified",
+  "installable": false,
+  "release_artifacts_published": false,
+  "promotion_requirements": {
+    "asb_external_protocol": false,
+    "asb_lifecycle_router": false,
+    "interactive_ui": false,
+    "x86_64_release_qualification": false,
+    "aarch64_release_qualification": false,
+    "signed_release_bundle": false,
+    "hosted_exact_release_ci": false,
+    "trusted_exact_release_ci": false
+  }
+}
