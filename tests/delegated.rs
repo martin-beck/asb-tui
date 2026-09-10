@@ -9,7 +9,10 @@ use asb_tui::{
     lifecycle::FilesystemLifecycle,
 };
 use std::{
+    fs,
     io::Write,
+    os::unix::fs::PermissionsExt,
+    path::Path,
     process::{Command, Stdio},
 };
 use support::PrivateDirectory;
@@ -132,4 +135,55 @@ fn runtime_rejects_relative_paths_and_caller_asserted_compatibility() {
         install_root: "relative".into(),
     });
     assert_eq!(remove.code, "request_path_invalid");
+}
+
+fn install_request(
+    directory: &PrivateDirectory,
+    manifest: &Path,
+    artifacts: &Path,
+) -> LifecycleRequest {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    LifecycleRequest::Install {
+        schema_version: 1,
+        install_root: directory.path().join("install"),
+        manifest: manifest.to_owned(),
+        signature: repository.join("tests/fixtures/bundle/manifest.json.sig"),
+        allowed_signers: repository.join("provenance/allowed_signers"),
+        artifacts: artifacts.to_owned(),
+        now_unix: 1_800_000_000,
+        expected_bundle: "asb-tui-v1-linux-x86_64".into(),
+        architecture: Architecture::X86_64,
+        asb_version: "0.1.0".into(),
+    }
+}
+
+#[test]
+fn install_request_creates_private_root_then_fails_closed_on_bundle_policy() {
+    let directory = PrivateDirectory::create();
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = repository.join("tests/fixtures/bundle/manifest.json");
+    let artifacts = directory.path().join("artifacts");
+    fs::create_dir(&artifacts).unwrap();
+    for name in ["asb-tui", "source", "licenses", "sbom", "provenance"] {
+        fs::write(artifacts.join(name), b"hello").unwrap();
+    }
+    let response = execute(install_request(&directory, &manifest, &artifacts));
+    assert_eq!(response.code, "license_report_invalid");
+    assert_eq!(
+        fs::metadata(directory.path().join("install"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+
+    let missing = directory.path().join("missing-manifest");
+    let response = execute(install_request(&directory, &missing, &artifacts));
+    assert_eq!(response.code, "manifest_unavailable");
+
+    let link = directory.path().join("manifest-link");
+    std::os::unix::fs::symlink(&manifest, &link).unwrap();
+    let response = execute(install_request(&directory, &link, &artifacts));
+    assert_eq!(response.code, "manifest_unavailable");
 }
