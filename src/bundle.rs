@@ -117,6 +117,15 @@ pub trait ArtifactSource {
 pub trait VerifiedCache {
     fn get(&self, sha256: &str, maximum_bytes: u64) -> Option<Vec<u8>>;
     fn insert(&mut self, sha256: &str, bytes: &[u8]) -> Result<(), ArtifactIoError>;
+    fn get_partial(&self, _sha256: &str, _maximum_bytes: u64) -> Option<Vec<u8>> {
+        None
+    }
+    fn store_partial(&mut self, _sha256: &str, _bytes: &[u8]) -> Result<(), ArtifactIoError> {
+        Ok(())
+    }
+    fn clear_partial(&mut self, _sha256: &str) -> Result<(), ArtifactIoError> {
+        Ok(())
+    }
 }
 
 /// HTTPS range source restricted to already-validated immutable GitHub release URLs.
@@ -211,6 +220,10 @@ impl FilesystemCache {
         is_hex(digest, 64).then(|| self.retained_path.join(digest))
     }
 
+    fn partial(&self, digest: &str) -> Option<PathBuf> {
+        is_hex(digest, 64).then(|| self.retained_path.join(format!(".partial-{digest}")))
+    }
+
     fn validate_directory(&self) -> Result<(), ArtifactIoError> {
         let metadata = self.directory.metadata().map_err(|_| ArtifactIoError)?;
         if metadata.is_dir()
@@ -289,6 +302,74 @@ impl VerifiedCache for FilesystemCache {
             return Err(ArtifactIoError);
         }
         Ok(())
+    }
+
+    fn get_partial(&self, digest: &str, maximum_bytes: u64) -> Option<Vec<u8>> {
+        self.validate_directory().ok()?;
+        let path = self.partial(digest)?;
+        let before = fs::symlink_metadata(&path).ok()?;
+        if !before.is_file()
+            || before.file_type().is_symlink()
+            || before.uid() != rustix::process::getuid().as_raw()
+            || before.mode() & 0o077 != 0
+            || before.len() >= maximum_bytes
+        {
+            return None;
+        }
+        let mut file = File::open(path).ok()?;
+        let opened = file.metadata().ok()?;
+        if (opened.dev(), opened.ino()) != (before.dev(), before.ino()) {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(usize::try_from(opened.len()).ok()?);
+        Read::by_ref(&mut file)
+            .take(maximum_bytes)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let after = file.metadata().ok()?;
+        ((after.dev(), after.ino(), after.len())
+            == (opened.dev(), opened.ino(), bytes.len() as u64)
+            && !bytes.is_empty()
+            && (bytes.len() as u64) < maximum_bytes)
+            .then_some(bytes)
+    }
+
+    fn store_partial(&mut self, digest: &str, bytes: &[u8]) -> Result<(), ArtifactIoError> {
+        self.validate_directory()?;
+        if bytes.is_empty() || bytes.len() as u64 > MAX_ARTIFACT_BYTES {
+            return Err(ArtifactIoError);
+        }
+        let target = self.partial(digest).ok_or(ArtifactIoError)?;
+        let staging = self
+            .retained_path
+            .join(format!(".partial-{digest}.{}.tmp", std::process::id()));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&staging)
+            .map_err(|_| ArtifactIoError)?;
+        let result = (|| {
+            file.write_all(bytes).map_err(|_| ArtifactIoError)?;
+            file.sync_all().map_err(|_| ArtifactIoError)?;
+            fs::rename(&staging, &target).map_err(|_| ArtifactIoError)?;
+            self.directory.sync_all().map_err(|_| ArtifactIoError)
+        })();
+        drop(file);
+        if result.is_err() {
+            let _ = fs::remove_file(&staging);
+        }
+        result
+    }
+
+    fn clear_partial(&mut self, digest: &str) -> Result<(), ArtifactIoError> {
+        self.validate_directory()?;
+        let path = self.partial(digest).ok_or(ArtifactIoError)?;
+        match fs::remove_file(path) {
+            Ok(()) => self.directory.sync_all().map_err(|_| ArtifactIoError),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(ArtifactIoError),
+        }
     }
 }
 
@@ -531,7 +612,12 @@ pub fn obtain_artifact(
         return Ok(bytes);
     }
     let capacity = usize::try_from(artifact.size).map_err(|_| "artifact_too_large")?;
-    let mut bytes = Vec::with_capacity(capacity);
+    let mut bytes = cache
+        .get_partial(&artifact.sha256, artifact.size)
+        .unwrap_or_else(|| Vec::with_capacity(capacity));
+    if bytes.len() >= capacity {
+        bytes.clear();
+    }
     let mut failures = 0;
     while bytes.len() < capacity {
         let remaining = capacity - bytes.len();
@@ -539,6 +625,9 @@ pub fn obtain_artifact(
         match source.read(&artifact.url, bytes.len() as u64, request) {
             Ok(chunk) if chunk.len() == request => {
                 bytes.extend_from_slice(&chunk);
+                cache
+                    .store_partial(&artifact.sha256, &bytes)
+                    .map_err(|_| "partial_cache_failed")?;
                 failures = 0;
             }
             Ok(_) | Err(_) => {
@@ -550,11 +639,17 @@ pub fn obtain_artifact(
         }
     }
     if sha256(&bytes)? != artifact.sha256 {
+        cache
+            .clear_partial(&artifact.sha256)
+            .map_err(|_| "partial_cache_failed")?;
         return Err("artifact_digest_mismatch");
     }
     cache
         .insert(&artifact.sha256, &bytes)
         .map_err(|_| "verified_cache_failed")?;
+    cache
+        .clear_partial(&artifact.sha256)
+        .map_err(|_| "partial_cache_failed")?;
     Ok(bytes)
 }
 

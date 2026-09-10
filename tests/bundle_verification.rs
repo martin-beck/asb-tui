@@ -217,6 +217,7 @@ fn rejects_expired_incompatible_mutable_incomplete_and_unknown_metadata() {
 #[derive(Default)]
 struct Cache {
     values: BTreeMap<String, Vec<u8>>,
+    partial: BTreeMap<String, Vec<u8>>,
     inserts: usize,
 }
 
@@ -231,6 +232,23 @@ impl VerifiedCache for Cache {
     fn insert(&mut self, digest: &str, bytes: &[u8]) -> Result<(), ArtifactIoError> {
         self.inserts += 1;
         self.values.insert(digest.to_owned(), bytes.to_vec());
+        Ok(())
+    }
+
+    fn get_partial(&self, digest: &str, maximum_bytes: u64) -> Option<Vec<u8>> {
+        self.partial
+            .get(digest)
+            .filter(|value| (value.len() as u64) < maximum_bytes)
+            .cloned()
+    }
+
+    fn store_partial(&mut self, digest: &str, bytes: &[u8]) -> Result<(), ArtifactIoError> {
+        self.partial.insert(digest.into(), bytes.to_vec());
+        Ok(())
+    }
+
+    fn clear_partial(&mut self, digest: &str) -> Result<(), ArtifactIoError> {
+        self.partial.remove(digest);
         Ok(())
     }
 }
@@ -281,6 +299,7 @@ fn bounded_retry_resumes_then_populates_and_reuses_verified_cache() {
     );
     assert_eq!(source.calls, [0, 0, 0, 65_536]);
     assert_eq!(cache.inserts, 1);
+    assert!(cache.partial.is_empty());
 
     let calls = source.calls.len();
     assert_eq!(
@@ -293,6 +312,53 @@ fn bounded_retry_resumes_then_populates_and_reuses_verified_cache() {
         "verified cache must avoid transfer"
     );
     assert_eq!(cache.inserts, 1);
+}
+
+#[test]
+fn interrupted_transfer_persists_unverified_prefix_and_resumes_next_invocation() {
+    let expected_bytes = vec![b'z'; 65_537];
+    let expected_digest = digest(&expected_bytes);
+    let mut item = artifact(&expected_digest);
+    item.size = expected_bytes.len() as u64;
+    let mut cache = Cache::default();
+    let interrupted = Source {
+        bytes: expected_bytes.clone(),
+        calls: Vec::new(),
+        failures: 0,
+    };
+    struct OneChunkThenFail(Source);
+    impl ArtifactSource for OneChunkThenFail {
+        fn read(
+            &mut self,
+            url: &str,
+            offset: u64,
+            limit: usize,
+        ) -> Result<Vec<u8>, ArtifactIoError> {
+            if offset > 0 {
+                Err(ArtifactIoError)
+            } else {
+                self.0.read(url, offset, limit)
+            }
+        }
+    }
+    let mut first = OneChunkThenFail(interrupted);
+    assert_eq!(
+        obtain_artifact(&item, &mut first, &mut cache),
+        Err("artifact_transfer_failed")
+    );
+    assert_eq!(cache.partial[&expected_digest].len(), 65_536);
+
+    let mut resumed = Source {
+        bytes: expected_bytes.clone(),
+        calls: Vec::new(),
+        failures: 0,
+    };
+    assert_eq!(
+        obtain_artifact(&item, &mut resumed, &mut cache),
+        Ok(expected_bytes)
+    );
+    assert_eq!(resumed.calls, [65_536]);
+    assert!(cache.partial.is_empty());
 }
 
 #[test]
@@ -422,6 +488,12 @@ fn filesystem_cache_is_owner_private_content_addressed_and_fail_closed() {
     );
     std::fs::write(&entry, b"jello").unwrap();
     assert_eq!(cache.get(HELLO_SHA, 5), Some(b"jello".to_vec()));
+    cache.store_partial(HELLO_SHA, b"hel").unwrap();
+    drop(cache);
+    let mut reopened = FilesystemCache::open(directory.path()).unwrap();
+    assert_eq!(reopened.get_partial(HELLO_SHA, 5), Some(b"hel".to_vec()));
+    reopened.clear_partial(HELLO_SHA).unwrap();
+    assert_eq!(reopened.get_partial(HELLO_SHA, 5), None);
 
     let public = PrivateDirectory::create();
     let mut permissions = std::fs::metadata(public.path()).unwrap().permissions();
