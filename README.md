@@ -150,12 +150,13 @@ cleanup has fixed item, depth, and elapsed-time budgets. Excess crash residue re
 under its never-reused private random name and a later exclusive lifecycle open makes another
 bounded cleanup pass.
 
-Candidate self-tests run as a distinct process group while the direct leader remains pidfd-bound
-and unreaped. The single-request lifecycle process enters a serialized Linux subreaper window only
-when it has no preexisting child; unrelated child spawning is forbidden during that window. Every
-success and failure path kills the candidate group, adopts and pidfd-kills session escapes, reaps
-descendants, and drains output nonblockingly under fixed deadlines before restoring the prior
-subreaper setting. `/proc` enumeration or identity uncertainty fails the self-test closed.
+Candidate self-tests run behind the current trusted executable as a distinct process-group leader.
+Before it executes the sealed candidate, that supervisor installs an inherited seccomp filter that
+denies `setsid` and `setpgid`; forks remain possible but cannot escape the owned group. Every
+success and failure path kills that exact group through its retained leader pidfd and drains output
+nonblockingly under fixed deadlines. Cleanup never enumerates `/proc` children or changes the
+process-global subreaper setting, so concurrently spawned unrelated children cannot be classified,
+signalled, or reaped as candidate descendants.
 
 This is the standalone half of the command contract. Current ASB releases do not yet route
 `asb tui install`, `asb tui`, `asb tui status`, `asb tui upgrade`, or `asb tui remove`; that narrow

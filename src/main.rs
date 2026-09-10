@@ -6,7 +6,7 @@ use asb_tui::{
     app::AppState,
     compatibility::evaluate,
     delegated::execute_input,
-    lifecycle::local_self_test_response,
+    lifecycle::{local_self_test_response, run_self_test_supervisor},
     runtime::run_interactive,
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
@@ -22,6 +22,13 @@ const DIAGNOSTIC: &str = concat!(
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
+    if let Some(arguments) = arguments.strip_prefix(&["__self-test-supervisor".to_owned()]) {
+        return ExitCode::from(if run_self_test_supervisor(arguments).is_ok() {
+            0
+        } else {
+            126
+        });
+    }
     if arguments.is_empty() || arguments == ["run"] {
         return launch();
     }

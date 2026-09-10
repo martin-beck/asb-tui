@@ -11,9 +11,11 @@ use crate::{
     },
     system_probe::{LocalSystem, detect},
 };
+use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
+    convert::TryInto,
     fs::{self, File, OpenOptions},
     io::{self, IsTerminal, Read, Write},
     os::{
@@ -377,20 +379,35 @@ fn valid_release(value: &str) -> bool {
 /// Executes the exact candidate bytes from an anonymous file and validates its closed response.
 pub struct ExecutableSelfTest {
     lifecycle_root: File,
+    supervisor: File,
 }
 
 impl ExecutableSelfTest {
     pub fn for_store(store: &FilesystemLifecycle) -> Result<Self, LifecycleIoError> {
+        Self::for_store_with_supervisor(store, Path::new("/proc/self/exe"))
+    }
+
+    /// Bind an explicit trusted supervisor executable for an embedding application or test.
+    pub fn for_store_with_supervisor(
+        store: &FilesystemLifecycle,
+        supervisor: &Path,
+    ) -> Result<Self, LifecycleIoError> {
         store.validate_root()?;
+        let supervisor = File::open(supervisor).map_err(|_| LifecycleIoError)?;
+        let metadata = supervisor.metadata().map_err(|_| LifecycleIoError)?;
+        if !metadata.is_file() || metadata.mode() & 0o111 == 0 {
+            return Err(LifecycleIoError);
+        }
         Ok(Self {
             lifecycle_root: store.directory.try_clone().map_err(|_| LifecycleIoError)?,
+            supervisor,
         })
     }
 }
 
 impl SelfTest for ExecutableSelfTest {
     fn verify_protocol_and_terminal(&mut self, installation: &Installation, bytes: &[u8]) -> bool {
-        executable_self_test(installation, bytes, &self.lifecycle_root).is_ok()
+        executable_self_test(installation, bytes, &self.lifecycle_root, &self.supervisor).is_ok()
     }
 }
 
@@ -638,114 +655,10 @@ fn private_probe_directories(root: &File) -> Result<ProbeDirectories, LifecycleI
 static SELF_TEST_PROCESS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const PROCESS_CLEANUP_TIME: Duration = Duration::from_millis(750);
 
-struct SubreaperGuard {
-    previous: Option<rustix::process::Pid>,
-}
-
-impl SubreaperGuard {
-    fn enter() -> Result<Self, LifecycleIoError> {
-        let previous = rustix::process::child_subreaper().map_err(|_| LifecycleIoError)?;
-        rustix::process::set_child_subreaper(Some(rustix::process::Pid::INIT))
-            .map_err(|_| LifecycleIoError)?;
-        Ok(Self { previous })
-    }
-}
-
-impl Drop for SubreaperGuard {
-    fn drop(&mut self) {
-        let _ = rustix::process::set_child_subreaper(self.previous);
-    }
-}
-
-fn process_identity(pid: rustix::process::Pid) -> Result<Option<(u32, u64)>, LifecycleIoError> {
-    let path = format!("/proc/{}/stat", pid.as_raw_nonzero());
-    let stat = match fs::read_to_string(path) {
-        Ok(stat) => stat,
-        Err(_) => {
-            let pidfd =
-                match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::NONBLOCK) {
-                    Ok(pidfd) => pidfd,
-                    Err(rustix::io::Errno::SRCH) | Err(rustix::io::Errno::NOENT) => {
-                        return Ok(None);
-                    }
-                    Err(_) => return Err(LifecycleIoError),
-                };
-            let exited = rustix::process::waitid(
-                rustix::process::WaitId::PidFd(pidfd.as_fd()),
-                rustix::process::WaitIdOptions::EXITED
-                    | rustix::process::WaitIdOptions::NOHANG
-                    | rustix::process::WaitIdOptions::NOWAIT,
-            )
-            .map_err(|_| LifecycleIoError)?
-            .is_some();
-            if exited {
-                let _ = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG);
-                return Ok(None);
-            }
-            return Err(LifecycleIoError);
-        }
-    };
-    let fields: Vec<_> = stat
-        .rsplit_once(") ")
-        .ok_or(LifecycleIoError)?
-        .1
-        .split_whitespace()
-        .collect();
-    Ok(Some((
-        fields
-            .get(1)
-            .ok_or(LifecycleIoError)?
-            .parse()
-            .map_err(|_| LifecycleIoError)?,
-        fields
-            .get(19)
-            .ok_or(LifecycleIoError)?
-            .parse()
-            .map_err(|_| LifecycleIoError)?,
-    )))
-}
-
-fn listed_children(tasks_root: &Path) -> Result<BTreeSet<i32>, LifecycleIoError> {
-    let tasks = fs::read_dir(tasks_root).map_err(|_| LifecycleIoError)?;
-    let mut children = BTreeSet::new();
-    for task in tasks {
-        let task = task.map_err(|_| LifecycleIoError)?;
-        let value =
-            fs::read_to_string(task.path().join("children")).map_err(|_| LifecycleIoError)?;
-        for value in value.split_whitespace() {
-            children.insert(value.parse().map_err(|_| LifecycleIoError)?);
-        }
-    }
-    Ok(children)
-}
-
-fn adopted_candidate_children_at(
-    tasks_root: &Path,
-    leader_start: u64,
-) -> Result<BTreeSet<i32>, LifecycleIoError> {
-    let self_pid = std::process::id();
-    let mut candidates = BTreeSet::new();
-    for raw_pid in listed_children(tasks_root)? {
-        let pid = rustix::process::Pid::from_raw(raw_pid).ok_or(LifecycleIoError)?;
-        if let Some((parent, start)) = process_identity(pid)?
-            && parent == self_pid
-            && start >= leader_start
-        {
-            candidates.insert(raw_pid);
-        }
-    }
-    Ok(candidates)
-}
-
-fn adopted_candidate_children(leader_start: u64) -> Result<BTreeSet<i32>, LifecycleIoError> {
-    adopted_candidate_children_at(Path::new("/proc/self/task"), leader_start)
-}
-
 struct CandidateProcess {
     child: std::process::Child,
     leader: rustix::process::Pid,
     leader_fd: OwnedFd,
-    leader_start: u64,
     cleaned: bool,
 }
 
@@ -765,21 +678,10 @@ impl CandidateProcess {
                     return Err(LifecycleIoError);
                 }
             };
-        let leader_start = match process_identity(leader) {
-            Ok(Some((_, start))) => start,
-            Ok(None) | Err(_) => {
-                let _ = rustix::process::kill_process_group(leader, rustix::process::Signal::KILL);
-                let _ =
-                    rustix::process::pidfd_send_signal(&leader_fd, rustix::process::Signal::KILL);
-                let _ = child.wait();
-                return Err(LifecycleIoError);
-            }
-        };
         Ok(Self {
             child,
             leader,
             leader_fd,
-            leader_start,
             cleaned: false,
         })
     }
@@ -811,31 +713,6 @@ impl CandidateProcess {
             }
             thread::sleep(Duration::from_millis(5));
         };
-        let mut quiet_passes = 0;
-        while Instant::now() < deadline && quiet_passes < 3 {
-            let descendants = adopted_candidate_children(self.leader_start)?;
-            if descendants.is_empty() {
-                quiet_passes += 1;
-                thread::sleep(Duration::from_millis(5));
-                continue;
-            }
-            quiet_passes = 0;
-            for raw_pid in descendants {
-                let Some(pid) = rustix::process::Pid::from_raw(raw_pid) else {
-                    continue;
-                };
-                if let Ok(pidfd) =
-                    rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::NONBLOCK)
-                {
-                    let _ =
-                        rustix::process::pidfd_send_signal(pidfd, rustix::process::Signal::KILL);
-                }
-                let _ = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG);
-            }
-        }
-        if !adopted_candidate_children(self.leader_start)?.is_empty() {
-            return Err(LifecycleIoError);
-        }
         self.cleaned = true;
         Ok(status)
     }
@@ -847,19 +724,65 @@ impl Drop for CandidateProcess {
     }
 }
 
+fn candidate_confinement_filter() -> Result<BpfProgram, LifecycleIoError> {
+    let rules = [libc::SYS_setpgid, libc::SYS_setsid]
+        .into_iter()
+        .map(|syscall| (syscall, Vec::new()))
+        .collect();
+    SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EPERM as u32),
+        TargetArch::try_from(std::env::consts::ARCH).map_err(|_| LifecycleIoError)?,
+    )
+    .map_err(|_| LifecycleIoError)?
+    .try_into()
+    .map_err(|_| LifecycleIoError)
+}
+
+/// Execute a sealed self-test candidate after denying all process-group/session escape syscalls.
+///
+/// This is an internal CLI boundary. The caller must already place this supervisor in a fresh
+/// process group and pass the candidate's inherited sealed memfd path as the first argument.
+#[doc(hidden)]
+pub fn run_self_test_supervisor(arguments: &[String]) -> Result<(), LifecycleIoError> {
+    let (candidate_path, candidate_arguments) = arguments.split_first().ok_or(LifecycleIoError)?;
+    let candidate = File::open(candidate_path).map_err(|_| LifecycleIoError)?;
+    let required = rustix::fs::SealFlags::WRITE
+        | rustix::fs::SealFlags::GROW
+        | rustix::fs::SealFlags::SHRINK
+        | rustix::fs::SealFlags::SEAL;
+    if !rustix::fs::fcntl_get_seals(&candidate)
+        .map_err(|_| LifecycleIoError)?
+        .contains(required)
+    {
+        return Err(LifecycleIoError);
+    }
+    rustix::io::fcntl_setfd(&candidate, rustix::io::FdFlags::empty())
+        .map_err(|_| LifecycleIoError)?;
+    let program = format!("/proc/self/fd/{}", candidate.as_raw_fd());
+    let filter = candidate_confinement_filter()?;
+    seccompiler::apply_filter(&filter).map_err(|_| LifecycleIoError)?;
+    Err(Command::new(program).args(candidate_arguments).exec()).map_err(|_| LifecycleIoError)
+}
+
 fn executable_self_test(
     installation: &Installation,
     bytes: &[u8],
     lifecycle_root: &File,
+    supervisor: &File,
 ) -> Result<(), LifecycleIoError> {
     let executable = executable_memfd("asb-tui-self-test", bytes)?;
-    let program = format!("/proc/self/fd/{}", executable.as_raw_fd());
+    let candidate = format!("/proc/self/fd/{}", executable.as_raw_fd());
+    let supervisor = format!("/proc/self/fd/{}", supervisor.as_raw_fd());
     let probes = private_probe_directories(lifecycle_root)?;
     let (config_path, cache_path) = probes.inherited_paths()?;
     let (input, _, _) = controlling_terminal()?;
-    let mut command = Command::new(program);
+    let mut command = Command::new(supervisor);
     command
         .args([
+            "__self-test-supervisor",
+            candidate.as_str(),
             "lifecycle-self-test",
             "--release",
             installation.release.as_str(),
@@ -902,13 +825,6 @@ fn executable_self_test(
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| LifecycleIoError)?;
-    // The lifecycle command is a single-request process. Refuse to enter the process-global
-    // subreaper window if any unrelated child already exists; no other product child spawn is
-    // permitted until this serialized self-test and its complete descendant cleanup finish.
-    if !listed_children(Path::new("/proc/self/task"))?.is_empty() {
-        return Err(LifecycleIoError);
-    }
-    let _subreaper = SubreaperGuard::enter()?;
     let mut child = CandidateProcess::spawn(&mut command)?;
     let mut stdout = child.child.stdout.take().ok_or(LifecycleIoError)?;
     let flags = rustix::fs::fcntl_getfl(&stdout).map_err(|_| LifecycleIoError)?;
@@ -1429,10 +1345,10 @@ mod tests {
     }
 
     #[test]
-    fn process_enumeration_failure_is_not_treated_as_clean() {
-        assert!(
-            adopted_candidate_children_at(Path::new("/definitely-missing-asb-tui-proc-task"), 0,)
-                .is_err()
-        );
+    fn candidate_confinement_filter_compiles_and_cleanup_has_no_proc_dependency() {
+        assert!(!candidate_confinement_filter().unwrap().is_empty());
+        let source = include_str!("lifecycle.rs");
+        assert!(!source.contains(&["/proc/self", "/task"].concat()));
+        assert!(!source.contains(&["set_child_", "subreaper"].concat()));
     }
 }

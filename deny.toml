@@ -53,6 +53,11 @@ crate = "foldhash@0.2.0"
 allow = []
 exact = true
 
+[[bans.features]]
+crate = "seccompiler@0.5.0"
+allow = []
+exact = true
+
 [licenses]
 confidence-threshold = 0.93
 allow = ["Apache-2.0", "BSL-1.0", "MIT", "Unicode-3.0", "Unlicense"]

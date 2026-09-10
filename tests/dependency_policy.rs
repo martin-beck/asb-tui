@@ -93,6 +93,10 @@ fn immutable_terminal_graph_has_only_the_two_reviewed_duplicates() {
             "bde5057d6143cc94e861d90f591b9303d6716c6b9602309150bd068853c10899",
         ),
         (
+            ("libc", "0.2.189"),
+            "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
+        ),
+        (
             ("ratatui", "0.30.2"),
             "3274ba0a2c5e1bcad2a2005d20f4dc59dad26b2eb0940fb094500dba4099d57d",
         ),
@@ -107,6 +111,10 @@ fn immutable_terminal_graph_has_only_the_two_reviewed_duplicates() {
         (
             ("ratatui-widgets", "0.3.2"),
             "66e3d19bcc9130ca376277d93b60767ff121ace3be06f5f95f81dd68956407d1",
+        ),
+        (
+            ("seccompiler", "0.5.0"),
+            "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884",
         ),
         (
             ("syn", "2.0.119"),
@@ -139,6 +147,8 @@ fn manifest_and_deny_policy_cannot_silently_widen() {
     assert!(manifest.contains(
         "signal-hook = { version = \"=0.3.18\", default-features = false, features = [\"iterator\"] }"
     ));
+    assert!(manifest.contains("libc = \"=0.2.189\""));
+    assert!(manifest.contains("seccompiler = { version = \"=0.5.0\", default-features = false }"));
     assert!(!manifest.contains("path ="));
     assert!(!manifest.contains("git ="));
 
@@ -154,7 +164,7 @@ fn manifest_and_deny_policy_cannot_silently_widen() {
     assert!(deny.contains("crate = \"syn@3.0.5\""));
     assert!(!deny.contains("skip-tree"));
     assert_eq!(deny.matches("reason = ").count(), 2);
-    assert_eq!(deny.matches("exact = true").count(), 8);
+    assert_eq!(deny.matches("exact = true").count(), 9);
 }
 
 #[test]
@@ -195,6 +205,7 @@ fn enabled_terminal_features_are_exact_and_calendar_cache_are_absent() {
                     | "ratatui-core"
                     | "ratatui-crossterm"
                     | "ratatui-widgets"
+                    | "seccompiler"
                     | "signal-hook"
             )
             .then(|| {
@@ -257,6 +268,7 @@ fn enabled_terminal_features_are_exact_and_calendar_cache_are_absent() {
             BTreeSet::from(["crossterm_0_29", "default", "underline-color"]),
         ),
         (("ratatui-widgets", "0.3.2"), BTreeSet::from(["std"])),
+        (("seccompiler", "0.5.0"), BTreeSet::new()),
         (
             ("signal-hook", "0.3.18"),
             BTreeSet::from(["channel", "default", "iterator"]),

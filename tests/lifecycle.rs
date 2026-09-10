@@ -432,7 +432,11 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
     fs::create_dir(&original).unwrap();
     fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
     let runtime_store = FilesystemLifecycle::open(&original).unwrap();
-    let mut self_test = ExecutableSelfTest::for_store(&runtime_store).unwrap();
+    let mut self_test = ExecutableSelfTest::for_store_with_supervisor(
+        &runtime_store,
+        std::path::Path::new(env!("CARGO_BIN_EXE_asb-tui")),
+    )
+    .unwrap();
     fs::rename(&original, &retained).unwrap();
     fs::create_dir(&original).unwrap();
     fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
@@ -492,11 +496,25 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
     assert_reaped(&rejected_marker);
 
     let escaped_marker = directory.path().join("escaped-child.pid");
+    let escape_denied = directory.path().join("setsid-denied");
+    let regroup_denied = directory.path().join("setpgid-denied");
     let escaped = format!(
-        "#!/bin/sh\nsetsid sh -c 'echo $$ >\"{}\"; sleep 30' &\nexit 7\n",
+        concat!(
+            "#!/bin/sh\n",
+            "setsid sh -c 'sleep 30' || printf denied >'{}'\n",
+            "/usr/bin/python3 -c 'import os; os.setpgid(0, 0)' || printf denied >'{}'\n",
+            "(sh -c 'sleep 30 & echo $! >\"{}\"' &)\n",
+            "while [ ! -s '{}' ]; do :; done\n",
+            "exit 7\n"
+        ),
+        escape_denied.display(),
+        regroup_denied.display(),
+        escaped_marker.display(),
         escaped_marker.display()
     );
     assert!(!self_test.verify_protocol_and_terminal(&installed, escaped.as_bytes()));
+    assert_eq!(fs::read_to_string(&escape_denied).unwrap(), "denied");
+    assert_eq!(fs::read_to_string(&regroup_denied).unwrap(), "denied");
     assert_reaped(&escaped_marker);
 
     let success_marker = directory.path().join("success-child.pid");
@@ -544,14 +562,32 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
         assert_reaped(&marker);
     }
 
-    let mut unrelated = Command::new("/usr/bin/sleep").arg("30").spawn().unwrap();
-    assert!(
-        !self_test.verify_protocol_and_terminal(&installed, candidate.as_bytes()),
-        "self-test must refuse a process-global subreaper window with a preexisting child"
+    let ready = directory.path().join("concurrent-ready");
+    let concurrent_candidate = candidate.replace(
+        "printf '%s\\n'",
+        &format!(
+            "printf ready >'{}'\nsleep 0.2\nprintf '%s\\n'",
+            ready.display()
+        ),
     );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let unrelated_thread = std::thread::spawn(move || {
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        sender
+            .send(Command::new("/usr/bin/sleep").arg("30").spawn().unwrap())
+            .unwrap();
+    });
+    assert!(self_test.verify_protocol_and_terminal(&installed, concurrent_candidate.as_bytes()));
+    unrelated_thread.join().unwrap();
+    let mut unrelated = receiver.recv().unwrap();
     assert!(
         unrelated.try_wait().unwrap().is_none(),
-        "preexisting unrelated child was signalled or reaped"
+        "concurrently spawned unrelated child was signalled or reaped"
     );
     unrelated.kill().unwrap();
     unrelated.wait().unwrap();
