@@ -71,6 +71,7 @@ fn delegated_binary_emits_one_closed_json_response() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asb-tui"))
         .args(["lifecycle", "--format", "json"])
         .env_clear()
+        .env("LLVM_PROFILE_FILE", directory.path().join("child.profraw"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

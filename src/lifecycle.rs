@@ -262,6 +262,7 @@ fn executable_self_test(installation: &Installation, bytes: &[u8]) -> Result<(),
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("LANG", "C.UTF-8")
+        .env("LLVM_PROFILE_FILE", "/dev/null")
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

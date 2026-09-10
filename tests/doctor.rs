@@ -34,6 +34,7 @@ fn run_isolated(configure: impl FnOnce(&mut Command)) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_asb-tui"));
     command.current_dir(directory.path());
     configure(&mut command);
+    command.env("LLVM_PROFILE_FILE", directory.path().join("child.profraw"));
     let output = command.output().expect("run isolated asb-tui child");
     assert_eq!(profile_artifacts(repository), before);
     drop(directory);
@@ -106,6 +107,7 @@ fn lifecycle_command_rejects_invalid_input_with_one_generic_response() {
         .args(["lifecycle", "--format", "json"])
         .current_dir(directory.path())
         .env_clear()
+        .env("LLVM_PROFILE_FILE", directory.path().join("child.profraw"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
