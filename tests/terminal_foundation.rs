@@ -380,25 +380,27 @@ fn wait_for_marker(path: &std::path::Path) -> bool {
 }
 
 fn bounded_command(program: &str, args: &[&str]) -> bool {
-    Command::new("/usr/bin/timeout")
+    let mut command = Command::new("/usr/bin/timeout");
+    command
+        .env_remove("TMUX_TMPDIR")
         .args(["--signal=KILL", "3s", program])
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .stderr(Stdio::null());
+    command.status().is_ok_and(|status| status.success())
 }
 
 fn bounded_output(program: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
-    let mut child = Command::new("/usr/bin/timeout")
+    let mut command = Command::new("/usr/bin/timeout");
+    command
+        .env_remove("TMUX_TMPDIR")
         .args(["--signal=KILL", "3s", program])
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    let mut child = command.spawn().ok()?;
     let mut output = Vec::new();
     child
         .stdout
@@ -411,7 +413,8 @@ fn bounded_output(program: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
 }
 
 fn tmux_args<'a>(socket: &'a str, args: &'a [&'a str]) -> Vec<&'a str> {
-    let mut command = vec!["-f", "/dev/null", "-L", socket];
+    assert!(std::path::Path::new(socket).is_absolute());
+    let mut command = vec!["-f", "/dev/null", "-S", socket];
     command.extend_from_slice(args);
     command
 }
@@ -424,11 +427,25 @@ fn bounded_tmux_output(socket: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
     bounded_output("/usr/bin/tmux", &tmux_args(socket, args))
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProcessGeneration {
+    pid: u32,
+    start_time: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TmuxServerObservation {
+    process: ProcessGeneration,
+    socket_device: u64,
+    socket_inode: u64,
+}
+
 enum MultiplexerSession {
     Tmux {
         socket: String,
         session: String,
-        process_group: Option<u32>,
+        server: Option<TmuxServerObservation>,
+        pane_process: Option<PaneProcessObservation>,
     },
     Screen {
         session: String,
@@ -436,49 +453,109 @@ enum MultiplexerSession {
 }
 
 impl MultiplexerSession {
-    fn set_process_group(&mut self, validated_process_group: u32) {
+    fn set_server(&mut self, validated: TmuxServerObservation) {
         match self {
-            Self::Tmux { process_group, .. } => {
-                assert!(process_group.is_none());
-                *process_group = Some(validated_process_group);
+            Self::Tmux { server, .. } => {
+                assert!(server.is_none());
+                *server = Some(validated);
+            }
+            Self::Screen { .. } => panic!("screen sessions have no tmux server"),
+        }
+    }
+
+    fn set_pane_process(&mut self, validated: PaneProcessObservation) {
+        match self {
+            Self::Tmux { pane_process, .. } => {
+                assert!(pane_process.is_none());
+                *pane_process = Some(validated);
             }
             Self::Screen { .. } => panic!("screen sessions have no tmux pane process group"),
         }
     }
 
     fn tmux_socket_path(socket: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(format!(
-            "/tmp/tmux-{}/{}",
-            rustix::process::getuid().as_raw(),
-            socket
-        ))
+        std::path::PathBuf::from(socket)
     }
 
     fn process_group_is_gone(process_group: u32) -> bool {
-        !bounded_command("/bin/kill", &["-0", "--", &format!("-{process_group}")])
+        let group = format!("-{process_group}");
+        !bounded_command("/bin/kill", &["-0", "--", &group])
     }
 
-    fn stop_process_group(socket: &str, session: &str, process_group: u32) -> bool {
-        if Self::process_group_is_gone(process_group) {
+    fn path_is_absent(path: &std::path::Path) -> bool {
+        matches!(
+            fs::symlink_metadata(path),
+            Err(error) if error.kind() == io::ErrorKind::NotFound
+        )
+    }
+
+    fn stop_process_group_with(
+        observed: &PaneProcessObservation,
+        mut observe: impl FnMut() -> Option<PaneProcessObservation>,
+        mut signal: impl FnMut(&str, u32),
+        mut is_gone: impl FnMut(u32) -> bool,
+        mut wait: impl FnMut(),
+    ) -> bool {
+        let process_group = observed.foreground_group;
+        if is_gone(process_group) {
             return true;
         }
-        if tmux_pane_process_group(socket, session) != Some(process_group) {
+        if observe().as_ref() != Some(observed) {
             return false;
         }
-        let group = format!("-{process_group}");
-        let _ = bounded_command("/bin/kill", &["-TERM", "--", &group]);
+        signal("-TERM", process_group);
         for _ in 0..100 {
-            if Self::process_group_is_gone(process_group) {
+            if is_gone(process_group) {
                 return true;
             }
-            thread::sleep(Duration::from_millis(10));
+            wait();
         }
-        let _ = bounded_command("/bin/kill", &["-KILL", "--", &group]);
+        if observe().as_ref() != Some(observed) {
+            return false;
+        }
+        signal("-KILL", process_group);
         for _ in 0..100 {
-            if Self::process_group_is_gone(process_group) {
+            if is_gone(process_group) {
                 return true;
             }
-            thread::sleep(Duration::from_millis(10));
+            wait();
+        }
+        false
+    }
+
+    fn stop_process_group(socket: &str, session: &str, observed: &PaneProcessObservation) -> bool {
+        Self::stop_process_group_with(
+            observed,
+            || tmux_pane_process_observation(socket, session),
+            |signal, process_group| {
+                let group = format!("-{process_group}");
+                let _ = bounded_command("/bin/kill", &[signal, "--", &group]);
+            },
+            Self::process_group_is_gone,
+            || thread::sleep(Duration::from_millis(10)),
+        )
+    }
+
+    fn stop_tmux_server_with(
+        mut authenticate: impl FnMut() -> bool,
+        mut kill_server: impl FnMut() -> bool,
+        mut server_gone: impl FnMut() -> bool,
+        mut wait: impl FnMut(),
+    ) -> bool {
+        if server_gone() {
+            return true;
+        }
+        if !authenticate() {
+            return false;
+        }
+        if !kill_server() {
+            return false;
+        }
+        for _ in 0..100 {
+            if server_gone() {
+                return true;
+            }
+            wait();
         }
         false
     }
@@ -488,20 +565,26 @@ impl MultiplexerSession {
             Self::Tmux {
                 socket,
                 session,
-                process_group,
+                server,
+                pane_process,
                 ..
             } => {
-                let group_clean = process_group
-                    .is_some_and(|group| Self::stop_process_group(socket, session, group));
-                let _ = bounded_tmux(socket, &["kill-server"]);
-                let path = Self::tmux_socket_path(socket);
-                if fs::symlink_metadata(&path).is_ok_and(|metadata| {
-                    metadata.file_type().is_socket()
-                        && metadata.uid() == rustix::process::getuid().as_raw()
-                }) {
-                    let _ = fs::remove_file(path);
-                }
-                group_clean
+                let group_stopped = pane_process
+                    .as_ref()
+                    .is_some_and(|observed| Self::stop_process_group(socket, session, observed));
+                let server_clean = server.as_ref().is_some_and(|expected| {
+                    Self::stop_tmux_server_with(
+                        || tmux_server_matches(socket, session, expected),
+                        || bounded_tmux(socket, &["kill-server"]),
+                        || !process_generation_matches(&expected.process),
+                        || thread::sleep(Duration::from_millis(10)),
+                    )
+                });
+                let group_clean = group_stopped
+                    || pane_process.as_ref().is_some_and(|observed| {
+                        Self::process_group_is_gone(observed.foreground_group)
+                    });
+                group_clean && server_clean
             }
             Self::Screen { session } => {
                 let _ = bounded_command("/usr/bin/screen", &["-S", session, "-X", "quit"]);
@@ -515,11 +598,16 @@ impl MultiplexerSession {
             Self::Tmux {
                 socket,
                 session,
-                process_group,
+                server,
+                pane_process,
             } => {
                 !bounded_tmux(socket, &["has-session", "-t", session])
-                    && !Self::tmux_socket_path(socket).exists()
-                    && process_group.is_some_and(Self::process_group_is_gone)
+                    && server
+                        .as_ref()
+                        .is_some_and(|expected| tmux_socket_is_stale(socket, expected))
+                    && pane_process.as_ref().is_some_and(|observed| {
+                        Self::process_group_is_gone(observed.foreground_group)
+                    })
             }
             Self::Screen { session } => {
                 !bounded_command("/usr/bin/screen", &["-S", session, "-Q", "select", "."])
@@ -637,25 +725,291 @@ fn tmux_alternate_on(socket: &str, session: &str) -> Option<bool> {
     }
 }
 
-fn tmux_pane_process_group(socket: &str, session: &str) -> Option<u32> {
-    let pane_pid = bounded_tmux_output(
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PaneProcessObservation {
+    pane_pid: u32,
+    pane_start_time: u64,
+    pane_tty: String,
+    tty_device: u64,
+    tty_inode: u64,
+    tty_rdevice: u64,
+    foreground_group: u32,
+    foreground_start_time: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PaneProcessTuple {
+    pane_pid: u32,
+    pane_tty: String,
+    foreground_group: u32,
+}
+
+fn parse_pane_process_observation(
+    pane: &[u8],
+    processes: &[u8],
+    current_group: u32,
+    current_uid: u32,
+) -> Option<PaneProcessTuple> {
+    let pane = std::str::from_utf8(pane).ok()?.strip_suffix('\n')?;
+    let (pane_pid, pane_tty) = pane.split_once('\t')?;
+    let pane_pid = pane_pid.parse::<u32>().ok().filter(|pid| *pid > 1)?;
+    let tty_number = pane_tty.strip_prefix("/dev/pts/")?;
+    if tty_number.is_empty() || !tty_number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let expected_tty = pane_tty.strip_prefix("/dev/")?;
+    #[derive(Clone, Copy)]
+    struct ProcessRow {
+        pid: u32,
+        pgid: u32,
+        tpgid: u32,
+        uid: u32,
+        euid: u32,
+    }
+    let mut rows = Vec::new();
+    for line in std::str::from_utf8(processes).ok()?.lines() {
+        let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+        if fields.len() != 6 {
+            return None;
+        }
+        let pid = fields[0].parse::<u32>().ok().filter(|pid| *pid > 1)?;
+        let pgid = fields[1].parse::<u32>().ok().filter(|pgid| *pgid > 1)?;
+        let tpgid = fields[2].parse::<u32>().ok().filter(|tpgid| *tpgid > 1)?;
+        if fields[3] != expected_tty {
+            return None;
+        }
+        let uid = fields[4].parse::<u32>().ok()?;
+        let euid = fields[5].parse::<u32>().ok()?;
+        rows.push(ProcessRow {
+            pid,
+            pgid,
+            tpgid,
+            uid,
+            euid,
+        });
+    }
+    if rows.iter().enumerate().any(|(index, row)| {
+        rows.iter()
+            .skip(index + 1)
+            .any(|candidate| candidate.pid == row.pid)
+    }) {
+        return None;
+    }
+    let mut pane_rows = rows.iter().filter(|row| row.pid == pane_pid);
+    let pane_row = *pane_rows.next()?;
+    if pane_rows.next().is_some() || pane_row.uid != current_uid || pane_row.euid != current_uid {
+        return None;
+    }
+    let foreground_group = pane_row.tpgid;
+    let foreground_leaders = rows
+        .iter()
+        .filter(|row| row.pid == foreground_group && row.pgid == foreground_group)
+        .collect::<Vec<_>>();
+    if foreground_group == current_group
+        || rows.iter().any(|row| row.tpgid != foreground_group)
+        || foreground_leaders.len() != 1
+        || foreground_leaders[0].uid != current_uid
+        || foreground_leaders[0].euid != current_uid
+        || rows.iter().any(|row| {
+            row.pgid == foreground_group && (row.uid != current_uid || row.euid != current_uid)
+        })
+    {
+        return None;
+    }
+    Some(PaneProcessTuple {
+        pane_pid,
+        pane_tty: pane_tty.into(),
+        foreground_group,
+    })
+}
+
+fn process_start_time(process: u32) -> Option<u64> {
+    let mut bytes = Vec::new();
+    fs::File::open(format!("/proc/{process}/stat"))
+        .ok()?
+        .take((MAX_MULTIPLEXER_OUTPUT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_MULTIPLEXER_OUTPUT {
+        return None;
+    }
+    let stat = std::str::from_utf8(&bytes).ok()?;
+    let fields = stat.get(stat.rfind(") ")?.checked_add(2)?..)?;
+    let mut fields = fields.split_ascii_whitespace();
+    if fields.next()? == "Z" {
+        return None;
+    }
+    fields
+        .nth(18)?
+        .parse::<u64>()
+        .ok()
+        .filter(|start| *start > 0)
+}
+
+fn process_generation_matches(process: &ProcessGeneration) -> bool {
+    process_start_time(process.pid) == Some(process.start_time)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TtyIdentity {
+    device: u64,
+    inode: u64,
+    rdevice: u64,
+}
+
+fn tty_identity(path: &str) -> Option<TtyIdentity> {
+    tty_identity_for_uid(path, rustix::process::getuid().as_raw())
+}
+
+fn tty_identity_for_uid(path: &str, current_uid: u32) -> Option<TtyIdentity> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_char_device() || metadata.uid() != current_uid {
+        return None;
+    }
+    Some(TtyIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        rdevice: metadata.rdev(),
+    })
+}
+
+fn tmux_pane_identity(socket: &str, session: &str) -> Option<Vec<u8>> {
+    bounded_tmux_output(
         socket,
-        &["display-message", "-p", "-t", session, "#{pane_pid}"],
+        &[
+            "display-message",
+            "-p",
+            "-t",
+            session,
+            "#{pane_pid}\t#{pane_tty}",
+        ],
     )
     .filter(|(success, _)| *success)
-    .and_then(|(_, output)| String::from_utf8(output).ok())?
-    .trim()
-    .parse::<u32>()
-    .ok()
-    .filter(|pid| *pid > 1)?;
-    let pid = pane_pid.to_string();
-    let process_group = bounded_output("/usr/bin/ps", &["-o", "pgid=", "-p", &pid])
+    .map(|(_, output)| output)
+}
+
+fn tmux_server_observation(socket: &str, session: &str) -> Option<TmuxServerObservation> {
+    let read_pid = || {
+        bounded_tmux_output(socket, &["display-message", "-p", "-t", session, "#{pid}"])
+            .filter(|(success, _)| *success)
+            .and_then(|(_, output)| String::from_utf8(output).ok())?
+            .strip_suffix('\n')?
+            .parse::<u32>()
+            .ok()
+            .filter(|pid| *pid > 1)
+    };
+    let path = MultiplexerSession::tmux_socket_path(socket);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.file_type().is_socket() || metadata.uid() != rustix::process::getuid().as_raw() {
+        return None;
+    }
+    let pid = read_pid()?;
+    let start_time = process_start_time(pid)?;
+    let observation = TmuxServerObservation {
+        process: ProcessGeneration { pid, start_time },
+        socket_device: metadata.dev(),
+        socket_inode: metadata.ino(),
+    };
+    let after = fs::symlink_metadata(path).ok()?;
+    if read_pid()? != pid
+        || !process_generation_matches(&observation.process)
+        || !after.file_type().is_socket()
+        || after.uid() != rustix::process::getuid().as_raw()
+        || after.dev() != observation.socket_device
+        || after.ino() != observation.socket_inode
+    {
+        return None;
+    }
+    Some(observation)
+}
+
+fn tmux_server_matches(socket: &str, session: &str, expected: &TmuxServerObservation) -> bool {
+    let path = MultiplexerSession::tmux_socket_path(socket);
+    let socket_matches = || {
+        fs::symlink_metadata(&path).is_ok_and(|metadata| {
+            metadata.file_type().is_socket()
+                && metadata.uid() == rustix::process::getuid().as_raw()
+                && metadata.dev() == expected.socket_device
+                && metadata.ino() == expected.socket_inode
+        })
+    };
+    if !socket_matches() {
+        return false;
+    }
+    let current = tmux_server_observation(socket, session);
+    current.as_ref() == Some(expected)
+        && socket_matches()
+        && process_generation_matches(&expected.process)
+}
+
+// tmux 3.4 intentionally retains a stale socket inode after graceful server exit.
+// The session guard never unlinks this pathname: it only proves the retained
+// inode is the authenticated server's now-unconnectable socket. The enclosing
+// disposable scratch root owns eventual whole-root cleanup.
+fn tmux_socket_is_stale(socket: &str, expected: &TmuxServerObservation) -> bool {
+    if process_generation_matches(&expected.process) {
+        return false;
+    }
+    let path = MultiplexerSession::tmux_socket_path(socket);
+    if MultiplexerSession::path_is_absent(&path) {
+        return true;
+    }
+    fs::symlink_metadata(&path).is_ok_and(|metadata| {
+        metadata.file_type().is_socket()
+            && metadata.uid() == rustix::process::getuid().as_raw()
+            && metadata.dev() == expected.socket_device
+            && metadata.ino() == expected.socket_inode
+            && std::os::unix::net::UnixStream::connect(&path).is_err()
+    })
+}
+
+fn tmux_pane_process_observation(socket: &str, session: &str) -> Option<PaneProcessObservation> {
+    let pane = tmux_pane_identity(socket, session)?;
+    let pane_text = std::str::from_utf8(&pane).ok()?.strip_suffix('\n')?;
+    let (pane_pid, pane_tty) = pane_text.split_once('\t')?;
+    let pane_pid = pane_pid.parse::<u32>().ok().filter(|pid| *pid > 1)?;
+    let tty_number = pane_tty.strip_prefix("/dev/pts/")?;
+    if tty_number.is_empty() || !tty_number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let tty_before = tty_identity(pane_tty)?;
+    let pane_start_before = process_start_time(pane_pid)?;
+    let ps_args = [
+        "--no-headers",
+        "-o",
+        "pid=,pgid=,tpgid=,tty=,uid=,euid=",
+        "-t",
+        pane_tty.strip_prefix("/dev/")?,
+    ];
+    let processes_before = bounded_output("/usr/bin/ps", &ps_args)
         .filter(|(success, _)| *success)
-        .and_then(|(_, output)| String::from_utf8(output).ok())?
-        .trim()
-        .parse::<u32>()
-        .ok()?;
-    (pane_pid == process_group).then_some(process_group)
+        .map(|(_, output)| output)?;
+    let current_group = u32::try_from(rustix::process::getpgrp().as_raw_pid()).ok()?;
+    let current_uid = rustix::process::getuid().as_raw();
+    let tuple =
+        parse_pane_process_observation(&pane, &processes_before, current_group, current_uid)?;
+    let foreground_start_before = process_start_time(tuple.foreground_group)?;
+    let processes_after = bounded_output("/usr/bin/ps", &ps_args)
+        .filter(|(success, _)| *success)
+        .map(|(_, output)| output)?;
+    if parse_pane_process_observation(&pane, &processes_after, current_group, current_uid)? != tuple
+        || tmux_pane_identity(socket, session)? != pane
+        || tty_identity(pane_tty)? != tty_before
+        || process_start_time(pane_pid)? != pane_start_before
+        || process_start_time(tuple.foreground_group)? != foreground_start_before
+    {
+        return None;
+    }
+    Some(PaneProcessObservation {
+        pane_pid: tuple.pane_pid,
+        pane_start_time: pane_start_before,
+        pane_tty: tuple.pane_tty,
+        tty_device: tty_before.device,
+        tty_inode: tty_before.inode,
+        tty_rdevice: tty_before.rdevice,
+        foreground_group: tuple.foreground_group,
+        foreground_start_time: foreground_start_before,
+    })
 }
 
 fn tmux_visible_alternate_capture(socket: &str, session: &str) -> Option<(bool, Vec<u8>, bool)> {
@@ -744,7 +1098,11 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
 
     let tmux_marker = directory.path().join("tmux-restored");
     let tmux_session = format!("asb-tui-test-{}-{nonce}", std::process::id());
-    let tmux_socket = format!("asb-tui-socket-{}-{nonce}", std::process::id());
+    let tmux_socket = directory
+        .path()
+        .join(format!("asb-tui-socket-{}-{nonce}", std::process::id()))
+        .to_string_lossy()
+        .into_owned();
     let tmux_command = format!(
         "before=$(stty -g) || exit 90; {binary}; status=$?; after=$(stty -g) || exit 91; test \"$before\" = \"$after\" || exit 92; printf restored >{}; exit $status",
         tmux_marker.display()
@@ -766,11 +1124,19 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     let mut tmux_guard = MultiplexerSession::Tmux {
         socket: tmux_socket.clone(),
         session: tmux_session.clone(),
-        process_group: None,
+        server: None,
+        pane_process: None,
     };
-    let tmux_process_group = tmux_pane_process_group(&tmux_socket, &tmux_session)
-        .expect("tmux pane must own its process group");
-    tmux_guard.set_process_group(tmux_process_group);
+    assert!(bounded_tmux(
+        &tmux_socket,
+        &["set-option", "-t", &tmux_session, "remain-on-exit", "on",],
+    ));
+    let tmux_server = tmux_server_observation(&tmux_socket, &tmux_session)
+        .expect("tmux server identity must be stable");
+    tmux_guard.set_server(tmux_server);
+    let tmux_pane_process = tmux_pane_process_observation(&tmux_socket, &tmux_session)
+        .expect("tmux pane must have an owned foreground process group");
+    tmux_guard.set_pane_process(tmux_pane_process);
     let readiness =
         wait_for_tmux_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
             tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
@@ -851,12 +1217,20 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
 
 #[test]
 fn tmux_guard_reaps_a_hup_resistant_owned_pane_group_after_readiness_failure() {
+    let scratch = PrivateDirectory::create();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let session = format!("asb-tui-cleanup-{}-{nonce}", std::process::id());
-    let socket = format!("asb-tui-cleanup-socket-{}-{nonce}", std::process::id());
+    let socket = scratch
+        .path()
+        .join(format!(
+            "asb-tui-cleanup-socket-{}-{nonce}",
+            std::process::id()
+        ))
+        .to_string_lossy()
+        .into_owned();
     assert!(bounded_tmux(
         &socket,
         &[
@@ -864,26 +1238,43 @@ fn tmux_guard_reaps_a_hup_resistant_owned_pane_group_after_readiness_failure() {
             "-d",
             "-s",
             &session,
-            "trap '' HUP; while :; do sleep 1; done",
+            "trap '' HUP TERM; while :; do sleep 1; done",
         ],
     ));
     let mut guard = MultiplexerSession::Tmux {
         socket: socket.clone(),
         session: session.clone(),
-        process_group: None,
+        server: None,
+        pane_process: None,
     };
-    let process_group =
-        tmux_pane_process_group(&socket, &session).expect("tmux pane must own its process group");
-    guard.set_process_group(process_group);
+    assert!(bounded_tmux(
+        &socket,
+        &["set-option", "-t", &session, "remain-on-exit", "on"],
+    ));
+    let server =
+        tmux_server_observation(&socket, &session).expect("tmux server identity must be stable");
+    guard.set_server(server);
+    let pane_process = tmux_pane_process_observation(&socket, &session)
+        .expect("tmux pane must have an owned foreground process group");
+    let process_group = pane_process.foreground_group;
+    guard.set_pane_process(pane_process.clone());
     let unrelated_group = u32::try_from(rustix::process::getpgrp().as_raw_pid()).unwrap();
     assert_ne!(unrelated_group, process_group);
-    assert!(
-        !MultiplexerSession::stop_process_group(&socket, &session, unrelated_group),
-        "mismatched live process group must not be signalled"
-    );
+    let mut changed_pid = pane_process.clone();
+    changed_pid.pane_pid = changed_pid.pane_pid.checked_add(1).unwrap();
+    let mut changed_tty = pane_process.clone();
+    changed_tty.pane_tty = "/dev/pts/999999".into();
+    let mut changed_group = pane_process.clone();
+    changed_group.foreground_group = unrelated_group;
+    for transitioned in [&changed_pid, &changed_tty, &changed_group] {
+        assert!(
+            !MultiplexerSession::stop_process_group(&socket, &session, transitioned),
+            "transitioned pane tuple must not authorize group signalling"
+        );
+    }
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            guard.set_process_group(unrelated_group);
+            guard.set_pane_process(changed_pid);
         }))
         .is_err(),
         "duplicate process-group assignment unexpectedly succeeded"
@@ -907,27 +1298,350 @@ fn tmux_guard_reaps_a_hup_resistant_owned_pane_group_after_readiness_failure() {
 }
 
 #[test]
+fn pane_foreground_group_parser_accepts_interposed_pane_leader_and_rejects_widening() {
+    let pane = b"200\t/dev/pts/9\n";
+    let trusted_topology = b" 200 200 300 pts/9 1000 1000\n 300 300 300 pts/9 1000 1000\n";
+    assert_eq!(
+        parse_pane_process_observation(pane, trusted_topology, 900, 1000),
+        Some(PaneProcessTuple {
+            pane_pid: 200,
+            pane_tty: "/dev/pts/9".into(),
+            foreground_group: 300,
+        })
+    );
+    for rejected in [
+        b" 200 200 300 pts/9 1000 1000\n 300 300 301 pts/9 1000 1000\n".as_slice(),
+        b" 200 200 300 pts/9 1000 1000\n 300 300 300 pts/9 1001 1001\n".as_slice(),
+        b" 200 200 300 pts/9 1000 1000\n 300 300 300 pts/9 1000 1001\n".as_slice(),
+        b" 200 200 300 pts/9 1000 1000\n 200 300 300 pts/9 1000 1000\n 300 300 300 pts/9 1000 1000\n".as_slice(),
+        b" 200 200 300 pts/9 1000 1000\n 300 300 300 pts/9 1000 1000\n 300 300 300 pts/9 1000 1000\n".as_slice(),
+        b" 200 200 300 pts/9 1000 1000\n 400 400 400 pts/9 1000 1000\n".as_slice(),
+        b" 200 200 300 pts/8 1000 1000\n 300 300 300 pts/8 1000 1000\n".as_slice(),
+        b" 200 200 300 pts/9 1000 1000\n".as_slice(),
+        b" 200 200 -1 pts/9 1000 1000\n".as_slice(),
+        b" 200 200 300 pts/9 1000\n".as_slice(),
+        b"\xff 200 200 300 pts/9 1000 1000\n".as_slice(),
+    ] {
+        assert_eq!(
+            parse_pane_process_observation(pane, rejected, 900, 1000),
+            None
+        );
+    }
+    assert_eq!(
+        parse_pane_process_observation(pane, trusted_topology, 300, 1000),
+        None,
+        "the test process group must never become a cleanup target"
+    );
+    for malformed_pane in [
+        b"".as_slice(),
+        b"1\t/dev/pts/9\n".as_slice(),
+        b"200\tpts/9\n".as_slice(),
+        b"200\t/dev/tty9\n".as_slice(),
+        b"200\t/dev/pts/x\n".as_slice(),
+        b"200\t/dev/pts/9\n201\t/dev/pts/9\n".as_slice(),
+        b"\xff200\t/dev/pts/9\n".as_slice(),
+    ] {
+        assert_eq!(
+            parse_pane_process_observation(malformed_pane, trusted_topology, 900, 1000),
+            None
+        );
+    }
+}
+
+#[test]
+fn process_group_signals_require_stable_generations_and_reobserve_before_kill() {
+    let observed = PaneProcessObservation {
+        pane_pid: 200,
+        pane_start_time: 10,
+        pane_tty: "/dev/pts/9".into(),
+        tty_device: 1,
+        tty_inode: 2,
+        tty_rdevice: 3,
+        foreground_group: 300,
+        foreground_start_time: 20,
+    };
+    let pre_term_signals = std::cell::RefCell::new(Vec::new());
+    let mut pre_term_mismatch = observed.clone();
+    pre_term_mismatch.pane_start_time += 1;
+    assert!(!MultiplexerSession::stop_process_group_with(
+        &observed,
+        || Some(pre_term_mismatch.clone()),
+        |signal, group| {
+            pre_term_signals
+                .borrow_mut()
+                .push((signal.to_owned(), group));
+        },
+        |_| false,
+        || {},
+    ));
+    assert!(
+        pre_term_signals.into_inner().is_empty(),
+        "pre-TERM generation mismatch must issue zero signals"
+    );
+    for changed in [
+        PaneProcessObservation {
+            pane_start_time: 11,
+            ..observed.clone()
+        },
+        PaneProcessObservation {
+            tty_inode: 4,
+            ..observed.clone()
+        },
+        PaneProcessObservation {
+            foreground_start_time: 21,
+            ..observed.clone()
+        },
+    ] {
+        let observations = std::cell::Cell::new(0);
+        let signals = std::cell::RefCell::new(Vec::new());
+        assert!(
+            !MultiplexerSession::stop_process_group_with(
+                &observed,
+                || {
+                    let count = observations.get();
+                    observations.set(count + 1);
+                    (count == 0)
+                        .then(|| observed.clone())
+                        .or_else(|| Some(changed.clone()))
+                },
+                |signal, group| signals.borrow_mut().push((signal.to_owned(), group)),
+                |_| false,
+                || {},
+            ),
+            "generation or TTY reuse must suppress KILL"
+        );
+        assert_eq!(
+            signals.into_inner(),
+            [("-TERM".to_owned(), observed.foreground_group)]
+        );
+    }
+
+    let observations = std::cell::Cell::new(0);
+    let gone_checks = std::cell::Cell::new(0);
+    let signals = std::cell::RefCell::new(Vec::new());
+    assert!(MultiplexerSession::stop_process_group_with(
+        &observed,
+        || {
+            observations.set(observations.get() + 1);
+            Some(observed.clone())
+        },
+        |signal, group| signals.borrow_mut().push((signal.to_owned(), group)),
+        |_| {
+            let count = gone_checks.get();
+            gone_checks.set(count + 1);
+            count >= 101
+        },
+        || {},
+    ));
+    assert_eq!(observations.get(), 2, "TERM and KILL each need authority");
+    assert_eq!(
+        signals.into_inner(),
+        [
+            ("-TERM".to_owned(), observed.foreground_group),
+            ("-KILL".to_owned(), observed.foreground_group),
+        ]
+    );
+}
+
+#[test]
+fn server_cleanup_authenticates_generation_and_socket_before_kill() {
+    let expected = TmuxServerObservation {
+        process: ProcessGeneration {
+            pid: 400,
+            start_time: 30,
+        },
+        socket_device: 40,
+        socket_inode: 50,
+    };
+    for changed in [
+        TmuxServerObservation {
+            process: ProcessGeneration {
+                start_time: 31,
+                ..expected.process.clone()
+            },
+            ..expected.clone()
+        },
+        TmuxServerObservation {
+            socket_inode: 51,
+            ..expected.clone()
+        },
+    ] {
+        let kills = std::cell::Cell::new(0);
+        assert!(!MultiplexerSession::stop_tmux_server_with(
+            || changed == expected,
+            || {
+                kills.set(kills.get() + 1);
+                true
+            },
+            || false,
+            || {},
+        ));
+        assert_eq!(kills.get(), 0, "identity mismatch must issue zero kills");
+    }
+
+    let kills = std::cell::Cell::new(0);
+    assert!(MultiplexerSession::stop_tmux_server_with(
+        || true,
+        || {
+            kills.set(kills.get() + 1);
+            true
+        },
+        || kills.get() == 1,
+        || {},
+    ));
+    assert_eq!(
+        kills.get(),
+        1,
+        "authenticated server gets one graceful kill"
+    );
+}
+
+#[test]
+fn tty_identity_rejects_symlinks_non_devices_and_wrong_owners() {
+    use std::os::unix::fs::symlink;
+
+    let directory = PrivateDirectory::create();
+    let regular = directory.path().join("regular");
+    fs::write(&regular, b"not a terminal").unwrap();
+    let link = directory.path().join("link");
+    symlink("/dev/null", &link).unwrap();
+    let dangling = directory.path().join("dangling");
+    symlink(directory.path().join("missing"), &dangling).unwrap();
+    assert_eq!(tty_identity(regular.to_str().unwrap()), None);
+    assert_eq!(tty_identity(link.to_str().unwrap()), None);
+    assert!(
+        !MultiplexerSession::path_is_absent(&dangling),
+        "dangling symlink must not be treated as an absent owned socket"
+    );
+    let replacement_before = fs::symlink_metadata(&dangling).unwrap();
+    let kills = std::cell::Cell::new(0);
+    assert!(!MultiplexerSession::stop_tmux_server_with(
+        || false,
+        || {
+            kills.set(kills.get() + 1);
+            true
+        },
+        || false,
+        || {},
+    ));
+    let replacement_after = fs::symlink_metadata(&dangling).unwrap();
+    assert_eq!(kills.get(), 0);
+    assert!(replacement_after.file_type().is_symlink());
+    assert_eq!(replacement_after.dev(), replacement_before.dev());
+    assert_eq!(replacement_after.ino(), replacement_before.ino());
+    let wrong_uid = rustix::process::getuid().as_raw().wrapping_add(1);
+    assert_eq!(tty_identity_for_uid("/dev/null", wrong_uid), None);
+}
+
+#[test]
+fn hostile_tmux_tmpdir_cannot_redirect_owned_server_or_cleanup() {
+    if std::env::var(CHILD_MODE).as_deref() == Ok("hostile-tmux-tmpdir") {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let session = format!("asb-tui-tmpdir-{}-{nonce}", std::process::id());
+        let scratch = PrivateDirectory::create();
+        let socket = scratch
+            .path()
+            .join(format!(
+                "asb-tui-tmpdir-socket-{}-{nonce}",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        assert!(bounded_tmux(
+            &socket,
+            &["new-session", "-d", "-s", &session, "sleep 30"],
+        ));
+        let mut guard = MultiplexerSession::Tmux {
+            socket: socket.clone(),
+            session: session.clone(),
+            server: None,
+            pane_process: None,
+        };
+        assert!(bounded_tmux(
+            &socket,
+            &["set-option", "-t", &session, "remain-on-exit", "on"],
+        ));
+        let server = tmux_server_observation(&socket, &session)
+            .expect("tmux server identity must be stable");
+        guard.set_server(server);
+        assert!(
+            MultiplexerSession::tmux_socket_path(&socket)
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_socket()),
+            "clean tmux server did not use the fixed owner-private /tmp root"
+        );
+        let pane_process = tmux_pane_process_observation(&socket, &session)
+            .expect("clean tmux server must expose owned pane authority");
+        guard.set_pane_process(pane_process);
+        assert!(guard.stop());
+        assert!(guard.is_gone());
+        return;
+    }
+
+    let hostile = PrivateDirectory::create();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "hostile_tmux_tmpdir_cannot_redirect_owned_server_or_cleanup",
+        ])
+        .env(CHILD_MODE, "hostile-tmux-tmpdir")
+        .env("TMUX_TMPDIR", hostile.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "hostile TMUX_TMPDIR child failed without exposing its value"
+    );
+    assert_eq!(
+        fs::read_dir(hostile.path()).unwrap().count(),
+        0,
+        "tmux created state under the hostile ambient root"
+    );
+}
+
+#[test]
 fn tmux_guard_without_process_authority_still_cleans_its_exact_server() {
+    let scratch = PrivateDirectory::create();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let session = format!("asb-tui-no-authority-{}-{nonce}", std::process::id());
-    let socket = format!("asb-tui-no-authority-socket-{}-{nonce}", std::process::id());
+    let socket = scratch
+        .path()
+        .join(format!(
+            "asb-tui-no-authority-socket-{}-{nonce}",
+            std::process::id()
+        ))
+        .to_string_lossy()
+        .into_owned();
     assert!(bounded_tmux(
         &socket,
         &["new-session", "-d", "-s", &session, "sleep 30"],
     ));
-    let observed_group =
-        tmux_pane_process_group(&socket, &session).expect("cleanup probe must own a pane group");
     let guarded_socket = socket.clone();
+    let mut guard = MultiplexerSession::Tmux {
+        socket: guarded_socket.clone(),
+        session: session.clone(),
+        server: None,
+        pane_process: None,
+    };
+    assert!(bounded_tmux(
+        &socket,
+        &["set-option", "-t", &session, "remain-on-exit", "on"],
+    ));
+    let server = tmux_server_observation(&guarded_socket, &session)
+        .expect("tmux server identity must be stable");
+    guard.set_server(server.clone());
+    let observed_group = tmux_pane_process_observation(&guarded_socket, &session)
+        .expect("cleanup probe must have an owned pane group")
+        .foreground_group;
     let acquisition = std::panic::catch_unwind(move || {
-        let _guard = MultiplexerSession::Tmux {
-            socket: guarded_socket.clone(),
-            session,
-            process_group: None,
-        };
-        tmux_pane_process_group(&guarded_socket, "missing-session")
+        let _guard = guard;
+        tmux_pane_process_observation(&guarded_socket, "missing-session")
             .expect("intentional process-group acquisition failure");
     });
     assert!(
@@ -939,8 +1653,8 @@ fn tmux_guard_without_process_authority_still_cleans_its_exact_server() {
         "exact tmux server survived no-authority cleanup"
     );
     assert!(
-        !MultiplexerSession::tmux_socket_path(&socket).exists(),
-        "exact tmux socket survived no-authority cleanup"
+        tmux_socket_is_stale(&socket, &server),
+        "exact tmux server remained live or its stale socket became connectable"
     );
     assert!(
         MultiplexerSession::process_group_is_gone(observed_group),
@@ -1000,8 +1714,8 @@ fn rendered_screen_wait_rejects_pre_alternate_malformed_and_oversized_content() 
 #[test]
 fn tmux_diagnostic_fields_reject_malformed_or_sensitive_values() {
     assert_eq!(
-        tmux_args("socket", &["capture-pane", "-p"]),
-        ["-f", "/dev/null", "-L", "socket", "capture-pane", "-p"]
+        tmux_args("/tmp/socket", &["capture-pane", "-p"]),
+        ["-f", "/dev/null", "-S", "/tmp/socket", "capture-pane", "-p"]
     );
     assert_eq!(diagnostic_value(Some("1"), "boolean"), "1");
     assert_eq!(diagnostic_value(Some("2"), "boolean"), "malformed");
