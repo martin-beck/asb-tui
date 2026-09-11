@@ -15,7 +15,7 @@ use asb_tui::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     os::unix::fs::{FileTypeExt, MetadataExt},
     process::{Command, Stdio},
     thread,
@@ -24,6 +24,8 @@ use std::{
 use support::PrivateDirectory;
 
 const CHILD_MODE: &str = "ASB_TUI_TERMINAL_FOUNDATION_CHILD";
+const MAX_MULTIPLEXER_OUTPUT: usize = 4_096;
+const RENDER_WAIT_ATTEMPTS: usize = 100;
 
 fn under_pty(test: &str, mode: &str) -> std::process::Output {
     let executable = std::env::current_exe().unwrap();
@@ -388,12 +390,62 @@ fn bounded_command(program: &str, args: &[&str]) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+fn bounded_output(program: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
+    let mut child = Command::new("/usr/bin/timeout")
+        .args(["--signal=KILL", "3s", program])
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut output = Vec::new();
+    child
+        .stdout
+        .take()?
+        .take((MAX_MULTIPLEXER_OUTPUT + 1) as u64)
+        .read_to_end(&mut output)
+        .ok()?;
+    let status = child.wait().ok()?;
+    (output.len() <= MAX_MULTIPLEXER_OUTPUT).then_some((status.success(), output))
+}
+
+fn tmux_args<'a>(socket: &'a str, args: &'a [&'a str]) -> Vec<&'a str> {
+    let mut command = vec!["-f", "/dev/null", "-L", socket];
+    command.extend_from_slice(args);
+    command
+}
+
+fn bounded_tmux(socket: &str, args: &[&str]) -> bool {
+    bounded_command("/usr/bin/tmux", &tmux_args(socket, args))
+}
+
+fn bounded_tmux_output(socket: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
+    bounded_output("/usr/bin/tmux", &tmux_args(socket, args))
+}
+
 enum MultiplexerSession {
-    Tmux { socket: String, session: String },
-    Screen { session: String },
+    Tmux {
+        socket: String,
+        session: String,
+        process_group: Option<u32>,
+    },
+    Screen {
+        session: String,
+    },
 }
 
 impl MultiplexerSession {
+    fn set_process_group(&mut self, validated_process_group: u32) {
+        match self {
+            Self::Tmux { process_group, .. } => {
+                assert!(process_group.is_none());
+                *process_group = Some(validated_process_group);
+            }
+            Self::Screen { .. } => panic!("screen sessions have no tmux pane process group"),
+        }
+    }
+
     fn tmux_socket_path(socket: &str) -> std::path::PathBuf {
         std::path::PathBuf::from(format!(
             "/tmp/tmux-{}/{}",
@@ -402,10 +454,46 @@ impl MultiplexerSession {
         ))
     }
 
-    fn stop(&self) {
+    fn process_group_is_gone(process_group: u32) -> bool {
+        !bounded_command("/bin/kill", &["-0", "--", &format!("-{process_group}")])
+    }
+
+    fn stop_process_group(socket: &str, session: &str, process_group: u32) -> bool {
+        if Self::process_group_is_gone(process_group) {
+            return true;
+        }
+        if tmux_pane_process_group(socket, session) != Some(process_group) {
+            return false;
+        }
+        let group = format!("-{process_group}");
+        let _ = bounded_command("/bin/kill", &["-TERM", "--", &group]);
+        for _ in 0..100 {
+            if Self::process_group_is_gone(process_group) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = bounded_command("/bin/kill", &["-KILL", "--", &group]);
+        for _ in 0..100 {
+            if Self::process_group_is_gone(process_group) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    fn stop(&self) -> bool {
         match self {
-            Self::Tmux { socket, .. } => {
-                let _ = bounded_command("/usr/bin/tmux", &["-L", socket, "kill-server"]);
+            Self::Tmux {
+                socket,
+                session,
+                process_group,
+                ..
+            } => {
+                let group_clean = process_group
+                    .is_some_and(|group| Self::stop_process_group(socket, session, group));
+                let _ = bounded_tmux(socket, &["kill-server"]);
                 let path = Self::tmux_socket_path(socket);
                 if fs::symlink_metadata(&path).is_ok_and(|metadata| {
                     metadata.file_type().is_socket()
@@ -413,20 +501,25 @@ impl MultiplexerSession {
                 }) {
                     let _ = fs::remove_file(path);
                 }
+                group_clean
             }
             Self::Screen { session } => {
                 let _ = bounded_command("/usr/bin/screen", &["-S", session, "-X", "quit"]);
+                true
             }
         }
     }
 
     fn is_gone(&self) -> bool {
         match self {
-            Self::Tmux { socket, session } => {
-                !bounded_command(
-                    "/usr/bin/tmux",
-                    &["-L", socket, "has-session", "-t", session],
-                ) && !Self::tmux_socket_path(socket).exists()
+            Self::Tmux {
+                socket,
+                session,
+                process_group,
+            } => {
+                !bounded_tmux(socket, &["has-session", "-t", session])
+                    && !Self::tmux_socket_path(socket).exists()
+                    && process_group.is_some_and(Self::process_group_is_gone)
             }
             Self::Screen { session } => {
                 !bounded_command("/usr/bin/screen", &["-S", session, "-Q", "select", "."])
@@ -437,18 +530,207 @@ impl MultiplexerSession {
 
 impl Drop for MultiplexerSession {
     fn drop(&mut self) {
-        self.stop();
+        let _ = self.stop();
     }
 }
 
-fn wait_for_rendered_screen(mut capture: impl FnMut() -> Option<String>) -> bool {
-    for _ in 0..100 {
-        if capture().is_some_and(|text| text.contains("Connection")) {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(25));
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PaneSummary {
+    Unavailable,
+    Oversized,
+    NonUtf8 { bytes: usize },
+    Recognized { bytes: usize, labels: String },
+    Unrecognized { bytes: usize },
+}
+
+fn pane_summary(capture: Option<Vec<u8>>) -> PaneSummary {
+    let Some(capture) = capture else {
+        return PaneSummary::Unavailable;
+    };
+    if capture.len() > MAX_MULTIPLEXER_OUTPUT {
+        return PaneSummary::Oversized;
     }
-    false
+    let Ok(text) = std::str::from_utf8(&capture) else {
+        return PaneSummary::NonUtf8 {
+            bytes: capture.len(),
+        };
+    };
+    let labels = [
+        "Agent Systems Benchmark",
+        "Connection",
+        "Last event",
+        "runner ownership remains external",
+    ]
+    .into_iter()
+    .filter(|label| text.contains(label))
+    .collect::<Vec<_>>()
+    .join("|");
+    if labels.is_empty() {
+        PaneSummary::Unrecognized {
+            bytes: capture.len(),
+        }
+    } else {
+        PaneSummary::Recognized {
+            bytes: capture.len(),
+            labels,
+        }
+    }
+}
+
+fn wait_for_rendered_screen(
+    attempts: usize,
+    delay: Duration,
+    mut capture: impl FnMut() -> Option<Vec<u8>>,
+) -> Result<(), PaneSummary> {
+    let mut last = PaneSummary::Unavailable;
+    for _ in 0..attempts {
+        let summary = pane_summary(capture());
+        if frame_is_recognized(&summary) {
+            return Ok(());
+        }
+        last = summary;
+        thread::sleep(delay);
+    }
+    Err(last)
+}
+
+fn frame_is_recognized(summary: &PaneSummary) -> bool {
+    matches!(
+        summary,
+        PaneSummary::Recognized { labels, .. }
+            if labels.split('|').any(|label| label == "Connection")
+    )
+}
+
+fn wait_for_tmux_rendered_screen(
+    attempts: usize,
+    delay: Duration,
+    mut capture: impl FnMut() -> Option<(bool, Vec<u8>, bool)>,
+) -> Result<(), PaneSummary> {
+    let mut last = PaneSummary::Unavailable;
+    for _ in 0..attempts {
+        let observed = capture();
+        let coherent_alternate = observed
+            .as_ref()
+            .is_some_and(|(before, _, after)| *before && *after);
+        let summary = pane_summary(observed.map(|(_, pane, _)| pane));
+        if coherent_alternate && frame_is_recognized(&summary) {
+            return Ok(());
+        }
+        last = summary;
+        thread::sleep(delay);
+    }
+    Err(last)
+}
+
+fn tmux_alternate_on(socket: &str, session: &str) -> Option<bool> {
+    let output = bounded_tmux_output(
+        socket,
+        &["display-message", "-p", "-t", session, "#{alternate_on}"],
+    )
+    .filter(|(success, _)| *success)
+    .map(|(_, output)| output)?;
+    match output.as_slice() {
+        b"0\n" => Some(false),
+        b"1\n" => Some(true),
+        _ => None,
+    }
+}
+
+fn tmux_pane_process_group(socket: &str, session: &str) -> Option<u32> {
+    let pane_pid = bounded_tmux_output(
+        socket,
+        &["display-message", "-p", "-t", session, "#{pane_pid}"],
+    )
+    .filter(|(success, _)| *success)
+    .and_then(|(_, output)| String::from_utf8(output).ok())?
+    .trim()
+    .parse::<u32>()
+    .ok()
+    .filter(|pid| *pid > 1)?;
+    let pid = pane_pid.to_string();
+    let process_group = bounded_output("/usr/bin/ps", &["-o", "pgid=", "-p", &pid])
+        .filter(|(success, _)| *success)
+        .and_then(|(_, output)| String::from_utf8(output).ok())?
+        .trim()
+        .parse::<u32>()
+        .ok()?;
+    (pane_pid == process_group).then_some(process_group)
+}
+
+fn tmux_visible_alternate_capture(socket: &str, session: &str) -> Option<(bool, Vec<u8>, bool)> {
+    let before = tmux_alternate_on(socket, session)?;
+    let pane = bounded_tmux_output(socket, &["capture-pane", "-p", "-t", session])
+        .filter(|(success, _)| *success)
+        .map(|(_, output)| output)?;
+    let after = tmux_alternate_on(socket, session)?;
+    Some((before, pane, after))
+}
+
+fn diagnostic_value(value: Option<&str>, kind: &str) -> String {
+    let Some(value) = value else {
+        return "unavailable".into();
+    };
+    let valid = match kind {
+        "boolean" => matches!(value, "0" | "1"),
+        "status" => {
+            value.is_empty()
+                || (value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit()))
+        }
+        "command" => {
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+        }
+        _ => false,
+    };
+    if valid {
+        if value.is_empty() {
+            "none".into()
+        } else {
+            value.into()
+        }
+    } else {
+        "malformed".into()
+    }
+}
+
+fn tmux_diagnostics(socket: &str, session: &str, pane: &PaneSummary) -> String {
+    let format = concat!(
+        "alternate_on=#{alternate_on}\n",
+        "pane_dead=#{pane_dead}\n",
+        "pane_dead_status=#{pane_dead_status}\n",
+        "pane_current_command=#{pane_current_command}"
+    );
+    let output = bounded_tmux_output(socket, &["display-message", "-p", "-t", session, format])
+        .filter(|(success, _)| *success)
+        .and_then(|(_, output)| String::from_utf8(output).ok());
+    let mut alternate_on = None;
+    let mut pane_dead = None;
+    let mut pane_dead_status = None;
+    let mut pane_current_command = None;
+    if let Some(output) = output.as_deref() {
+        for line in output.lines() {
+            if let Some(value) = line.strip_prefix("alternate_on=") {
+                alternate_on = Some(value);
+            } else if let Some(value) = line.strip_prefix("pane_dead=") {
+                pane_dead = Some(value);
+            } else if let Some(value) = line.strip_prefix("pane_dead_status=") {
+                pane_dead_status = Some(value);
+            } else if let Some(value) = line.strip_prefix("pane_current_command=") {
+                pane_current_command = Some(value);
+            }
+        }
+    }
+    format!(
+        "pane={pane:?} alternate_on={} pane_dead={} pane_dead_status={} pane_current_command={}",
+        diagnostic_value(alternate_on, "boolean"),
+        diagnostic_value(pane_dead, "boolean"),
+        diagnostic_value(pane_dead_status, "status"),
+        diagnostic_value(pane_current_command, "command"),
+    )
 }
 
 #[test]
@@ -467,11 +749,9 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
         "before=$(stty -g) || exit 90; {binary}; status=$?; after=$(stty -g) || exit 91; test \"$before\" = \"$after\" || exit 92; printf restored >{}; exit $status",
         tmux_marker.display()
     );
-    assert!(bounded_command(
-        "/usr/bin/tmux",
+    assert!(bounded_tmux(
+        &tmux_socket,
         &[
-            "-L",
-            &tmux_socket,
             "new-session",
             "-d",
             "-s",
@@ -483,38 +763,40 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
             &tmux_command,
         ],
     ));
-    let tmux_guard = MultiplexerSession::Tmux {
+    let mut tmux_guard = MultiplexerSession::Tmux {
         socket: tmux_socket.clone(),
         session: tmux_session.clone(),
+        process_group: None,
     };
-    assert!(
-        wait_for_rendered_screen(|| {
-            Command::new("/usr/bin/timeout")
-                .args([
-                    "--signal=KILL",
-                    "3s",
-                    "/usr/bin/tmux",
-                    "-L",
-                    &tmux_socket,
-                    "capture-pane",
-                    "-p",
-                    "-t",
-                    &tmux_session,
-                ])
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        }),
-        "tmux UI did not reach its first rendered frame"
-    );
-    assert!(bounded_command(
-        "/usr/bin/tmux",
-        &["-L", &tmux_socket, "send-keys", "-t", &tmux_session, "q"],
+    let tmux_process_group = tmux_pane_process_group(&tmux_socket, &tmux_session)
+        .expect("tmux pane must own its process group");
+    tmux_guard.set_process_group(tmux_process_group);
+    let readiness =
+        wait_for_tmux_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
+            tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+        });
+    if let Err(pane) = readiness {
+        let diagnostic = tmux_diagnostics(&tmux_socket, &tmux_session, &pane);
+        assert!(
+            tmux_guard.stop(),
+            "tmux cleanup ownership could not be revalidated"
+        );
+        assert!(
+            tmux_guard.is_gone(),
+            "tmux cleanup failed after readiness timeout"
+        );
+        panic!("tmux UI did not reach its first rendered frame: {diagnostic}");
+    }
+    assert!(bounded_tmux(
+        &tmux_socket,
+        &["send-keys", "-t", &tmux_session, "q"],
     ));
     let tmux_restored = wait_for_marker(&tmux_marker);
     assert!(tmux_restored, "tmux session did not restore termios");
-    tmux_guard.stop();
+    assert!(
+        tmux_guard.stop(),
+        "tmux cleanup ownership could not be revalidated"
+    );
     assert!(tmux_guard.is_gone(), "tmux session leaked after cleanup");
 
     let screen_marker = directory.path().join("screen-restored");
@@ -532,7 +814,7 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
         session: screen_session.clone(),
     };
     assert!(
-        wait_for_rendered_screen(|| {
+        wait_for_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
             let capture = screen_capture.to_string_lossy();
             if !bounded_command(
                 "/usr/bin/screen",
@@ -540,8 +822,15 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
             ) {
                 return None;
             }
-            fs::read_to_string(&screen_capture).ok()
-        }),
+            fs::File::open(&screen_capture).ok().and_then(|file| {
+                let mut output = Vec::new();
+                file.take((MAX_MULTIPLEXER_OUTPUT + 1) as u64)
+                    .read_to_end(&mut output)
+                    .ok()?;
+                (output.len() <= MAX_MULTIPLEXER_OUTPUT).then_some(output)
+            })
+        })
+        .is_ok(),
         "GNU screen UI did not reach its first rendered frame"
     );
     assert!(bounded_command(
@@ -553,11 +842,179 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
         screen_restored,
         "GNU screen session did not restore termios"
     );
-    screen_guard.stop();
+    assert!(screen_guard.stop(), "screen cleanup failed");
     assert!(
         screen_guard.is_gone(),
         "GNU screen session leaked after cleanup"
     );
+}
+
+#[test]
+fn tmux_guard_reaps_a_hup_resistant_owned_pane_group_after_readiness_failure() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let session = format!("asb-tui-cleanup-{}-{nonce}", std::process::id());
+    let socket = format!("asb-tui-cleanup-socket-{}-{nonce}", std::process::id());
+    assert!(bounded_tmux(
+        &socket,
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            &session,
+            "trap '' HUP; while :; do sleep 1; done",
+        ],
+    ));
+    let mut guard = MultiplexerSession::Tmux {
+        socket: socket.clone(),
+        session: session.clone(),
+        process_group: None,
+    };
+    let process_group =
+        tmux_pane_process_group(&socket, &session).expect("tmux pane must own its process group");
+    guard.set_process_group(process_group);
+    let unrelated_group = u32::try_from(rustix::process::getpgrp().as_raw_pid()).unwrap();
+    assert_ne!(unrelated_group, process_group);
+    assert!(
+        !MultiplexerSession::stop_process_group(&socket, &session, unrelated_group),
+        "mismatched live process group must not be signalled"
+    );
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            guard.set_process_group(unrelated_group);
+        }))
+        .is_err(),
+        "duplicate process-group assignment unexpectedly succeeded"
+    );
+    assert!(
+        !MultiplexerSession::process_group_is_gone(process_group),
+        "owned pane group changed during mismatch rejection"
+    );
+    assert_eq!(
+        wait_for_tmux_rendered_screen(1, Duration::ZERO, || None),
+        Err(PaneSummary::Unavailable)
+    );
+    assert!(
+        guard.stop(),
+        "tmux cleanup ownership could not be revalidated"
+    );
+    assert!(
+        guard.is_gone(),
+        "tmux pane process group or server leaked after failed readiness"
+    );
+}
+
+#[test]
+fn tmux_guard_without_process_authority_still_cleans_its_exact_server() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let session = format!("asb-tui-no-authority-{}-{nonce}", std::process::id());
+    let socket = format!("asb-tui-no-authority-socket-{}-{nonce}", std::process::id());
+    assert!(bounded_tmux(
+        &socket,
+        &["new-session", "-d", "-s", &session, "sleep 30"],
+    ));
+    let observed_group =
+        tmux_pane_process_group(&socket, &session).expect("cleanup probe must own a pane group");
+    let guarded_socket = socket.clone();
+    let acquisition = std::panic::catch_unwind(move || {
+        let _guard = MultiplexerSession::Tmux {
+            socket: guarded_socket.clone(),
+            session,
+            process_group: None,
+        };
+        tmux_pane_process_group(&guarded_socket, "missing-session")
+            .expect("intentional process-group acquisition failure");
+    });
+    assert!(
+        acquisition.is_err(),
+        "invalid pane unexpectedly supplied process-group authority"
+    );
+    assert!(
+        !bounded_tmux(&socket, &["has-session"]),
+        "exact tmux server survived no-authority cleanup"
+    );
+    assert!(
+        !MultiplexerSession::tmux_socket_path(&socket).exists(),
+        "exact tmux socket survived no-authority cleanup"
+    );
+    assert!(
+        MultiplexerSession::process_group_is_gone(observed_group),
+        "no-authority cleanup left the ordinary pane group alive"
+    );
+}
+
+#[test]
+fn rendered_screen_wait_rejects_pre_alternate_malformed_and_oversized_content() {
+    let mut captures = [
+        None,
+        Some((false, b"Connection: disconnected".to_vec(), false)),
+        Some((true, b"Connection: disconnected".to_vec(), false)),
+        Some((true, vec![0xff], true)),
+        Some((true, b"Connection: disconnected".to_vec(), true)),
+    ]
+    .into_iter();
+    assert_eq!(
+        wait_for_tmux_rendered_screen(5, Duration::ZERO, || captures.next().flatten()),
+        Ok(())
+    );
+    assert_eq!(
+        wait_for_tmux_rendered_screen(1, Duration::ZERO, || {
+            Some((true, b"Connection: disconnected".to_vec(), false))
+        }),
+        Err(PaneSummary::Recognized {
+            bytes: 24,
+            labels: "Connection".into()
+        })
+    );
+    assert_eq!(
+        wait_for_tmux_rendered_screen(2, Duration::ZERO, || None),
+        Err(PaneSummary::Unavailable)
+    );
+    assert_eq!(
+        wait_for_tmux_rendered_screen(1, Duration::ZERO, || { Some((true, vec![0xff], true)) }),
+        Err(PaneSummary::NonUtf8 { bytes: 1 })
+    );
+    assert_eq!(
+        wait_for_tmux_rendered_screen(1, Duration::ZERO, || {
+            Some((true, vec![b'x'; MAX_MULTIPLEXER_OUTPUT + 1], true))
+        }),
+        Err(PaneSummary::Oversized)
+    );
+    let mut malformed = vec![0xff];
+    malformed.extend_from_slice(b"Connection");
+    assert_eq!(
+        wait_for_tmux_rendered_screen(1, Duration::ZERO, || {
+            Some((true, malformed.clone(), true))
+        }),
+        Err(PaneSummary::NonUtf8 {
+            bytes: malformed.len()
+        })
+    );
+}
+
+#[test]
+fn tmux_diagnostic_fields_reject_malformed_or_sensitive_values() {
+    assert_eq!(
+        tmux_args("socket", &["capture-pane", "-p"]),
+        ["-f", "/dev/null", "-L", "socket", "capture-pane", "-p"]
+    );
+    assert_eq!(diagnostic_value(Some("1"), "boolean"), "1");
+    assert_eq!(diagnostic_value(Some("2"), "boolean"), "malformed");
+    assert_eq!(diagnostic_value(Some("126"), "status"), "126");
+    assert_eq!(
+        diagnostic_value(Some("/private/program"), "command"),
+        "malformed"
+    );
+    assert_eq!(
+        diagnostic_value(Some("program with args"), "command"),
+        "malformed"
+    );
+    assert_eq!(diagnostic_value(None, "command"), "unavailable");
 }
 
 #[test]
