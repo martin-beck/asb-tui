@@ -698,7 +698,16 @@ enum TmuxServerObservationStage {
     Unavailable,
     SocketMetadataUnavailable,
     SocketMetadataInvalid,
-    SocketConnectionUnavailable,
+    SocketPathInvalid,
+    SocketCreationUnavailable,
+    SocketConnectRejected,
+    SocketPollUnavailable,
+    SocketPollTimeout,
+    SocketPollInvalid,
+    SocketPollNoCompletion,
+    SocketErrorUnavailable,
+    SocketErrorMalformed,
+    SocketErrorNonzero,
     PeerCredentialsUnavailable,
     PeerCredentialsInvalid,
     ProcessGenerationUnavailable,
@@ -713,7 +722,16 @@ impl TmuxServerObservationStage {
             Self::Unavailable => "unavailable",
             Self::SocketMetadataUnavailable => "socket_metadata_unavailable",
             Self::SocketMetadataInvalid => "socket_metadata_invalid",
-            Self::SocketConnectionUnavailable => "socket_connection_unavailable",
+            Self::SocketPathInvalid => "socket_path_invalid",
+            Self::SocketCreationUnavailable => "socket_creation_unavailable",
+            Self::SocketConnectRejected => "socket_connect_rejected",
+            Self::SocketPollUnavailable => "socket_poll_unavailable",
+            Self::SocketPollTimeout => "socket_poll_timeout",
+            Self::SocketPollInvalid => "socket_poll_invalid",
+            Self::SocketPollNoCompletion => "socket_poll_no_completion",
+            Self::SocketErrorUnavailable => "socket_error_unavailable",
+            Self::SocketErrorMalformed => "socket_error_malformed",
+            Self::SocketErrorNonzero => "socket_error_nonzero",
             Self::PeerCredentialsUnavailable => "peer_credentials_unavailable",
             Self::PeerCredentialsInvalid => "peer_credentials_invalid",
             Self::ProcessGenerationUnavailable => "process_generation_unavailable",
@@ -1258,7 +1276,7 @@ fn tmux_socket_peer_process(
         || path_bytes.contains(&0)
         || path_bytes.len() >= address.sun_path.len()
     {
-        return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
+        return Err(TmuxServerObservationStage::SocketPathInvalid);
     }
     address.sun_family = libc::AF_UNIX as libc::sa_family_t;
     for (destination, source) in address.sun_path.iter_mut().zip(path_bytes) {
@@ -1266,7 +1284,7 @@ fn tmux_socket_peer_process(
     }
     let address_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path_bytes.len() + 1)
         .try_into()
-        .map_err(|_| TmuxServerObservationStage::SocketConnectionUnavailable)?;
+        .map_err(|_| TmuxServerObservationStage::SocketPathInvalid)?;
     let raw_fd = unsafe {
         // SAFETY: The constants describe a Linux Unix stream socket and no borrowed pointer is used.
         libc::socket(
@@ -1276,7 +1294,7 @@ fn tmux_socket_peer_process(
         )
     };
     if raw_fd < 0 {
-        return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
+        return Err(TmuxServerObservationStage::SocketCreationUnavailable);
     }
     let socket = unsafe {
         // SAFETY: raw_fd was just returned uniquely by socket and is transferred exactly once.
@@ -1292,9 +1310,7 @@ fn tmux_socket_peer_process(
     };
     if connected != 0 {
         let connect_error = io::Error::last_os_error().raw_os_error();
-        if !unix_connect_is_incomplete(connect_error) {
-            return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
-        }
+        classify_unix_connect_attempt(connected, connect_error)?;
         let mut descriptor = libc::pollfd {
             fd: socket.as_raw_fd(),
             events: libc::POLLOUT,
@@ -1316,15 +1332,13 @@ fn tmux_socket_peer_process(
                 &raw mut socket_error_len,
             )
         };
-        if !unix_connect_completion_is_valid(
+        classify_unix_connect_completion(
             ready,
             descriptor.revents,
             status,
             socket_error_len,
             socket_error,
-        ) {
-            return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
-        }
+        )?;
     }
     let mut credentials = MaybeUninit::<libc::ucred>::uninit();
     let mut credentials_len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -1357,24 +1371,48 @@ fn tmux_socket_peer_process(
     Ok(ProcessGeneration { pid, start_time })
 }
 
-fn unix_connect_is_incomplete(error: Option<i32>) -> bool {
+fn classify_unix_connect_attempt(
+    connected: i32,
+    error: Option<i32>,
+) -> Result<bool, TmuxServerObservationStage> {
+    if connected == 0 {
+        return Ok(false);
+    }
     matches!(error, Some(code) if code == libc::EINPROGRESS || code == libc::EAGAIN)
+        .then_some(true)
+        .ok_or(TmuxServerObservationStage::SocketConnectRejected)
 }
 
-fn unix_connect_completion_is_valid(
+fn classify_unix_connect_completion(
     ready: i32,
     revents: libc::c_short,
     getsockopt_status: i32,
     socket_error_len: libc::socklen_t,
     socket_error: i32,
-) -> bool {
+) -> Result<(), TmuxServerObservationStage> {
     let completion_events = libc::POLLOUT | libc::POLLERR | libc::POLLHUP;
-    ready == 1
-        && revents & libc::POLLNVAL == 0
-        && revents & completion_events != 0
-        && getsockopt_status == 0
-        && socket_error_len as usize == std::mem::size_of::<libc::c_int>()
-        && socket_error == 0
+    if ready < 0 {
+        return Err(TmuxServerObservationStage::SocketPollUnavailable);
+    }
+    if ready == 0 {
+        return Err(TmuxServerObservationStage::SocketPollTimeout);
+    }
+    if ready != 1 || revents & libc::POLLNVAL != 0 {
+        return Err(TmuxServerObservationStage::SocketPollInvalid);
+    }
+    if revents & completion_events == 0 {
+        return Err(TmuxServerObservationStage::SocketPollNoCompletion);
+    }
+    if getsockopt_status != 0 {
+        return Err(TmuxServerObservationStage::SocketErrorUnavailable);
+    }
+    if socket_error_len as usize != std::mem::size_of::<libc::c_int>() {
+        return Err(TmuxServerObservationStage::SocketErrorMalformed);
+    }
+    if socket_error != 0 {
+        return Err(TmuxServerObservationStage::SocketErrorNonzero);
+    }
+    Ok(())
 }
 
 fn tmux_server_matches(socket: &str, session: &str, expected: &TmuxServerObservation) -> bool {
@@ -2291,7 +2329,16 @@ fn tmux_server_observation_diagnostics_are_closed_bounded_and_sequence_exact() {
         TmuxServerObservationStage::Unavailable,
         TmuxServerObservationStage::SocketMetadataUnavailable,
         TmuxServerObservationStage::SocketMetadataInvalid,
-        TmuxServerObservationStage::SocketConnectionUnavailable,
+        TmuxServerObservationStage::SocketPathInvalid,
+        TmuxServerObservationStage::SocketCreationUnavailable,
+        TmuxServerObservationStage::SocketConnectRejected,
+        TmuxServerObservationStage::SocketPollUnavailable,
+        TmuxServerObservationStage::SocketPollTimeout,
+        TmuxServerObservationStage::SocketPollInvalid,
+        TmuxServerObservationStage::SocketPollNoCompletion,
+        TmuxServerObservationStage::SocketErrorUnavailable,
+        TmuxServerObservationStage::SocketErrorMalformed,
+        TmuxServerObservationStage::SocketErrorNonzero,
         TmuxServerObservationStage::PeerCredentialsUnavailable,
         TmuxServerObservationStage::PeerCredentialsInvalid,
         TmuxServerObservationStage::ProcessGenerationUnavailable,
@@ -2314,7 +2361,7 @@ fn tmux_server_observation_diagnostics_are_closed_bounded_and_sequence_exact() {
     let expected = synthetic_startup_observation(300, "@9").server;
     let mut eventually_available = [
         Err(TmuxServerObservationStage::SocketMetadataUnavailable),
-        Err(TmuxServerObservationStage::SocketConnectionUnavailable),
+        Err(TmuxServerObservationStage::SocketConnectRejected),
         Ok(expected.clone()),
     ]
     .into_iter();
@@ -2377,13 +2424,13 @@ fn unix_socket_peer_credentials_bind_the_exact_live_process_generation() {
     let absent = scratch.path().join("absent.sock");
     assert_eq!(
         tmux_socket_peer_process(&absent),
-        Err(TmuxServerObservationStage::SocketConnectionUnavailable)
+        Err(TmuxServerObservationStage::SocketConnectRejected)
     );
 
     let nul_path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"invalid\0socket"));
     assert_eq!(
         tmux_socket_peer_process(nul_path),
-        Err(TmuxServerObservationStage::SocketConnectionUnavailable)
+        Err(TmuxServerObservationStage::SocketPathInvalid)
     );
     let address = unsafe {
         // SAFETY: Zero initializes sockaddr_un sufficiently to inspect its fixed array length.
@@ -2392,52 +2439,112 @@ fn unix_socket_peer_credentials_bind_the_exact_live_process_generation() {
     let overlong = vec![b'a'; address.sun_path.len()];
     assert_eq!(
         tmux_socket_peer_process(std::path::Path::new(std::ffi::OsStr::from_bytes(&overlong))),
-        Err(TmuxServerObservationStage::SocketConnectionUnavailable)
+        Err(TmuxServerObservationStage::SocketPathInvalid)
     );
 }
 
 #[test]
 fn unix_socket_nonblocking_completion_uses_exact_so_error() {
-    assert!(unix_connect_is_incomplete(Some(libc::EINPROGRESS)));
-    assert!(unix_connect_is_incomplete(Some(libc::EAGAIN)));
-    assert!(!unix_connect_is_incomplete(None));
-    assert!(!unix_connect_is_incomplete(Some(libc::ECONNREFUSED)));
+    assert_eq!(classify_unix_connect_attempt(0, None), Ok(false));
+    assert_eq!(
+        classify_unix_connect_attempt(-1, Some(libc::EINPROGRESS)),
+        Ok(true)
+    );
+    assert_eq!(
+        classify_unix_connect_attempt(-1, Some(libc::EAGAIN)),
+        Ok(true)
+    );
+    for error in [None, Some(libc::ECONNREFUSED), Some(libc::EINTR)] {
+        assert_eq!(
+            classify_unix_connect_attempt(-1, error),
+            Err(TmuxServerObservationStage::SocketConnectRejected)
+        );
+    }
 
     let exact_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-    assert!(unix_connect_completion_is_valid(
-        1,
-        libc::POLLOUT,
-        0,
-        exact_len,
-        0
-    ));
-    assert!(unix_connect_completion_is_valid(
-        1,
-        libc::POLLOUT | libc::POLLHUP,
-        0,
-        exact_len,
-        0
-    ));
-    assert!(unix_connect_completion_is_valid(
-        1,
-        libc::POLLERR,
-        0,
-        exact_len,
-        0
-    ));
+    assert_eq!(
+        classify_unix_connect_completion(1, libc::POLLOUT, 0, exact_len, 0),
+        Ok(())
+    );
+    assert_eq!(
+        classify_unix_connect_completion(1, libc::POLLOUT | libc::POLLHUP, 0, exact_len, 0),
+        Ok(())
+    );
+    assert_eq!(
+        classify_unix_connect_completion(1, libc::POLLERR, 0, exact_len, 0),
+        Ok(())
+    );
 
-    for (ready, revents, status, length, error) in [
-        (0, 0, 0, exact_len, 0),
-        (-1, 0, 0, exact_len, 0),
-        (1, libc::POLLIN, 0, exact_len, 0),
-        (1, libc::POLLOUT | libc::POLLNVAL, 0, exact_len, 0),
-        (1, libc::POLLOUT, -1, exact_len, 0),
-        (1, libc::POLLOUT, 0, exact_len - 1, 0),
-        (1, libc::POLLOUT, 0, exact_len, libc::ECONNREFUSED),
+    for (ready, revents, status, length, error, expected) in [
+        (
+            0,
+            0,
+            0,
+            exact_len,
+            0,
+            TmuxServerObservationStage::SocketPollTimeout,
+        ),
+        (
+            -1,
+            0,
+            0,
+            exact_len,
+            0,
+            TmuxServerObservationStage::SocketPollUnavailable,
+        ),
+        (
+            2,
+            libc::POLLOUT,
+            0,
+            exact_len,
+            0,
+            TmuxServerObservationStage::SocketPollInvalid,
+        ),
+        (
+            1,
+            libc::POLLIN,
+            0,
+            exact_len,
+            0,
+            TmuxServerObservationStage::SocketPollNoCompletion,
+        ),
+        (
+            1,
+            libc::POLLOUT | libc::POLLNVAL,
+            0,
+            exact_len,
+            0,
+            TmuxServerObservationStage::SocketPollInvalid,
+        ),
+        (
+            1,
+            libc::POLLOUT,
+            -1,
+            exact_len,
+            0,
+            TmuxServerObservationStage::SocketErrorUnavailable,
+        ),
+        (
+            1,
+            libc::POLLOUT,
+            0,
+            exact_len - 1,
+            0,
+            TmuxServerObservationStage::SocketErrorMalformed,
+        ),
+        (
+            1,
+            libc::POLLOUT,
+            0,
+            exact_len,
+            libc::ECONNREFUSED,
+            TmuxServerObservationStage::SocketErrorNonzero,
+        ),
     ] {
-        assert!(!unix_connect_completion_is_valid(
-            ready, revents, status, length, error
-        ));
+        assert_eq!(
+            classify_unix_connect_completion(ready, revents, status, length, error),
+            Err(expected)
+        );
     }
 }
 
