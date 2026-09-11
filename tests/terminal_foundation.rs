@@ -22,6 +22,7 @@ use std::{
     os::unix::ffi::OsStrExt,
     os::unix::fs::{FileTypeExt, MetadataExt},
     process::{Command, Stdio},
+    sync::{Arc, Mutex, MutexGuard, mpsc},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -31,6 +32,16 @@ const CHILD_MODE: &str = "ASB_TUI_TERMINAL_FOUNDATION_CHILD";
 const MAX_MULTIPLEXER_OUTPUT: usize = 4_096;
 const RENDER_WAIT_ATTEMPTS: usize = 100;
 const TMUX_STARTUP_ATTEMPTS: usize = 100;
+static LIVE_TMUX_FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+
+fn serialize_live_tmux_fixture() -> MutexGuard<'static, ()> {
+    lock_unpoisoned(&LIVE_TMUX_FIXTURE_LOCK)
+}
+
+fn lock_unpoisoned(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn under_pty(test: &str, mode: &str) -> std::process::Output {
     let executable = std::env::current_exe().unwrap();
@@ -1786,7 +1797,35 @@ fn tmux_diagnostics(socket: &str, session: &str, pane: &PaneSummary) -> String {
 }
 
 #[test]
+fn live_tmux_fixture_lock_is_exclusive() {
+    let lock = Arc::new(Mutex::new(()));
+    let first = lock_unpoisoned(&lock);
+    let (attempting_tx, attempting_rx) = mpsc::sync_channel(0);
+    let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+    let contender_lock = Arc::clone(&lock);
+    let contender = thread::spawn(move || {
+        attempting_tx.send(()).unwrap();
+        let _second = lock_unpoisoned(&contender_lock);
+        entered_tx.send(()).unwrap();
+    });
+
+    attempting_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("contending fixture did not reach the acquisition boundary");
+    assert!(
+        entered_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "a second live tmux fixture entered before the first released exclusion"
+    );
+    drop(first);
+    entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("contending fixture did not enter after exclusion was released");
+    contender.join().unwrap();
+}
+
+#[test]
 fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
+    let _fixture_lock = serialize_live_tmux_fixture();
     let binary = env!("CARGO_BIN_EXE_asb-tui");
     let directory = PrivateDirectory::create();
     let nonce = SystemTime::now()
@@ -1893,6 +1932,7 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
 
 #[test]
 fn tmux_guard_reaps_a_hup_resistant_owned_pane_group_after_readiness_failure() {
+    let _fixture_lock = serialize_live_tmux_fixture();
     let scratch = PrivateDirectory::create();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2230,6 +2270,9 @@ fn hostile_tmux_tmpdir_cannot_redirect_owned_server_or_cleanup() {
         return;
     }
 
+    // The parent retains the process-local exclusion while the exact child
+    // exercises the hostile environment. The child must not reacquire it.
+    let _fixture_lock = serialize_live_tmux_fixture();
     let hostile = PrivateDirectory::create();
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
@@ -2253,6 +2296,7 @@ fn hostile_tmux_tmpdir_cannot_redirect_owned_server_or_cleanup() {
 
 #[test]
 fn malformed_created_window_identity_drops_the_fully_authorized_guard() {
+    let _fixture_lock = serialize_live_tmux_fixture();
     let scratch = PrivateDirectory::create();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2284,6 +2328,7 @@ fn malformed_created_window_identity_drops_the_fully_authorized_guard() {
 
 #[test]
 fn tmux_guard_without_process_authority_still_cleans_its_exact_server() {
+    let _fixture_lock = serialize_live_tmux_fixture();
     let scratch = PrivateDirectory::create();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
