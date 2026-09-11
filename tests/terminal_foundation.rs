@@ -14,6 +14,7 @@ use asb_tui::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
+    collections::BTreeSet,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
     mem::MaybeUninit,
@@ -523,20 +524,28 @@ fn finish_guarded_tmux_session(
             )
         })?;
     guard.set_server(server.clone());
-    let startup = wait_for_stable_matching_observation(
+    let startup = wait_for_stable_startup_observation(
         TMUX_STARTUP_ATTEMPTS,
         Duration::from_millis(10),
-        || tmux_startup_observation(socket, session),
+        || tmux_startup_observation_diagnostic(socket, session),
         |observed| observed.server == server,
         |observed| guard.set_pane_process(observed.pane_process.clone()),
     )
-    .ok_or_else(|| TMUX_STARTUP_NOT_READY.to_owned())?;
+    .map_err(|stage| {
+        format!(
+            "{TMUX_STARTUP_NOT_READY}:startup_observation={}",
+            stage.label()
+        )
+    })?;
     let window = output
         .as_deref()
         .and_then(parse_tmux_window_identity)
         .ok_or_else(|| TMUX_MALFORMED_WINDOW_IDENTITY.to_owned())?;
     if window != startup.window {
-        return Err(TMUX_STARTUP_NOT_READY.to_owned());
+        return Err(format!(
+            "{TMUX_STARTUP_NOT_READY}:startup_observation={}",
+            TmuxStartupObservationStage::CreationWindowChanged.label()
+        ));
     }
     guard.set_startup(startup);
     Ok(guard)
@@ -574,6 +583,44 @@ fn wait_for_available_observation<T>(
         }
     }
     None
+}
+
+fn wait_for_stable_startup_observation<T: Clone + Eq>(
+    attempts: usize,
+    delay: Duration,
+    mut observe: impl FnMut() -> Result<T, TmuxStartupObservationStage>,
+    matches_retained: impl Fn(&T) -> bool,
+    mut retain: impl FnMut(&T),
+) -> Result<T, TmuxStartupObservationStage> {
+    let mut retained = None;
+    let mut previous = None;
+    let mut last_stage = TmuxStartupObservationStage::Unavailable;
+    for attempt in 0..attempts {
+        match observe() {
+            Ok(observed) if !matches_retained(&observed) => {
+                return Err(TmuxStartupObservationStage::RetainedServerChanged);
+            }
+            Ok(observed) if retained.as_ref().is_some_and(|value| value != &observed) => {
+                return Err(TmuxStartupObservationStage::StartupIdentityChanged);
+            }
+            Ok(observed) if previous.as_ref() == Some(&observed) => return Ok(observed),
+            Ok(observed) => {
+                if retained.is_none() {
+                    retain(&observed);
+                    retained = Some(observed.clone());
+                }
+                previous = Some(observed);
+            }
+            Err(stage) => {
+                previous = None;
+                last_stage = stage;
+            }
+        }
+        if attempt + 1 < attempts {
+            thread::sleep(delay);
+        }
+    }
+    Err(last_stage)
 }
 
 fn wait_for_stable_matching_observation<T: Clone + Eq>(
@@ -738,6 +785,71 @@ impl TmuxServerObservationStage {
             Self::RepeatedPeerIdentityChanged => "repeated_peer_identity_changed",
             Self::RepeatedSocketIdentityChanged => "repeated_socket_identity_changed",
             Self::ProcessGenerationChanged => "process_generation_changed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TmuxStartupObservationStage {
+    Unavailable,
+    ServerBeforeUnavailable,
+    SessionBeforeUnavailable,
+    WindowBeforeUnavailable,
+    PaneIdentityUnavailable,
+    PaneIdentityMalformed,
+    TtyIdentityUnavailable,
+    PaneGenerationUnavailable,
+    ProcessListBeforeUnavailable,
+    ProcessTupleInvalid,
+    ForegroundGenerationUnavailable,
+    ProcessListAfterUnavailable,
+    ProcessTupleAfterInvalid,
+    ProcessTupleChanged,
+    PaneIdentityChanged,
+    TtyIdentityChanged,
+    PaneGenerationChanged,
+    ForegroundGenerationChanged,
+    SessionAfterUnavailable,
+    WindowAfterUnavailable,
+    ServerAfterUnavailable,
+    ServerChanged,
+    SessionChanged,
+    WindowChanged,
+    StartupIdentityChanged,
+    RetainedServerChanged,
+    CreationWindowChanged,
+}
+
+impl TmuxStartupObservationStage {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::ServerBeforeUnavailable => "server_before_unavailable",
+            Self::SessionBeforeUnavailable => "session_before_unavailable",
+            Self::WindowBeforeUnavailable => "window_before_unavailable",
+            Self::PaneIdentityUnavailable => "pane_identity_unavailable",
+            Self::PaneIdentityMalformed => "pane_identity_malformed",
+            Self::TtyIdentityUnavailable => "tty_identity_unavailable",
+            Self::PaneGenerationUnavailable => "pane_generation_unavailable",
+            Self::ProcessListBeforeUnavailable => "process_list_before_unavailable",
+            Self::ProcessTupleInvalid => "process_tuple_invalid",
+            Self::ForegroundGenerationUnavailable => "foreground_generation_unavailable",
+            Self::ProcessListAfterUnavailable => "process_list_after_unavailable",
+            Self::ProcessTupleAfterInvalid => "process_tuple_after_invalid",
+            Self::ProcessTupleChanged => "process_tuple_changed",
+            Self::PaneIdentityChanged => "pane_identity_changed",
+            Self::TtyIdentityChanged => "tty_identity_changed",
+            Self::PaneGenerationChanged => "pane_generation_changed",
+            Self::ForegroundGenerationChanged => "foreground_generation_changed",
+            Self::SessionAfterUnavailable => "session_after_unavailable",
+            Self::WindowAfterUnavailable => "window_after_unavailable",
+            Self::ServerAfterUnavailable => "server_after_unavailable",
+            Self::ServerChanged => "server_changed",
+            Self::SessionChanged => "session_changed",
+            Self::WindowChanged => "window_changed",
+            Self::StartupIdentityChanged => "startup_identity_changed",
+            Self::RetainedServerChanged => "retained_server_changed",
+            Self::CreationWindowChanged => "creation_window_changed",
         }
     }
 }
@@ -1474,43 +1586,81 @@ fn tmux_socket_is_stale(socket: &str, expected: &TmuxServerObservation) -> bool 
 }
 
 fn tmux_pane_process_observation(socket: &str, session: &str) -> Option<PaneProcessObservation> {
-    let pane = tmux_pane_identity(socket, session)?;
-    let pane_text = std::str::from_utf8(&pane).ok()?.strip_suffix('\n')?;
-    let (pane_pid, pane_tty) = pane_text.split_once('\t')?;
-    let pane_pid = pane_pid.parse::<u32>().ok().filter(|pid| *pid > 1)?;
-    let tty_number = pane_tty.strip_prefix("/dev/pts/")?;
+    tmux_pane_process_observation_diagnostic(socket, session).ok()
+}
+
+fn tmux_pane_process_observation_diagnostic(
+    socket: &str,
+    session: &str,
+) -> Result<PaneProcessObservation, TmuxStartupObservationStage> {
+    let pane = tmux_pane_identity(socket, session)
+        .ok_or(TmuxStartupObservationStage::PaneIdentityUnavailable)?;
+    let pane_text = std::str::from_utf8(&pane)
+        .ok()
+        .and_then(|value| value.strip_suffix('\n'))
+        .ok_or(TmuxStartupObservationStage::PaneIdentityMalformed)?;
+    let (pane_pid, pane_tty) = pane_text
+        .split_once('\t')
+        .ok_or(TmuxStartupObservationStage::PaneIdentityMalformed)?;
+    let pane_pid = pane_pid
+        .parse::<u32>()
+        .ok()
+        .filter(|pid| *pid > 1)
+        .ok_or(TmuxStartupObservationStage::PaneIdentityMalformed)?;
+    let tty_number = pane_tty
+        .strip_prefix("/dev/pts/")
+        .ok_or(TmuxStartupObservationStage::PaneIdentityMalformed)?;
     if tty_number.is_empty() || !tty_number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
+        return Err(TmuxStartupObservationStage::PaneIdentityMalformed);
     }
-    let tty_before = tty_identity(pane_tty)?;
-    let pane_start_before = process_start_time(pane_pid)?;
+    let tty_before =
+        tty_identity(pane_tty).ok_or(TmuxStartupObservationStage::TtyIdentityUnavailable)?;
+    let pane_start_before = process_start_time(pane_pid)
+        .ok_or(TmuxStartupObservationStage::PaneGenerationUnavailable)?;
     let ps_args = [
         "--no-headers",
         "-o",
         "pid=,pgid=,tpgid=,tty=,uid=,euid=",
         "-t",
-        pane_tty.strip_prefix("/dev/")?,
+        pane_tty
+            .strip_prefix("/dev/")
+            .ok_or(TmuxStartupObservationStage::PaneIdentityMalformed)?,
     ];
     let processes_before = bounded_output("/usr/bin/ps", &ps_args)
         .filter(|(success, _)| *success)
-        .map(|(_, output)| output)?;
-    let current_group = u32::try_from(rustix::process::getpgrp().as_raw_pid()).ok()?;
+        .map(|(_, output)| output)
+        .ok_or(TmuxStartupObservationStage::ProcessListBeforeUnavailable)?;
+    let current_group = u32::try_from(rustix::process::getpgrp().as_raw_pid())
+        .map_err(|_| TmuxStartupObservationStage::ProcessTupleInvalid)?;
     let current_uid = rustix::process::getuid().as_raw();
     let tuple =
-        parse_pane_process_observation(&pane, &processes_before, current_group, current_uid)?;
-    let foreground_start_before = process_start_time(tuple.foreground_group)?;
+        parse_pane_process_observation(&pane, &processes_before, current_group, current_uid)
+            .ok_or(TmuxStartupObservationStage::ProcessTupleInvalid)?;
+    let foreground_start_before = process_start_time(tuple.foreground_group)
+        .ok_or(TmuxStartupObservationStage::ForegroundGenerationUnavailable)?;
     let processes_after = bounded_output("/usr/bin/ps", &ps_args)
         .filter(|(success, _)| *success)
-        .map(|(_, output)| output)?;
-    if parse_pane_process_observation(&pane, &processes_after, current_group, current_uid)? != tuple
-        || tmux_pane_identity(socket, session)? != pane
-        || tty_identity(pane_tty)? != tty_before
-        || process_start_time(pane_pid)? != pane_start_before
-        || process_start_time(tuple.foreground_group)? != foreground_start_before
-    {
-        return None;
+        .map(|(_, output)| output)
+        .ok_or(TmuxStartupObservationStage::ProcessListAfterUnavailable)?;
+    let tuple_after =
+        parse_pane_process_observation(&pane, &processes_after, current_group, current_uid)
+            .ok_or(TmuxStartupObservationStage::ProcessTupleAfterInvalid)?;
+    if tuple_after != tuple {
+        return Err(TmuxStartupObservationStage::ProcessTupleChanged);
     }
-    Some(PaneProcessObservation {
+    if tmux_pane_identity(socket, session).as_ref() != Some(&pane) {
+        return Err(TmuxStartupObservationStage::PaneIdentityChanged);
+    }
+    if tty_identity(pane_tty) != Some(tty_before) {
+        return Err(TmuxStartupObservationStage::TtyIdentityChanged);
+    }
+    if process_start_time(pane_pid) != Some(pane_start_before) {
+        return Err(TmuxStartupObservationStage::PaneGenerationChanged);
+    }
+    if process_start_time(tuple.foreground_group) != Some(foreground_start_before) {
+        return Err(TmuxStartupObservationStage::ForegroundGenerationChanged);
+    }
+    Ok(PaneProcessObservation {
         pane_pid: tuple.pane_pid,
         pane_start_time: pane_start_before,
         pane_tty: tuple.pane_tty,
@@ -1523,20 +1673,36 @@ fn tmux_pane_process_observation(socket: &str, session: &str) -> Option<PaneProc
 }
 
 fn tmux_startup_observation(socket: &str, session: &str) -> Option<TmuxStartupObservation> {
-    let server_before = tmux_server_observation(socket, session)?;
-    let session_before = tmux_current_session_identity(socket, session)?;
-    let window_before = tmux_current_window_identity(socket, session)?;
-    let pane_process = tmux_pane_process_observation(socket, session)?;
-    let session_after = tmux_current_session_identity(socket, session)?;
-    let window_after = tmux_current_window_identity(socket, session)?;
-    let server_after = tmux_server_observation(socket, session)?;
-    if server_before != server_after
-        || session_before != session_after
-        || window_before != window_after
-    {
-        return None;
+    tmux_startup_observation_diagnostic(socket, session).ok()
+}
+
+fn tmux_startup_observation_diagnostic(
+    socket: &str,
+    session: &str,
+) -> Result<TmuxStartupObservation, TmuxStartupObservationStage> {
+    let server_before = tmux_server_observation(socket, session)
+        .ok_or(TmuxStartupObservationStage::ServerBeforeUnavailable)?;
+    let session_before = tmux_current_session_identity(socket, session)
+        .ok_or(TmuxStartupObservationStage::SessionBeforeUnavailable)?;
+    let window_before = tmux_current_window_identity(socket, session)
+        .ok_or(TmuxStartupObservationStage::WindowBeforeUnavailable)?;
+    let pane_process = tmux_pane_process_observation_diagnostic(socket, session)?;
+    let session_after = tmux_current_session_identity(socket, session)
+        .ok_or(TmuxStartupObservationStage::SessionAfterUnavailable)?;
+    let window_after = tmux_current_window_identity(socket, session)
+        .ok_or(TmuxStartupObservationStage::WindowAfterUnavailable)?;
+    let server_after = tmux_server_observation(socket, session)
+        .ok_or(TmuxStartupObservationStage::ServerAfterUnavailable)?;
+    if server_before != server_after {
+        return Err(TmuxStartupObservationStage::ServerChanged);
     }
-    Some(TmuxStartupObservation {
+    if session_before != session_after {
+        return Err(TmuxStartupObservationStage::SessionChanged);
+    }
+    if window_before != window_after {
+        return Err(TmuxStartupObservationStage::WindowChanged);
+    }
+    Ok(TmuxStartupObservation {
         server: server_before,
         pane_process,
         session_identity: session_before,
@@ -2635,6 +2801,126 @@ fn tmux_startup_requires_consecutive_complete_equal_observations() {
             |_| panic!("mismatched authority must not be retained"),
         ),
         None
+    );
+}
+
+#[test]
+fn tmux_startup_observation_diagnostics_are_closed_and_sequence_exact() {
+    let mut labels = BTreeSet::new();
+    for stage in [
+        TmuxStartupObservationStage::Unavailable,
+        TmuxStartupObservationStage::ServerBeforeUnavailable,
+        TmuxStartupObservationStage::SessionBeforeUnavailable,
+        TmuxStartupObservationStage::WindowBeforeUnavailable,
+        TmuxStartupObservationStage::PaneIdentityUnavailable,
+        TmuxStartupObservationStage::PaneIdentityMalformed,
+        TmuxStartupObservationStage::TtyIdentityUnavailable,
+        TmuxStartupObservationStage::PaneGenerationUnavailable,
+        TmuxStartupObservationStage::ProcessListBeforeUnavailable,
+        TmuxStartupObservationStage::ProcessTupleInvalid,
+        TmuxStartupObservationStage::ForegroundGenerationUnavailable,
+        TmuxStartupObservationStage::ProcessListAfterUnavailable,
+        TmuxStartupObservationStage::ProcessTupleAfterInvalid,
+        TmuxStartupObservationStage::ProcessTupleChanged,
+        TmuxStartupObservationStage::PaneIdentityChanged,
+        TmuxStartupObservationStage::TtyIdentityChanged,
+        TmuxStartupObservationStage::PaneGenerationChanged,
+        TmuxStartupObservationStage::ForegroundGenerationChanged,
+        TmuxStartupObservationStage::SessionAfterUnavailable,
+        TmuxStartupObservationStage::WindowAfterUnavailable,
+        TmuxStartupObservationStage::ServerAfterUnavailable,
+        TmuxStartupObservationStage::ServerChanged,
+        TmuxStartupObservationStage::SessionChanged,
+        TmuxStartupObservationStage::WindowChanged,
+        TmuxStartupObservationStage::StartupIdentityChanged,
+        TmuxStartupObservationStage::RetainedServerChanged,
+        TmuxStartupObservationStage::CreationWindowChanged,
+    ] {
+        let label = stage.label();
+        assert!(label.len() <= 40);
+        assert!(
+            label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        );
+        assert!(labels.insert(label));
+    }
+
+    let first = synthetic_startup_observation(100, "@7");
+    let mut sequence = [
+        Err(TmuxStartupObservationStage::SessionBeforeUnavailable),
+        Ok(first.clone()),
+        Ok(first.clone()),
+    ]
+    .into_iter();
+    let retained = std::cell::Cell::new(0);
+    assert_eq!(
+        wait_for_stable_startup_observation(
+            3,
+            Duration::ZERO,
+            || sequence.next().unwrap(),
+            |_| true,
+            |_| retained.set(retained.get() + 1),
+        ),
+        Ok(first)
+    );
+    assert_eq!(retained.get(), 1);
+
+    let retained_after_error = std::cell::Cell::new(0);
+    let mut fails_after_first = [
+        Ok(synthetic_startup_observation(150, "@7")),
+        Err(TmuxStartupObservationStage::ProcessListAfterUnavailable),
+    ]
+    .into_iter();
+    assert_eq!(
+        wait_for_stable_startup_observation(
+            2,
+            Duration::ZERO,
+            || fails_after_first.next().unwrap(),
+            |_| true,
+            |_| retained_after_error.set(retained_after_error.get() + 1),
+        ),
+        Err(TmuxStartupObservationStage::ProcessListAfterUnavailable)
+    );
+    assert_eq!(
+        retained_after_error.get(),
+        1,
+        "the first authenticated process authority must be retained for cleanup"
+    );
+
+    let retained_before_drift = std::cell::RefCell::new(Vec::new());
+    let mut drifts = [
+        Ok(synthetic_startup_observation(175, "@7")),
+        Ok(synthetic_startup_observation(176, "@7")),
+        Ok(synthetic_startup_observation(175, "@7")),
+    ]
+    .into_iter();
+    assert_eq!(
+        wait_for_stable_startup_observation(
+            3,
+            Duration::ZERO,
+            || drifts.next().unwrap(),
+            |_| true,
+            |observed| retained_before_drift.borrow_mut().push(observed.clone()),
+        ),
+        Err(TmuxStartupObservationStage::StartupIdentityChanged)
+    );
+    assert_eq!(
+        retained_before_drift.into_inner(),
+        [synthetic_startup_observation(175, "@7")],
+        "identity drift must not replace retained cleanup authority"
+    );
+
+    let mut mismatch = [Ok(synthetic_startup_observation(200, "@8"))].into_iter();
+    assert_eq!(
+        wait_for_stable_startup_observation(
+            1,
+            Duration::ZERO,
+            || mismatch.next().unwrap(),
+            |_| false,
+            |_| panic!("mismatched startup must not be retained"),
+        ),
+        Err(TmuxStartupObservationStage::RetainedServerChanged)
     );
 }
 
