@@ -32,10 +32,14 @@ identities are:
 | hashbrown | 0.16.1 | `841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100` |
 | hashbrown | 0.17.1 | `ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a` |
 | foldhash | 0.2.0 | `77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb` |
+| seccompiler | 0.5.0 | `a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884` |
 | syn | 2.0.119 | `872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297` |
 | syn | 3.0.5 | `12df2e0110f65b775f769bb17ef989067a1d931b2eb822bd4346631eeada89f9` |
 
-The complete 93-package lock inventory, including target-specific and disabled optional packages,
+`seccompiler 0.5.0` declares `Apache-2.0 OR BSD-3-Clause`; the accepted Apache-2.0 option is already
+part of the closed repository license policy.
+
+The complete 94-package lock inventory, including target-specific and disabled optional packages,
 is reproduced in `provenance/sbom.spdx.json`. `tools/generate-rust-sbom.py --check` fails when that
 inventory differs from Cargo.lock or offline Cargo metadata. The generator has 4 MiB lockfile,
 16 MiB metadata, 512-package, and 60-second bounds and rejects every non-registry package.
