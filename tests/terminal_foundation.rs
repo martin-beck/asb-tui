@@ -1291,7 +1291,8 @@ fn tmux_socket_peer_process(
         )
     };
     if connected != 0 {
-        if io::Error::last_os_error().raw_os_error() != Some(libc::EINPROGRESS) {
+        let connect_error = io::Error::last_os_error().raw_os_error();
+        if !unix_connect_is_incomplete(connect_error) {
             return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
         }
         let mut descriptor = libc::pollfd {
@@ -1303,9 +1304,6 @@ fn tmux_socket_peer_process(
             // SAFETY: descriptor points to one initialized pollfd for the duration of this call.
             libc::poll(&raw mut descriptor, 1, 100)
         };
-        if ready != 1 || descriptor.revents & (libc::POLLERR | libc::POLLHUP) != 0 {
-            return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
-        }
         let mut socket_error = 0;
         let mut socket_error_len = std::mem::size_of_val(&socket_error) as libc::socklen_t;
         let status = unsafe {
@@ -1318,7 +1316,13 @@ fn tmux_socket_peer_process(
                 &raw mut socket_error_len,
             )
         };
-        if status != 0 || socket_error != 0 {
+        if !unix_connect_completion_is_valid(
+            ready,
+            descriptor.revents,
+            status,
+            socket_error_len,
+            socket_error,
+        ) {
             return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
         }
     }
@@ -1351,6 +1355,26 @@ fn tmux_socket_peer_process(
     let start_time =
         process_start_time(pid).ok_or(TmuxServerObservationStage::ProcessGenerationUnavailable)?;
     Ok(ProcessGeneration { pid, start_time })
+}
+
+fn unix_connect_is_incomplete(error: Option<i32>) -> bool {
+    matches!(error, Some(code) if code == libc::EINPROGRESS || code == libc::EAGAIN)
+}
+
+fn unix_connect_completion_is_valid(
+    ready: i32,
+    revents: libc::c_short,
+    getsockopt_status: i32,
+    socket_error_len: libc::socklen_t,
+    socket_error: i32,
+) -> bool {
+    let completion_events = libc::POLLOUT | libc::POLLERR | libc::POLLHUP;
+    ready == 1
+        && revents & libc::POLLNVAL == 0
+        && revents & completion_events != 0
+        && getsockopt_status == 0
+        && socket_error_len as usize == std::mem::size_of::<libc::c_int>()
+        && socket_error == 0
 }
 
 fn tmux_server_matches(socket: &str, session: &str, expected: &TmuxServerObservation) -> bool {
@@ -2355,6 +2379,66 @@ fn unix_socket_peer_credentials_bind_the_exact_live_process_generation() {
         tmux_socket_peer_process(&absent),
         Err(TmuxServerObservationStage::SocketConnectionUnavailable)
     );
+
+    let nul_path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"invalid\0socket"));
+    assert_eq!(
+        tmux_socket_peer_process(nul_path),
+        Err(TmuxServerObservationStage::SocketConnectionUnavailable)
+    );
+    let address = unsafe {
+        // SAFETY: Zero initializes sockaddr_un sufficiently to inspect its fixed array length.
+        MaybeUninit::<libc::sockaddr_un>::zeroed().assume_init()
+    };
+    let overlong = vec![b'a'; address.sun_path.len()];
+    assert_eq!(
+        tmux_socket_peer_process(std::path::Path::new(std::ffi::OsStr::from_bytes(&overlong))),
+        Err(TmuxServerObservationStage::SocketConnectionUnavailable)
+    );
+}
+
+#[test]
+fn unix_socket_nonblocking_completion_uses_exact_so_error() {
+    assert!(unix_connect_is_incomplete(Some(libc::EINPROGRESS)));
+    assert!(unix_connect_is_incomplete(Some(libc::EAGAIN)));
+    assert!(!unix_connect_is_incomplete(None));
+    assert!(!unix_connect_is_incomplete(Some(libc::ECONNREFUSED)));
+
+    let exact_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    assert!(unix_connect_completion_is_valid(
+        1,
+        libc::POLLOUT,
+        0,
+        exact_len,
+        0
+    ));
+    assert!(unix_connect_completion_is_valid(
+        1,
+        libc::POLLOUT | libc::POLLHUP,
+        0,
+        exact_len,
+        0
+    ));
+    assert!(unix_connect_completion_is_valid(
+        1,
+        libc::POLLERR,
+        0,
+        exact_len,
+        0
+    ));
+
+    for (ready, revents, status, length, error) in [
+        (0, 0, 0, exact_len, 0),
+        (-1, 0, 0, exact_len, 0),
+        (1, libc::POLLIN, 0, exact_len, 0),
+        (1, libc::POLLOUT | libc::POLLNVAL, 0, exact_len, 0),
+        (1, libc::POLLOUT, -1, exact_len, 0),
+        (1, libc::POLLOUT, 0, exact_len - 1, 0),
+        (1, libc::POLLOUT, 0, exact_len, libc::ECONNREFUSED),
+    ] {
+        assert!(!unix_connect_completion_is_valid(
+            ready, revents, status, length, error
+        ));
+    }
 }
 
 #[test]
