@@ -427,6 +427,31 @@ fn bounded_tmux_output(socket: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
     bounded_output("/usr/bin/tmux", &tmux_args(socket, args))
 }
 
+const TMUX_WINDOW_OPTION_FAILURE: &str = "tmux window-option setup failed";
+
+fn tmux_remain_on_exit_args(session: &str) -> Vec<String> {
+    vec![
+        "set-window-option".to_owned(),
+        "-t".to_owned(),
+        format!("{session}:0"),
+        "remain-on-exit".to_owned(),
+        "on".to_owned(),
+    ]
+}
+
+fn set_tmux_remain_on_exit_with(
+    session: &str,
+    mut run: impl FnMut(&[&str]) -> bool,
+) -> Result<(), &'static str> {
+    let owned = tmux_remain_on_exit_args(session);
+    let args = owned.iter().map(String::as_str).collect::<Vec<_>>();
+    run(&args).then_some(()).ok_or(TMUX_WINDOW_OPTION_FAILURE)
+}
+
+fn set_tmux_remain_on_exit(socket: &str, session: &str) -> Result<(), &'static str> {
+    set_tmux_remain_on_exit_with(session, |args| bounded_tmux(socket, args))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ProcessGeneration {
     pid: u32,
@@ -1127,10 +1152,7 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
         server: None,
         pane_process: None,
     };
-    assert!(bounded_tmux(
-        &tmux_socket,
-        &["set-option", "-t", &tmux_session, "remain-on-exit", "on",],
-    ));
+    set_tmux_remain_on_exit(&tmux_socket, &tmux_session).expect(TMUX_WINDOW_OPTION_FAILURE);
     let tmux_server = tmux_server_observation(&tmux_socket, &tmux_session)
         .expect("tmux server identity must be stable");
     tmux_guard.set_server(tmux_server);
@@ -1247,10 +1269,7 @@ fn tmux_guard_reaps_a_hup_resistant_owned_pane_group_after_readiness_failure() {
         server: None,
         pane_process: None,
     };
-    assert!(bounded_tmux(
-        &socket,
-        &["set-option", "-t", &session, "remain-on-exit", "on"],
-    ));
+    set_tmux_remain_on_exit(&socket, &session).expect(TMUX_WINDOW_OPTION_FAILURE);
     let server =
         tmux_server_observation(&socket, &session).expect("tmux server identity must be stable");
     guard.set_server(server);
@@ -1560,10 +1579,7 @@ fn hostile_tmux_tmpdir_cannot_redirect_owned_server_or_cleanup() {
             server: None,
             pane_process: None,
         };
-        assert!(bounded_tmux(
-            &socket,
-            &["set-option", "-t", &session, "remain-on-exit", "on"],
-        ));
+        set_tmux_remain_on_exit(&socket, &session).expect(TMUX_WINDOW_OPTION_FAILURE);
         let server = tmux_server_observation(&socket, &session)
             .expect("tmux server identity must be stable");
         guard.set_server(server);
@@ -1629,10 +1645,7 @@ fn tmux_guard_without_process_authority_still_cleans_its_exact_server() {
         server: None,
         pane_process: None,
     };
-    assert!(bounded_tmux(
-        &socket,
-        &["set-option", "-t", &session, "remain-on-exit", "on"],
-    ));
+    set_tmux_remain_on_exit(&socket, &session).expect(TMUX_WINDOW_OPTION_FAILURE);
     let server = tmux_server_observation(&guarded_socket, &session)
         .expect("tmux server identity must be stable");
     guard.set_server(server.clone());
@@ -1729,6 +1742,36 @@ fn tmux_diagnostic_fields_reject_malformed_or_sensitive_values() {
         "malformed"
     );
     assert_eq!(diagnostic_value(None, "command"), "unavailable");
+}
+
+#[test]
+fn tmux_remain_on_exit_uses_an_exact_window_option_and_closed_failure() {
+    let observed = std::cell::RefCell::new(Vec::<String>::new());
+    assert_eq!(
+        set_tmux_remain_on_exit_with("portable-session", |args| {
+            observed
+                .borrow_mut()
+                .extend(args.iter().map(|value| (*value).to_owned()));
+            true
+        }),
+        Ok(())
+    );
+    assert_eq!(
+        observed.into_inner(),
+        [
+            "set-window-option",
+            "-t",
+            "portable-session:0",
+            "remain-on-exit",
+            "on",
+        ]
+    );
+
+    let private_session = "private-session-name";
+    let error = set_tmux_remain_on_exit_with(private_session, |_| false).unwrap_err();
+    assert_eq!(error, TMUX_WINDOW_OPTION_FAILURE);
+    assert!(!error.contains(private_session));
+    assert!(!error.contains('/') && error.is_ascii());
 }
 
 #[test]
