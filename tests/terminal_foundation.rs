@@ -26,6 +26,7 @@ use support::PrivateDirectory;
 const CHILD_MODE: &str = "ASB_TUI_TERMINAL_FOUNDATION_CHILD";
 const MAX_MULTIPLEXER_OUTPUT: usize = 4_096;
 const RENDER_WAIT_ATTEMPTS: usize = 100;
+const TMUX_STARTUP_ATTEMPTS: usize = 100;
 
 fn under_pty(test: &str, mode: &str) -> std::process::Output {
     let executable = std::env::current_exe().unwrap();
@@ -435,6 +436,7 @@ fn bounded_tmux_output(socket: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
 
 const TMUX_CREATION_FAILED: &str = "tmux_creation_failed";
 const TMUX_MALFORMED_WINDOW_IDENTITY: &str = "tmux_malformed_window_identity";
+const TMUX_STARTUP_NOT_READY: &str = "tmux_startup_not_ready";
 const TMUX_SERVER_OR_SESSION_DISAPPEARED: &str = "tmux_server_or_session_disappeared";
 const TMUX_OPTION_UNSUPPORTED_OR_UNKNOWN: &str = "tmux_option_unsupported_or_unknown";
 
@@ -463,6 +465,10 @@ fn tmux_new_session_output(
 }
 
 fn parse_tmux_window_identity(output: &[u8]) -> Option<String> {
+    parse_tmux_numeric_identity(output, '@')
+}
+
+fn parse_tmux_numeric_identity(output: &[u8], prefix: char) -> Option<String> {
     if output.len() > MAX_MULTIPLEXER_OUTPUT {
         return None;
     }
@@ -470,19 +476,19 @@ fn parse_tmux_window_identity(output: &[u8]) -> Option<String> {
     if value.contains('\n') {
         return None;
     }
-    let digits = value.strip_prefix('@')?;
+    let digits = value.strip_prefix(prefix)?;
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     let identity = digits.parse::<u32>().ok()?;
-    (identity.to_string() == digits).then(|| format!("@{identity}"))
+    (identity.to_string() == digits).then(|| format!("{prefix}{identity}"))
 }
 
 fn start_guarded_tmux_session(
     socket: &str,
     session: &str,
     args: &[&str],
-) -> Result<(MultiplexerSession, String), &'static str> {
+) -> Result<MultiplexerSession, &'static str> {
     let (created, output) =
         tmux_new_session_output(socket, session, args).ok_or(TMUX_CREATION_FAILED)?;
     if !created {
@@ -495,24 +501,85 @@ fn finish_guarded_tmux_session(
     socket: &str,
     session: &str,
     output: Option<Vec<u8>>,
-) -> Result<(MultiplexerSession, String), &'static str> {
+) -> Result<MultiplexerSession, &'static str> {
     let mut guard = MultiplexerSession::Tmux {
         socket: socket.to_owned(),
         session: session.to_owned(),
         server: None,
         pane_process: None,
+        startup: None,
     };
     let server =
-        tmux_server_observation(socket, session).ok_or(TMUX_SERVER_OR_SESSION_DISAPPEARED)?;
-    guard.set_server(server);
-    let pane_process =
-        tmux_pane_process_observation(socket, session).ok_or(TMUX_SERVER_OR_SESSION_DISAPPEARED)?;
-    guard.set_pane_process(pane_process);
+        wait_for_available_observation(TMUX_STARTUP_ATTEMPTS, Duration::from_millis(10), || {
+            tmux_server_observation(socket, session)
+        })
+        .ok_or(TMUX_STARTUP_NOT_READY)?;
+    guard.set_server(server.clone());
+    let startup = wait_for_stable_matching_observation(
+        TMUX_STARTUP_ATTEMPTS,
+        Duration::from_millis(10),
+        || tmux_startup_observation(socket, session),
+        |observed| observed.server == server,
+        |observed| guard.set_pane_process(observed.pane_process.clone()),
+    )
+    .ok_or(TMUX_STARTUP_NOT_READY)?;
     let window = output
         .as_deref()
         .and_then(parse_tmux_window_identity)
         .ok_or(TMUX_MALFORMED_WINDOW_IDENTITY)?;
-    Ok((guard, window))
+    if window != startup.window {
+        return Err(TMUX_STARTUP_NOT_READY);
+    }
+    guard.set_startup(startup);
+    Ok(guard)
+}
+
+fn wait_for_available_observation<T>(
+    attempts: usize,
+    delay: Duration,
+    mut observe: impl FnMut() -> Option<T>,
+) -> Option<T> {
+    for attempt in 0..attempts {
+        if let Some(current) = observe() {
+            return Some(current);
+        }
+        if attempt + 1 < attempts {
+            thread::sleep(delay);
+        }
+    }
+    None
+}
+
+fn wait_for_stable_matching_observation<T: Clone + Eq>(
+    attempts: usize,
+    delay: Duration,
+    mut observe: impl FnMut() -> Option<T>,
+    mut matches_retained_authority: impl FnMut(&T) -> bool,
+    mut retain: impl FnMut(&T),
+) -> Option<T> {
+    let mut retained = None;
+    let mut previous = None;
+    for attempt in 0..attempts {
+        match observe() {
+            Some(current) if !matches_retained_authority(&current) => return None,
+            Some(current) if retained.as_ref().is_some_and(|value| value != &current) => {
+                return None;
+            }
+            Some(current) if previous.as_ref() == Some(&current) => return Some(current),
+            Some(current) => {
+                if retained.is_none() {
+                    retain(&current);
+                    retained = Some(current.clone());
+                }
+                previous = Some(current);
+            }
+            None => previous = None,
+        }
+        if attempt + 1 < attempts {
+            thread::sleep(delay);
+        }
+    }
+    None
 }
 
 fn tmux_remain_on_exit_args(window: &str) -> Vec<String> {
@@ -545,8 +612,46 @@ fn set_tmux_remain_on_exit_with(
     Err(TMUX_OPTION_UNSUPPORTED_OR_UNKNOWN)
 }
 
-fn set_tmux_remain_on_exit(socket: &str, session: &str, window: &str) -> Result<(), &'static str> {
-    set_tmux_remain_on_exit_with(session, window, |args| bounded_tmux(socket, args))
+fn set_tmux_remain_on_exit_authenticated_with(
+    expected: &TmuxStartupObservation,
+    mut observe: impl FnMut() -> Option<TmuxStartupObservation>,
+    mut run: impl FnMut(&[&str]) -> bool,
+) -> Result<(), &'static str> {
+    if observe().as_ref() != Some(expected) {
+        return Err(TMUX_SERVER_OR_SESSION_DISAPPEARED);
+    }
+    let owned = tmux_remain_on_exit_args(&expected.window);
+    let args = owned.iter().map(String::as_str).collect::<Vec<_>>();
+    if run(&args) {
+        return Ok(());
+    }
+    if observe().as_ref() != Some(expected) {
+        return Err(TMUX_SERVER_OR_SESSION_DISAPPEARED);
+    }
+    Err(TMUX_OPTION_UNSUPPORTED_OR_UNKNOWN)
+}
+
+fn set_tmux_remain_on_exit_for_guard_with(
+    guard: &MultiplexerSession,
+    mut observe: impl FnMut() -> Option<TmuxStartupObservation>,
+    mut run: impl FnMut(&[&str]) -> bool,
+) -> Result<(), &'static str> {
+    let expected = guard
+        .tmux_startup()
+        .ok_or(TMUX_SERVER_OR_SESSION_DISAPPEARED)?;
+    set_tmux_remain_on_exit_authenticated_with(expected, &mut observe, &mut run)
+}
+
+fn set_tmux_remain_on_exit(
+    socket: &str,
+    session: &str,
+    guard: &MultiplexerSession,
+) -> Result<(), &'static str> {
+    set_tmux_remain_on_exit_for_guard_with(
+        guard,
+        || tmux_startup_observation(socket, session),
+        |args| bounded_tmux(socket, args),
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -562,12 +667,21 @@ struct TmuxServerObservation {
     socket_inode: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TmuxStartupObservation {
+    server: TmuxServerObservation,
+    pane_process: PaneProcessObservation,
+    session_identity: String,
+    window: String,
+}
+
 enum MultiplexerSession {
     Tmux {
         socket: String,
         session: String,
         server: Option<TmuxServerObservation>,
         pane_process: Option<PaneProcessObservation>,
+        startup: Option<Box<TmuxStartupObservation>>,
     },
     Screen {
         session: String,
@@ -592,6 +706,30 @@ impl MultiplexerSession {
                 *pane_process = Some(validated);
             }
             Self::Screen { .. } => panic!("screen sessions have no tmux pane process group"),
+        }
+    }
+
+    fn set_startup(&mut self, validated: TmuxStartupObservation) {
+        match self {
+            Self::Tmux {
+                server,
+                pane_process,
+                startup,
+                ..
+            } => {
+                assert_eq!(server.as_ref(), Some(&validated.server));
+                assert_eq!(pane_process.as_ref(), Some(&validated.pane_process));
+                assert!(startup.is_none());
+                *startup = Some(Box::new(validated));
+            }
+            Self::Screen { .. } => panic!("screen sessions have no tmux startup authority"),
+        }
+    }
+
+    fn tmux_startup(&self) -> Option<&TmuxStartupObservation> {
+        match self {
+            Self::Tmux { startup, .. } => startup.as_deref(),
+            Self::Screen { .. } => None,
         }
     }
 
@@ -722,6 +860,7 @@ impl MultiplexerSession {
                 session,
                 server,
                 pane_process,
+                ..
             } => {
                 !bounded_tmux(socket, &["has-session", "-t", session])
                     && server
@@ -1064,6 +1203,24 @@ fn tmux_server_matches(socket: &str, session: &str, expected: &TmuxServerObserva
         && process_generation_matches(&expected.process)
 }
 
+fn tmux_current_window_identity(socket: &str, session: &str) -> Option<String> {
+    bounded_tmux_output(
+        socket,
+        &["display-message", "-p", "-t", session, "#{window_id}"],
+    )
+    .filter(|(success, _)| *success)
+    .and_then(|(_, output)| parse_tmux_window_identity(&output))
+}
+
+fn tmux_current_session_identity(socket: &str, session: &str) -> Option<String> {
+    bounded_tmux_output(
+        socket,
+        &["display-message", "-p", "-t", session, "#{session_id}"],
+    )
+    .filter(|(success, _)| *success)
+    .and_then(|(_, output)| parse_tmux_numeric_identity(&output, '$'))
+}
+
 // tmux 3.4 intentionally retains a stale socket inode after graceful server exit.
 // The session guard never unlinks this pathname: it only proves the retained
 // inode is the authenticated server's now-unconnectable socket. The enclosing
@@ -1131,6 +1288,28 @@ fn tmux_pane_process_observation(socket: &str, session: &str) -> Option<PaneProc
         tty_rdevice: tty_before.rdevice,
         foreground_group: tuple.foreground_group,
         foreground_start_time: foreground_start_before,
+    })
+}
+
+fn tmux_startup_observation(socket: &str, session: &str) -> Option<TmuxStartupObservation> {
+    let server_before = tmux_server_observation(socket, session)?;
+    let session_before = tmux_current_session_identity(socket, session)?;
+    let window_before = tmux_current_window_identity(socket, session)?;
+    let pane_process = tmux_pane_process_observation(socket, session)?;
+    let session_after = tmux_current_session_identity(socket, session)?;
+    let window_after = tmux_current_window_identity(socket, session)?;
+    let server_after = tmux_server_observation(socket, session)?;
+    if server_before != server_after
+        || session_before != session_after
+        || window_before != window_after
+    {
+        return None;
+    }
+    Some(TmuxStartupObservation {
+        server: server_before,
+        pane_process,
+        session_identity: session_before,
+        window: window_before,
     })
 }
 
@@ -1229,13 +1408,13 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
         "before=$(stty -g) || exit 90; {binary}; status=$?; after=$(stty -g) || exit 91; test \"$before\" = \"$after\" || exit 92; printf restored >{}; exit $status",
         tmux_marker.display()
     );
-    let (tmux_guard, tmux_window) = start_guarded_tmux_session(
+    let tmux_guard = start_guarded_tmux_session(
         &tmux_socket,
         &tmux_session,
         &["-x", "80", "-y", "24", &tmux_command],
     )
     .unwrap_or_else(|failure| panic!("{failure}"));
-    set_tmux_remain_on_exit(&tmux_socket, &tmux_session, &tmux_window)
+    set_tmux_remain_on_exit(&tmux_socket, &tmux_session, &tmux_guard)
         .unwrap_or_else(|failure| panic!("{failure}"));
     let readiness =
         wait_for_tmux_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
@@ -1331,7 +1510,7 @@ fn tmux_guard_reaps_a_hup_resistant_owned_pane_group_after_readiness_failure() {
         ))
         .to_string_lossy()
         .into_owned();
-    let (mut guard, window) = start_guarded_tmux_session(
+    let mut guard = start_guarded_tmux_session(
         &socket,
         &session,
         &["trap '' HUP TERM; while :; do sleep 1; done"],
@@ -1345,7 +1524,7 @@ fn tmux_guard_reaps_a_hup_resistant_owned_pane_group_after_readiness_failure() {
         _ => unreachable!("guarded tmux session has pane authority"),
     };
     let process_group = pane_process.foreground_group;
-    set_tmux_remain_on_exit(&socket, &session, &window)
+    set_tmux_remain_on_exit(&socket, &session, &guard)
         .unwrap_or_else(|failure| panic!("{failure}"));
     let unrelated_group = u32::try_from(rustix::process::getpgrp().as_raw_pid()).unwrap();
     assert_ne!(unrelated_group, process_group);
@@ -1639,9 +1818,9 @@ fn hostile_tmux_tmpdir_cannot_redirect_owned_server_or_cleanup() {
             ))
             .to_string_lossy()
             .into_owned();
-        let (guard, window) = start_guarded_tmux_session(&socket, &session, &["sleep 30"])
+        let guard = start_guarded_tmux_session(&socket, &session, &["sleep 30"])
             .unwrap_or_else(|failure| panic!("{failure}"));
-        set_tmux_remain_on_exit(&socket, &session, &window)
+        set_tmux_remain_on_exit(&socket, &session, &guard)
             .unwrap_or_else(|failure| panic!("{failure}"));
         assert!(
             MultiplexerSession::tmux_socket_path(&socket)
@@ -1698,18 +1877,12 @@ fn malformed_created_window_identity_drops_the_fully_authorized_guard() {
     )
     .expect(TMUX_CREATION_FAILED);
     assert!(created, "{TMUX_CREATION_FAILED}");
-    let expected_server =
-        tmux_server_observation(&socket, &session).expect(TMUX_SERVER_OR_SESSION_DISAPPEARED);
-    let expected_pane =
-        tmux_pane_process_observation(&socket, &session).expect(TMUX_SERVER_OR_SESSION_DISAPPEARED);
 
+    // The guarded finisher must be the first operation after creation. The
+    // dedicated HUP-resistant fixture proves exact group cleanup in detail.
     let result = finish_guarded_tmux_session(&socket, &session, Some(b"@1\n@2\n".to_vec())).err();
     assert_eq!(result, Some(TMUX_MALFORMED_WINDOW_IDENTITY));
     assert!(!bounded_tmux(&socket, &["has-session", "-t", &session]));
-    assert!(tmux_socket_is_stale(&socket, &expected_server));
-    assert!(MultiplexerSession::process_group_is_gone(
-        expected_pane.foreground_group
-    ));
 }
 
 #[test]
@@ -1729,7 +1902,7 @@ fn tmux_guard_without_process_authority_still_cleans_its_exact_server() {
         .to_string_lossy()
         .into_owned();
     let guarded_socket = socket.clone();
-    let (created, output) =
+    let (created, _output) =
         tmux_new_session_output(&socket, &session, &["sleep 30"]).expect(TMUX_CREATION_FAILED);
     assert!(created, "{TMUX_CREATION_FAILED}");
     let mut guard = MultiplexerSession::Tmux {
@@ -1737,19 +1910,33 @@ fn tmux_guard_without_process_authority_still_cleans_its_exact_server() {
         session: session.clone(),
         server: None,
         pane_process: None,
+        startup: None,
     };
-    let server = tmux_server_observation(&guarded_socket, &session)
-        .expect(TMUX_SERVER_OR_SESSION_DISAPPEARED);
+    let server =
+        wait_for_available_observation(TMUX_STARTUP_ATTEMPTS, Duration::from_millis(10), || {
+            tmux_server_observation(&guarded_socket, &session)
+        })
+        .expect(TMUX_STARTUP_NOT_READY);
     guard.set_server(server.clone());
-    let window = output
-        .as_deref()
-        .and_then(parse_tmux_window_identity)
-        .expect(TMUX_MALFORMED_WINDOW_IDENTITY);
-    set_tmux_remain_on_exit(&socket, &session, &window)
-        .unwrap_or_else(|failure| panic!("{failure}"));
-    let observed_group = tmux_pane_process_observation(&guarded_socket, &session)
-        .expect("cleanup probe must have an owned pane group")
+    let observed_group =
+        wait_for_available_observation(TMUX_STARTUP_ATTEMPTS, Duration::from_millis(10), || {
+            tmux_pane_process_observation(&guarded_socket, &session)
+        })
+        .expect("cleanup probe must observe but not retain pane authority")
         .foreground_group;
+    let option_calls = std::cell::Cell::new(0);
+    assert_eq!(
+        set_tmux_remain_on_exit_for_guard_with(
+            &guard,
+            || panic!("guard without pane authority must not observe startup"),
+            |_| {
+                option_calls.set(option_calls.get() + 1);
+                true
+            },
+        ),
+        Err(TMUX_SERVER_OR_SESSION_DISAPPEARED)
+    );
+    assert_eq!(option_calls.get(), 0);
     let acquisition = std::panic::catch_unwind(move || {
         let _guard = guard;
         tmux_pane_process_observation(&guarded_socket, "missing-session")
@@ -1871,6 +2058,198 @@ fn tmux_window_identity_parser_is_closed_and_bounded() {
         parse_tmux_window_identity(&vec![b'1'; MAX_MULTIPLEXER_OUTPUT + 1]),
         None
     );
+    assert_eq!(
+        parse_tmux_numeric_identity(b"$42\n", '$').as_deref(),
+        Some("$42")
+    );
+    for malformed in [b"$01\n".as_slice(), b"$1\n$2\n", b"@1\n", b"$1"] {
+        assert_eq!(parse_tmux_numeric_identity(malformed, '$'), None);
+    }
+}
+
+fn synthetic_startup_observation(seed: u32, window: &str) -> TmuxStartupObservation {
+    TmuxStartupObservation {
+        server: TmuxServerObservation {
+            process: ProcessGeneration {
+                pid: seed + 10,
+                start_time: u64::from(seed) + 20,
+            },
+            socket_device: u64::from(seed) + 30,
+            socket_inode: u64::from(seed) + 40,
+        },
+        pane_process: PaneProcessObservation {
+            pane_pid: seed + 50,
+            pane_start_time: u64::from(seed) + 60,
+            pane_tty: format!("/dev/pts/{}", seed + 70),
+            tty_device: u64::from(seed) + 80,
+            tty_inode: u64::from(seed) + 90,
+            tty_rdevice: u64::from(seed) + 100,
+            foreground_group: seed + 110,
+            foreground_start_time: u64::from(seed) + 120,
+        },
+        session_identity: format!("${seed}"),
+        window: window.to_owned(),
+    }
+}
+
+#[test]
+fn tmux_startup_requires_consecutive_complete_equal_observations() {
+    let first = synthetic_startup_observation(100, "@7");
+    let second = synthetic_startup_observation(200, "@8");
+    let mut eventually_stable = [
+        None,
+        Some(first.clone()),
+        None,
+        Some(first.clone()),
+        Some(first.clone()),
+    ]
+    .into_iter();
+    let retained = std::cell::RefCell::new(Vec::new());
+    assert_eq!(
+        wait_for_stable_matching_observation(
+            5,
+            Duration::ZERO,
+            || eventually_stable.next().flatten(),
+            |_| true,
+            |observed| retained.borrow_mut().push(observed.clone()),
+        ),
+        Some(first.clone())
+    );
+    let retained = retained.into_inner();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0], first);
+
+    let mut alternating = [
+        Some(first.clone()),
+        Some(second.clone()),
+        Some(first.clone()),
+        Some(second),
+    ]
+    .into_iter();
+    assert_eq!(
+        wait_for_stable_matching_observation(
+            4,
+            Duration::ZERO,
+            || alternating.next().flatten(),
+            |_| true,
+            |_| {},
+        ),
+        None
+    );
+    assert_eq!(
+        wait_for_stable_matching_observation(
+            1,
+            Duration::ZERO,
+            || Some(first.clone()),
+            |_| true,
+            |_| {},
+        ),
+        None,
+        "elapsed time or one sample must not establish readiness"
+    );
+    assert_eq!(
+        wait_for_stable_matching_observation::<TmuxStartupObservation>(
+            3,
+            Duration::ZERO,
+            || None,
+            |_| true,
+            |_| {},
+        ),
+        None
+    );
+    let mut becomes_available = [None, None, Some(first.clone())].into_iter();
+    assert_eq!(
+        wait_for_available_observation(3, Duration::ZERO, || {
+            becomes_available.next().flatten()
+        }),
+        Some(first.clone())
+    );
+    assert_eq!(
+        wait_for_available_observation::<TmuxStartupObservation>(2, Duration::ZERO, || None,),
+        None
+    );
+
+    let retained_server = first.server.clone();
+    assert_eq!(
+        wait_for_stable_matching_observation(
+            2,
+            Duration::ZERO,
+            || Some(first.clone()),
+            |observed| observed.server != retained_server,
+            |_| panic!("mismatched authority must not be retained"),
+        ),
+        None
+    );
+}
+
+#[test]
+fn retained_startup_transition_runs_no_window_option() {
+    let expected = synthetic_startup_observation(100, "@7");
+    let mut changed_session = expected.clone();
+    changed_session.session_identity = "$101".into();
+    let mut changed_pane = expected.clone();
+    changed_pane.pane_process.pane_start_time += 1;
+    for observed in [
+        None,
+        Some(synthetic_startup_observation(101, "@7")),
+        Some(synthetic_startup_observation(100, "@8")),
+        Some(changed_session),
+        Some(changed_pane),
+    ] {
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            set_tmux_remain_on_exit_authenticated_with(
+                &expected,
+                || observed.clone(),
+                |_| {
+                    calls.set(calls.get() + 1);
+                    true
+                },
+            ),
+            Err(TMUX_SERVER_OR_SESSION_DISAPPEARED)
+        );
+        assert_eq!(calls.get(), 0, "transition must run zero option commands");
+    }
+
+    let commands = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+    assert_eq!(
+        set_tmux_remain_on_exit_authenticated_with(
+            &expected,
+            || Some(expected.clone()),
+            |args| {
+                commands
+                    .borrow_mut()
+                    .push(args.iter().map(|value| (*value).to_owned()).collect());
+                true
+            },
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        commands.into_inner(),
+        [vec![
+            "set-window-option",
+            "-t",
+            "@7",
+            "remain-on-exit",
+            "on"
+        ]]
+    );
+
+    let observations = std::cell::RefCell::new([Some(expected.clone()), None].into_iter());
+    let option_calls = std::cell::Cell::new(0);
+    assert_eq!(
+        set_tmux_remain_on_exit_authenticated_with(
+            &expected,
+            || observations.borrow_mut().next().flatten(),
+            |_| {
+                option_calls.set(option_calls.get() + 1);
+                false
+            },
+        ),
+        Err(TMUX_SERVER_OR_SESSION_DISAPPEARED)
+    );
+    assert_eq!(option_calls.get(), 1);
 }
 
 #[test]
@@ -1929,6 +2308,7 @@ fn tmux_creation_and_window_option_argv_are_exact_and_fail_closed() {
     for failure in [
         TMUX_CREATION_FAILED,
         TMUX_MALFORMED_WINDOW_IDENTITY,
+        TMUX_STARTUP_NOT_READY,
         disappeared,
         unsupported,
         raced,
