@@ -67,15 +67,42 @@ fn doctor_is_explicitly_unverified_and_content_free() {
 fn unknown_arguments_fail_without_json_or_environment_output() {
     let output = run_isolated(|command| {
         command
-            .arg("run")
+            .arg("unknown")
             .env("PRIVATE_SENTINEL", "must-not-appear");
     });
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     assert_eq!(
         String::from_utf8(output.stderr).expect("UTF-8 usage"),
-        "usage: asb-tui (doctor|compatibility) --format json\n"
+        "usage: asb-tui [run] | (doctor|compatibility) --format json | doctor --terminal\n"
     );
+}
+
+#[test]
+fn terminal_doctor_normalizes_environment_without_disclosing_values() {
+    let output = run_isolated(|command| {
+        command
+            .args(["doctor", "--terminal"])
+            .env_clear()
+            .env("TERM", "private-term-value")
+            .env("TERM_PROGRAM", "private-program-value")
+            .env("SSH_CONNECTION", "private-address-value")
+            .env("NO_COLOR", "private-no-color-value")
+            .env("COLUMNS", "80")
+            .env("LINES", "24");
+    });
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(report.contains("tier=plain tty=false channel=ssh size=80x24"));
+    for private in [
+        "private-term-value",
+        "private-program-value",
+        "private-address-value",
+        "private-no-color-value",
+    ] {
+        assert!(!report.contains(private));
+    }
 }
 
 #[test]
@@ -86,6 +113,10 @@ fn lifecycle_self_test_is_closed_and_fails_when_terminal_or_protocol_is_unavaila
                 "lifecycle-self-test",
                 "--release",
                 "v1.2.3",
+                "--asb-version",
+                "0.1.0",
+                "--protocol-version",
+                "1",
                 "--format",
                 "json",
             ])

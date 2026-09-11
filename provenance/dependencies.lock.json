@@ -30,8 +30,8 @@
     }
   ],
   "rendering": {
-    "classification": "unavailable",
-    "reason": "awaiting-reviewed-immutable-ratatui-crossterm-closure"
+    "classification": "source_only_unverified",
+    "reason": "renderer_implemented_platform_release_integration_unverified"
   },
   "schema_version": 1,
   "signing_key_fingerprint": "SHA256:a36V6yPvRZyxnQ2113tiA/MlHt7mPfJEXAGByBXVkuE"

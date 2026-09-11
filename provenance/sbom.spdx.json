@@ -1030,6 +1030,22 @@
       "versionInfo": "1.2.0"
     },
     {
+      "SPDXID": "SPDXRef-seccompiler-0.5.0",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "https://crates.io/api/v1/crates/seccompiler/0.5.0/download",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0 OR BSD-3-Clause",
+      "name": "seccompiler",
+      "versionInfo": "0.5.0"
+    },
+    {
       "SPDXID": "SPDXRef-semver-1.0.28",
       "checksums": [
         {
@@ -1506,6 +1522,11 @@
       "spdxElementId": "SPDXRef-asb-tui"
     },
     {
+      "relatedSpdxElement": "SPDXRef-libc-0.2.189",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-asb-tui"
+    },
+    {
       "relatedSpdxElement": "SPDXRef-ratatui-0.30.2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-asb-tui"
@@ -1516,12 +1537,22 @@
       "spdxElementId": "SPDXRef-asb-tui"
     },
     {
+      "relatedSpdxElement": "SPDXRef-seccompiler-0.5.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-asb-tui"
+    },
+    {
       "relatedSpdxElement": "SPDXRef-serde-1.0.220",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-asb-tui"
     },
     {
       "relatedSpdxElement": "SPDXRef-serde-json-1.0.143",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-asb-tui"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-signal-hook-0.3.18",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-asb-tui"
     }

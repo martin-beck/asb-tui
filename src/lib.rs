@@ -2,14 +2,18 @@
 // SPDX-License-Identifier: MIT
 #![forbid(unsafe_code)]
 
-//! Closed capability parsing and authenticated immutable release discovery.
+//! Closed capability parsing, authenticated release discovery, and standalone frontend state.
 
+pub mod app;
 pub mod bundle;
 pub mod compatibility;
 pub mod delegated;
 pub mod lifecycle;
 pub mod release_channel;
+pub mod renderer;
+pub mod runtime;
 pub mod system_probe;
+pub mod terminal;
 
 use serde::Deserialize;
 use std::{
@@ -149,8 +153,8 @@ pub fn verify_release_lock_contents(input: &str, probe: &impl ReleaseProbe) -> R
         serde_json::from_str(input).map_err(|error| format!("invalid release lock: {error}"))?;
     if lock.schema_version != 1
         || lock.signing_key_fingerprint != "SHA256:a36V6yPvRZyxnQ2113tiA/MlHt7mPfJEXAGByBXVkuE"
-        || lock.rendering.classification != "unavailable"
-        || lock.rendering.reason != "awaiting-reviewed-immutable-ratatui-crossterm-closure"
+        || lock.rendering.classification != "source_only_unverified"
+        || lock.rendering.reason != "renderer_implemented_platform_release_integration_unverified"
         || lock.dependencies.len() != 2
     {
         return Err("unsupported release lock policy".into());

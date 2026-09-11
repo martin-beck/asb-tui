@@ -10,4 +10,5 @@ owned by the separately installed ASB program.
 Only immutable, authenticated dependency identities are accepted. The Ratatui closure and its
 crate-specific license/duplicate exceptions are documented in
 `docs/TERMINAL_DEPENDENCY_POLICY.md`; widening them requires a new review. The current frontend
-remains `source_only_unverified`, and accepting dependencies does not claim rendering exists.
+remains `source_only_unverified`. Rendering is implemented, but it does not own runner state,
+qualify a platform, or establish an installable release channel.

@@ -10,7 +10,8 @@ top-level `asb tui` command. Do not install a binary copied from CI, a pull requ
 URL, or a synthetic test fixture.
 
 Developers may clone an immutable revision and run `cargo test --locked`. This verifies the source
-contract; it does not promote the revision or qualify a user workflow. The lifecycle JSON API
+contract and renderer tests; it does not promote the revision or qualify a user workflow. The
+lifecycle JSON API
 authenticates separately staged bundles, but a source-only build embeds no promoted bundle identity.
 Even an authentic test fixture therefore fails with `release_channel_unverified` before creating an
 installation root. Until promotion, public install, upgrade, launch, status, and remove workflows
@@ -22,7 +23,7 @@ A release manager may create a signed annotated version tag and GitHub release o
 commit and tree satisfy every item below:
 
 - ASB publishes and tests the matching external protocol and top-level lifecycle router.
-- Ratatui/Crossterm rendering and the supported terminal UX are implemented and qualified.
+- Ratatui/Crossterm rendering and the supported terminal UX are independently qualified.
 - x86_64 and AArch64 entries in the capability matrix have exact platform evidence.
 - all source, license, SBOM, security, protocol, UX, and privacy audits pass;
 - hosted CI and the protected trusted-main workflow pass for the exact public main revision;

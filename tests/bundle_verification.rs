@@ -396,14 +396,40 @@ fn transfer_stops_after_three_failures_without_cache_side_effects() {
 
 fn policy_documents() -> BTreeMap<String, Vec<u8>> {
     let mut documents = BTreeMap::new();
+    let mut sbom: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../provenance/sbom.spdx.json")).unwrap();
+    sbom["name"] = "asb-tui-v0.1.0".into();
+    let packages = sbom["packages"].as_array_mut().unwrap();
+    packages.push(serde_json::json!({
+        "name": "agent-workflow-coordinator",
+        "versionInfo": "0.3.5",
+        "licenseDeclared": "MIT"
+    }));
+    packages.push(serde_json::json!({
+        "name": "agent-workflow-quality",
+        "versionInfo": "0.23.0",
+        "licenseDeclared": "MIT"
+    }));
+    let license_packages: Vec<_> = packages
+        .iter()
+        .map(|package| {
+            serde_json::json!({
+                "name": package["name"],
+                "version": package["versionInfo"],
+                "license": package["licenseDeclared"],
+            })
+        })
+        .collect();
     documents.insert(
         "licenses".into(),
-        br#"{"schema_version":1,"release":"v0.1.0","packages":[{"name":"asb-tui","version":"0.1.0","license":"MIT"},{"name":"agent-workflow-coordinator","version":"0.3.5","license":"MIT"},{"name":"agent-workflow-quality","version":"0.23.0","license":"MIT"}]}"#.to_vec(),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "release": "v0.1.0",
+            "packages": license_packages,
+        }))
+        .unwrap(),
     );
-    documents.insert(
-        "sbom".into(),
-        br#"{"spdxVersion":"SPDX-2.3","name":"asb-tui-v0.1.0","packages":[{"name":"asb-tui"},{"name":"agent-workflow-coordinator"},{"name":"agent-workflow-quality"}]}"#.to_vec(),
-    );
+    documents.insert("sbom".into(), serde_json::to_vec(&sbom).unwrap());
     documents.insert(
         "provenance".into(),
         format!(
@@ -450,15 +476,126 @@ fn license_sbom_and_provenance_policy_is_bound_to_the_manifest() {
         Err("license_policy_rejected")
     );
 
-    let mut incomplete = documents.clone();
-    incomplete.insert(
-        "sbom".into(),
-        br#"{"spdxVersion":"SPDX-2.3","name":"asb-tui-v0.1.0","packages":[{"name":"asb-tui"}]}"#
-            .to_vec(),
+    for (name, field, rejected) in [
+        ("foldhash", "version", "0.2.1"),
+        ("foldhash", "name", "other-zlib"),
+        ("foldhash", "license", "BSD-3-Clause"),
+        ("agent-workflow-coordinator", "license", "Zlib"),
+    ] {
+        let mut widened = policy_documents();
+        let mut report: serde_json::Value = serde_json::from_slice(&widened["licenses"]).unwrap();
+        let package = report["packages"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|package| package["name"] == name)
+            .unwrap();
+        package[field] = rejected.into();
+        widened.insert("licenses".into(), serde_json::to_vec(&report).unwrap());
+        assert_eq!(
+            validate_bundle_documents(&parsed, &widened),
+            Err("license_policy_rejected")
+        );
+    }
+
+    let license_report: serde_json::Value = serde_json::from_slice(&documents["licenses"]).unwrap();
+    assert_eq!(
+        license_report["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|package| package["name"] == "hashbrown")
+            .count(),
+        2,
+        "distinct reviewed versions must remain representable"
     );
+
+    let mut duplicate = policy_documents();
+    let mut report: serde_json::Value = serde_json::from_slice(&duplicate["licenses"]).unwrap();
+    let foldhash = report["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|package| package["name"] == "foldhash")
+        .unwrap()
+        .clone();
+    report["packages"].as_array_mut().unwrap().push(foldhash);
+    duplicate.insert("licenses".into(), serde_json::to_vec(&report).unwrap());
+    assert_eq!(
+        validate_bundle_documents(&parsed, &duplicate),
+        Err("license_policy_rejected")
+    );
+
+    let mut omitted_license = policy_documents();
+    let mut report: serde_json::Value =
+        serde_json::from_slice(&omitted_license["licenses"]).unwrap();
+    report["packages"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|package| package["name"] != "foldhash");
+    omitted_license.insert("licenses".into(), serde_json::to_vec(&report).unwrap());
+    assert_eq!(
+        validate_bundle_documents(&parsed, &omitted_license),
+        Err("license_report_incomplete")
+    );
+
+    let mut extra_license = policy_documents();
+    let mut report: serde_json::Value = serde_json::from_slice(&extra_license["licenses"]).unwrap();
+    report["packages"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "name": "unreviewed-extra",
+            "version": "1.0.0",
+            "license": "MIT"
+        }));
+    extra_license.insert("licenses".into(), serde_json::to_vec(&report).unwrap());
+    assert_eq!(
+        validate_bundle_documents(&parsed, &extra_license),
+        Err("license_policy_rejected")
+    );
+
+    let mut incomplete = documents.clone();
+    let mut sbom: serde_json::Value = serde_json::from_slice(&incomplete["sbom"]).unwrap();
+    sbom["packages"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|package| package["name"] != "foldhash");
+    incomplete.insert("sbom".into(), serde_json::to_vec(&sbom).unwrap());
     assert_eq!(
         validate_bundle_documents(&parsed, &incomplete),
         Err("sbom_incomplete")
+    );
+
+    let mut mismatched_sbom = policy_documents();
+    let mut sbom: serde_json::Value = serde_json::from_slice(&mismatched_sbom["sbom"]).unwrap();
+    let foldhash = sbom["packages"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|package| package["name"] == "foldhash")
+        .unwrap();
+    foldhash["licenseDeclared"] = "MIT".into();
+    mismatched_sbom.insert("sbom".into(), serde_json::to_vec(&sbom).unwrap());
+    assert_eq!(
+        validate_bundle_documents(&parsed, &mismatched_sbom),
+        Err("sbom_invalid")
+    );
+
+    let mut extra_sbom = policy_documents();
+    let mut sbom: serde_json::Value = serde_json::from_slice(&extra_sbom["sbom"]).unwrap();
+    sbom["packages"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "name": "unreviewed-extra",
+            "versionInfo": "1.0.0",
+            "licenseDeclared": "MIT"
+        }));
+    extra_sbom.insert("sbom".into(), serde_json::to_vec(&sbom).unwrap());
+    assert_eq!(
+        validate_bundle_documents(&parsed, &extra_sbom),
+        Err("sbom_invalid")
     );
 
     let mut substituted = documents;

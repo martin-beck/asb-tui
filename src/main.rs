@@ -3,10 +3,13 @@
 #![forbid(unsafe_code)]
 
 use asb_tui::{
+    app::AppState,
     compatibility::evaluate,
     delegated::execute_input,
-    lifecycle::local_self_test_response,
+    lifecycle::{local_self_test_response, run_self_test_supervisor},
+    runtime::run_interactive,
     system_probe::{LocalSystem, detect},
+    terminal::{RenderPolicy, TerminalEvidence},
 };
 use std::{env, process::ExitCode};
 
@@ -19,6 +22,28 @@ const DIAGNOSTIC: &str = concat!(
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
+    if let Some(arguments) = arguments.strip_prefix(&["__self-test-supervisor".to_owned()]) {
+        return ExitCode::from(if run_self_test_supervisor(arguments).is_ok() {
+            0
+        } else {
+            126
+        });
+    }
+    if arguments.is_empty() || arguments == ["run"] {
+        return launch();
+    }
+    if arguments == ["doctor", "--terminal"] {
+        match asb_tui::terminal::doctor(asb_tui::terminal::TerminalEvidence::from_environment()) {
+            Ok(report) => {
+                println!("{report}");
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                eprintln!("terminal doctor failed: {error}");
+                return ExitCode::from(2);
+            }
+        }
+    }
     if arguments == ["lifecycle", "--format", "json"] {
         let response = execute_input(std::io::stdin().lock());
         println!(
@@ -27,13 +52,29 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(if response.ok { 0 } else { 3 });
     }
-    if let [command, release_flag, release, format_flag, format] = arguments.as_slice()
+    if let [
+        command,
+        release_flag,
+        release,
+        asb_flag,
+        asb_version,
+        protocol_flag,
+        protocol_version,
+        format_flag,
+        format,
+    ] = arguments.as_slice()
         && command == "lifecycle-self-test"
         && release_flag == "--release"
+        && asb_flag == "--asb-version"
+        && protocol_flag == "--protocol-version"
         && format_flag == "--format"
         && format == "json"
     {
-        let Some(response) = local_self_test_response(release) else {
+        let Some(response) = protocol_version
+            .parse()
+            .ok()
+            .and_then(|protocol| local_self_test_response(release, asb_version, protocol))
+        else {
             return usage();
         };
         println!(
@@ -58,8 +99,43 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: asb-tui (doctor|compatibility) --format json");
+    eprintln!("usage: asb-tui [run] | (doctor|compatibility) --format json | doctor --terminal");
     ExitCode::from(2)
+}
+
+fn launch() -> ExitCode {
+    let mut evidence = TerminalEvidence::from_environment();
+    if evidence.tty
+        && let Ok((columns, lines)) = crossterm::terminal::size()
+        && columns > 0
+        && lines > 0
+    {
+        evidence.columns = Some(columns);
+        evidence.lines = Some(lines);
+    }
+    let Ok(policy) = RenderPolicy::from_evidence(&evidence) else {
+        eprintln!("terminal capability check failed");
+        return ExitCode::from(2);
+    };
+    let mut state =
+        match AppState::new(evidence.columns.unwrap_or(80), evidence.lines.unwrap_or(24)) {
+            Ok(state) => state,
+            Err(_) => {
+                eprintln!("terminal capability check failed");
+                return ExitCode::from(2);
+            }
+        };
+    if !policy.alternate_screen {
+        print!("{}", state.plain_text());
+        return ExitCode::SUCCESS;
+    }
+    match run_interactive(&mut state, policy) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => {
+            eprintln!("terminal application failed");
+            ExitCode::from(2)
+        }
+    }
 }
 
 #[cfg(test)]

@@ -15,10 +15,20 @@ $ asb-tui doctor --format json
 {"classification":"source_only_unverified","protocol":"asb-cli-capabilities","protocol_version":1,"reason":"installed_asb_compatibility_not_verified"}
 ```
 
-The command exits 3. It does not probe ambient configuration, contact a network service, or claim
-that Ratatui/Crossterm rendering is available. The exact terminal dependency closure is accepted for
-source use under a fail-closed crate-specific policy, but renderer and platform evidence remain
-separate. See [the terminal dependency decision](docs/TERMINAL_DEPENDENCY_POLICY.md).
+The command exits 3. It does not probe ambient configuration or contact a network service. The
+standalone application now has a Ratatui renderer, an exact-pinned Crossterm lifecycle, and a
+policy-driven draw/input loop. Running `asb-tui` on an interactive supported terminal opens the UI;
+`NO_COLOR` preserves the keyboard-interactive UI while disabling color and Unicode decoration.
+Running through a pipe or with `TERM=dumb` emits a stable plain-text view without entering raw or
+alternate-screen mode. This is source functionality, not platform
+qualification or an installable release. See
+[the terminal dependency decision](docs/TERMINAL_DEPENDENCY_POLICY.md).
+The Unix lifecycle registers restoration handlers before terminal acquisition: `SIGHUP`, `SIGINT`,
+`SIGQUIT`, and `SIGTERM` restore acquired effects before preserving the signal's default exit,
+while `SIGTSTP` restores before suspension and `SIGCONT` re-enters the UI.
+Every backend size query is checked before Ratatui allocates a frame: dimensions are limited to
+4096 cells per axis and 262144 cells in total. A zero-sized transient uses the deterministic 1x1
+compact fallback; an oversized initial terminal or resize fails closed and restores the terminal.
 
 See `provenance/dependencies.lock.json` for exact tooling provenance and
 `protocol/v1/capabilities.schema.json` for the proposed external JSON boundary.
@@ -27,7 +37,15 @@ See `provenance/dependencies.lock.json` for exact tooling provenance and
 
 `cargo test --locked` exercises the closed capability contract, including unknown, missing,
 duplicate, malformed, wrong-version, and wrong-type inputs. It also proves the standalone binary
-runs with an empty environment and contains no ASB workspace/path dependency.
+runs with an empty environment and contains no ASB workspace/path dependency. Ratatui
+`TestBackend` snapshots bind compact, standard, wide, and tiny layouts; pseudo-terminal tests bind
+actual draw, quit, panic, plain fallback, and restoration behavior.
+The application-state boundary accepts typed event injection and deterministic projection only;
+the live ASB client, negotiation, polling, and responsiveness contract are intentionally owned by
+the separate integration work, not this renderer foundation.
+`tools/test-promoted-self-test.sh` rebuilds an isolated copy under the fully verified static gate
+fixture and proves the real executable returns a closed, ready response from a controlling PTY;
+the tracked public channel remains source-only and is never rewritten.
 
 The dependency lock has a detached SSH signature under the `asb-tui-release-lock` namespace.
 `verify-release-lock` verifies that signature, requires signed annotated upstream tags, and binds
@@ -124,6 +142,26 @@ claim its own digest. The parent already digest-checks the exact anonymous-file 
 build has closed promotion gates, so even the repository's authentic synthetic fixture cannot be
 installed, launched, or reported as verified. Removal deletes only extension state;
 the lifecycle has no benchmark-process handle and cannot signal or remove an ASB run.
+
+Each candidate probe receives fresh unpredictable config/cache directories bound through retained
+directory descriptors. Install and launch hold the lifecycle's exclusive lock, so probe creation is
+serialized. Normal, rejected, failed-spawn, and crashed probes are cleaned descriptor-relatively;
+cleanup has fixed item, depth, and elapsed-time budgets. Excess crash residue remains quarantined
+under its never-reused private random name and a later exclusive lifecycle open makes another
+bounded cleanup pass.
+
+Candidate self-tests run behind a sealed copy of the current trusted executable as a distinct
+process-group leader. Before it executes the sealed candidate, that supervisor installs an
+inherited seccomp filter that denies `setsid` and `setpgid`; forks, threads, execs, and namespace
+attempts retain the filter and cannot escape the owned group. Cleanup addresses that numeric group
+while its direct leader is deliberately unreaped and retained by pidfd, then uses the pidfd only to
+signal the leader and drains output nonblockingly under fixed deadlines. This prevents PID reuse
+before group cleanup. The standalone lifecycle process has no external SIGCHLD reaper; embedding
+that lifecycle process or reaping its owned supervisor child is unsupported. The hidden integration-
+test seam requires independently authenticated bytes, rejects symlinks and group/world-writable or
+substituted inputs, and executes a sealed copy immune to later same-inode mutation. Cleanup never
+enumerates `/proc` children or changes the process-global subreaper setting, so concurrently spawned
+unrelated children cannot be classified, signalled, or reaped as candidate descendants.
 
 This is the standalone half of the command contract. Current ASB releases do not yet route
 `asb tui install`, `asb tui`, `asb tui status`, `asb tui upgrade`, or `asb tui remove`; that narrow

@@ -187,7 +187,11 @@ pub fn execute(request: LifecycleRequest) -> LifecycleResponse {
             schema_version,
             install_root,
         } => lifecycle_store(schema_version, &install_root)
-            .and_then(|store| launch(&store, &mut ExecutableSelfTest, &mut ProcessLauncher))
+            .and_then(|store| {
+                let mut self_test =
+                    ExecutableSelfTest::for_store(&store).map_err(|_| "launch_self_test_failed")?;
+                launch(&store, &mut self_test, &mut ProcessLauncher)
+            })
             .map(|()| "frontend_exited"),
         LifecycleRequest::Install {
             schema_version,
@@ -344,7 +348,9 @@ fn install_or_upgrade(input: InstallInput) -> Result<(), &'static str> {
     let mut store =
         FilesystemLifecycle::open(&input.install_root).map_err(|_| "install_root_unavailable")?;
     enforce_operation(&store, input.operation, manifest.release())?;
-    install(&manifest, &verified, &mut store, &mut ExecutableSelfTest).map(|_| ())
+    let mut self_test =
+        ExecutableSelfTest::for_store(&store).map_err(|_| "install_self_test_failed")?;
+    install(&manifest, &verified, &mut store, &mut self_test).map(|_| ())
 }
 
 fn system_now_unix() -> Result<u64, &'static str> {

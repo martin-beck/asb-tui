@@ -11,18 +11,21 @@ use crate::{
     },
     system_probe::{LocalSystem, detect},
 };
+use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    convert::TryInto,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{self, IsTerminal, Read, Write},
     os::{
-        fd::AsRawFd,
-        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        fd::{AsFd, AsRawFd, OwnedFd},
+        unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        unix::process::CommandExt,
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -31,6 +34,9 @@ const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_STATE_BYTES: u64 = 64 * 1024;
 const SELF_TEST_OUTPUT_BYTES: u64 = 64 * 1024;
 const SELF_TEST_TIMEOUT: Duration = Duration::from_secs(3);
+const PROBE_CLEANUP_ITEMS: usize = 256;
+const PROBE_CLEANUP_DEPTH: usize = 8;
+const PROBE_CLEANUP_TIME: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -137,6 +143,9 @@ impl FilesystemLifecycle {
             },
         )
         .map_err(|_| LifecycleIoError)?;
+        if update {
+            cleanup_stale_probe_directories(&directory);
+        }
         let versions = retained_path.join("versions");
         if !versions.exists() {
             if !update {
@@ -315,8 +324,13 @@ pub struct LocalSelfTestResponse<'a> {
     pub ready: bool,
 }
 
-pub fn local_self_test_response(release: &str) -> Option<LocalSelfTestResponse<'_>> {
-    if !valid_release(release) {
+pub fn local_self_test_response<'a>(
+    release: &'a str,
+    expected_asb_version: &str,
+    expected_protocol_version: u64,
+) -> Option<LocalSelfTestResponse<'a>> {
+    if !valid_release(release) || expected_asb_version != "0.1.0" || expected_protocol_version != 1
+    {
         return None;
     }
     let identity = promoted_self_identity(release);
@@ -325,6 +339,9 @@ pub fn local_self_test_response(release: &str) -> Option<LocalSelfTestResponse<'
     } else {
         ReleaseClassification::SourceOnlyUnverified
     };
+    let mut probe = detect(&LocalSystem);
+    probe.asb.version = Some(expected_asb_version.to_owned());
+    probe.asb.protocol_version = Some(expected_protocol_version);
     Some(LocalSelfTestResponse {
         schema_version: 1,
         classification: classification.as_str(),
@@ -344,7 +361,7 @@ pub fn local_self_test_response(release: &str) -> Option<LocalSelfTestResponse<'
         quality_commit: QUALITY_COMMIT,
         ready: identity.is_some()
             && compiled_target() != "unsupported"
-            && evaluate(detect(&LocalSystem)).bundle.is_some(),
+            && evaluate(probe).bundle.is_some(),
     })
 }
 
@@ -360,23 +377,505 @@ fn valid_release(value: &str) -> bool {
 }
 
 /// Executes the exact candidate bytes from an anonymous file and validates its closed response.
-#[derive(Default)]
-pub struct ExecutableSelfTest;
+pub struct ExecutableSelfTest {
+    lifecycle_root: File,
+    supervisor: File,
+}
 
-impl SelfTest for ExecutableSelfTest {
-    fn verify_protocol_and_terminal(&mut self, installation: &Installation, bytes: &[u8]) -> bool {
-        executable_self_test(installation, bytes).is_ok()
+impl ExecutableSelfTest {
+    /// Bind a sealed copy of the current standalone executable.
+    ///
+    /// The standalone lifecycle process exclusively owns the supervisor child wait status. An
+    /// embedding process with an independent SIGCHLD handler or child reaper is unsupported.
+    pub fn for_store(store: &FilesystemLifecycle) -> Result<Self, LifecycleIoError> {
+        store.validate_root()?;
+        let mut executable = File::open("/proc/self/exe").map_err(|_| LifecycleIoError)?;
+        let metadata = executable.metadata().map_err(|_| LifecycleIoError)?;
+        if !metadata.is_file()
+            || metadata.mode() & 0o111 == 0
+            || metadata.len() == 0
+            || metadata.len() > MAX_EXECUTABLE_BYTES
+        {
+            return Err(LifecycleIoError);
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        Read::by_ref(&mut executable)
+            .take(MAX_EXECUTABLE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| LifecycleIoError)?;
+        if bytes.len() as u64 != metadata.len() {
+            return Err(LifecycleIoError);
+        }
+        Ok(Self {
+            lifecycle_root: store.directory.try_clone().map_err(|_| LifecycleIoError)?,
+            supervisor: executable_memfd("asb-tui-self-test-supervisor", &bytes)?,
+        })
+    }
+
+    /// Bind independently authenticated supervisor bytes for an integration test.
+    ///
+    /// This hidden test seam is not a supported embedding API. `authenticated_bytes` must come
+    /// from a trust decision independent of `supervisor`; reading the same mutable path first is
+    /// not authentication. The selected path must be an owner-controlled, non-symlink regular
+    /// executable. Its exact authenticated bytes are copied into a sealed anonymous file before
+    /// this function returns, so later pathname or same-inode mutation cannot affect execution.
+    #[doc(hidden)]
+    pub fn for_store_with_authenticated_supervisor(
+        store: &FilesystemLifecycle,
+        supervisor: &Path,
+        authenticated_bytes: &[u8],
+    ) -> Result<Self, LifecycleIoError> {
+        store.validate_root()?;
+        if authenticated_bytes.is_empty() || authenticated_bytes.len() as u64 > MAX_EXECUTABLE_BYTES
+        {
+            return Err(LifecycleIoError);
+        }
+        let before = fs::symlink_metadata(supervisor).map_err(|_| LifecycleIoError)?;
+        if !before.is_file()
+            || before.file_type().is_symlink()
+            || before.uid() != rustix::process::getuid().as_raw()
+            || before.mode() & 0o111 == 0
+            || before.mode() & 0o022 != 0
+            || before.len() != authenticated_bytes.len() as u64
+        {
+            return Err(LifecycleIoError);
+        }
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let mut opened = options.open(supervisor).map_err(|_| LifecycleIoError)?;
+        let opened_metadata = opened.metadata().map_err(|_| LifecycleIoError)?;
+        if (before.dev(), before.ino(), before.len(), before.mode())
+            != (
+                opened_metadata.dev(),
+                opened_metadata.ino(),
+                opened_metadata.len(),
+                opened_metadata.mode(),
+            )
+        {
+            return Err(LifecycleIoError);
+        }
+        let mut observed = Vec::with_capacity(authenticated_bytes.len());
+        Read::by_ref(&mut opened)
+            .take(MAX_EXECUTABLE_BYTES + 1)
+            .read_to_end(&mut observed)
+            .map_err(|_| LifecycleIoError)?;
+        let after = opened.metadata().map_err(|_| LifecycleIoError)?;
+        if (
+            opened_metadata.dev(),
+            opened_metadata.ino(),
+            opened_metadata.len(),
+        ) != (after.dev(), after.ino(), after.len())
+            || (opened_metadata.mtime(), opened_metadata.mtime_nsec())
+                != (after.mtime(), after.mtime_nsec())
+            || (opened_metadata.ctime(), opened_metadata.ctime_nsec())
+                != (after.ctime(), after.ctime_nsec())
+            || observed != authenticated_bytes
+        {
+            return Err(LifecycleIoError);
+        }
+        Ok(Self {
+            lifecycle_root: store.directory.try_clone().map_err(|_| LifecycleIoError)?,
+            supervisor: executable_memfd("asb-tui-authenticated-test-supervisor", &observed)?,
+        })
     }
 }
 
-fn executable_self_test(installation: &Installation, bytes: &[u8]) -> Result<(), LifecycleIoError> {
+impl SelfTest for ExecutableSelfTest {
+    fn verify_protocol_and_terminal(&mut self, installation: &Installation, bytes: &[u8]) -> bool {
+        executable_self_test(installation, bytes, &self.lifecycle_root, &self.supervisor).is_ok()
+    }
+}
+
+struct ProbeDirectories {
+    root: File,
+    name: String,
+    runtime: File,
+    config: Option<File>,
+    cache: Option<File>,
+}
+
+impl ProbeDirectories {
+    fn inherited_paths(&self) -> Result<(String, String), LifecycleIoError> {
+        Ok((
+            format!(
+                "/proc/self/fd/{}",
+                self.config.as_ref().ok_or(LifecycleIoError)?.as_raw_fd()
+            ),
+            format!(
+                "/proc/self/fd/{}",
+                self.cache.as_ref().ok_or(LifecycleIoError)?.as_raw_fd()
+            ),
+        ))
+    }
+}
+
+struct CleanupBudget {
+    remaining: usize,
+    deadline: Instant,
+}
+
+fn cleanup_directory_contents(
+    directory: &File,
+    depth: usize,
+    budget: &mut CleanupBudget,
+) -> Result<(), LifecycleIoError> {
+    if depth > PROBE_CLEANUP_DEPTH || budget.remaining == 0 || Instant::now() >= budget.deadline {
+        return Err(LifecycleIoError);
+    }
+    let path = format!("/proc/self/fd/{}", directory.as_raw_fd());
+    for entry in fs::read_dir(path).map_err(|_| LifecycleIoError)? {
+        if budget.remaining == 0 || Instant::now() >= budget.deadline {
+            return Err(LifecycleIoError);
+        }
+        budget.remaining -= 1;
+        let name = entry.map_err(|_| LifecycleIoError)?.file_name();
+        let metadata = rustix::fs::statat(directory, &name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|_| LifecycleIoError)?;
+        if rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::Directory
+        {
+            let child = rustix::fs::openat(
+                directory,
+                &name,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map(File::from)
+            .map_err(|_| LifecycleIoError)?;
+            cleanup_directory_contents(&child, depth + 1, budget)?;
+            rustix::fs::unlinkat(directory, &name, rustix::fs::AtFlags::REMOVEDIR)
+                .map_err(|_| LifecycleIoError)?;
+        } else {
+            rustix::fs::unlinkat(directory, &name, rustix::fs::AtFlags::empty())
+                .map_err(|_| LifecycleIoError)?;
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_stale_probe_directories(root: &File) {
+    let path = format!("/proc/self/fd/{}", root.as_raw_fd());
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    let mut budget = CleanupBudget {
+        remaining: PROBE_CLEANUP_ITEMS,
+        deadline: Instant::now() + PROBE_CLEANUP_TIME,
+    };
+    for entry in entries.filter_map(Result::ok) {
+        if budget.remaining == 0 || Instant::now() >= budget.deadline {
+            break;
+        }
+        let name = entry.file_name();
+        if !valid_probe_name(&name.to_string_lossy()) {
+            continue;
+        }
+        let Ok(directory) = rustix::fs::openat(
+            root,
+            &name,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        ) else {
+            continue;
+        };
+        let directory = File::from(directory);
+        let Ok(metadata) = rustix::fs::fstat(&directory) else {
+            continue;
+        };
+        if metadata.st_uid != rustix::process::getuid().as_raw() || metadata.st_mode & 0o077 != 0 {
+            continue;
+        }
+        let identity = (metadata.st_dev, metadata.st_ino);
+        let _ = cleanup_directory_contents(&directory, 0, &mut budget);
+        let still_same = rustix::fs::statat(root, &name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .is_ok_and(|value| (value.st_dev, value.st_ino) == identity);
+        if still_same {
+            let _ = rustix::fs::unlinkat(root, &name, rustix::fs::AtFlags::REMOVEDIR);
+        }
+    }
+}
+
+fn valid_probe_name(name: &str) -> bool {
+    name.strip_prefix(".self-test-runtime-")
+        .is_some_and(|suffix| {
+            suffix.len() == 32
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+}
+
+impl Drop for ProbeDirectories {
+    fn drop(&mut self) {
+        let mut budget = CleanupBudget {
+            remaining: PROBE_CLEANUP_ITEMS,
+            deadline: Instant::now() + PROBE_CLEANUP_TIME,
+        };
+        let runtime_identity = rustix::fs::fstat(&self.runtime)
+            .ok()
+            .map(|value| (value.st_dev, value.st_ino));
+        if let Some(config) = self.config.as_ref() {
+            let _ = cleanup_directory_contents(config, 0, &mut budget);
+        }
+        if let Some(cache) = self.cache.as_ref() {
+            let _ = cleanup_directory_contents(cache, 0, &mut budget);
+        }
+        let _ = rustix::fs::unlinkat(&self.runtime, "config", rustix::fs::AtFlags::REMOVEDIR);
+        let _ = rustix::fs::unlinkat(&self.runtime, "cache", rustix::fs::AtFlags::REMOVEDIR);
+        let _ = cleanup_directory_contents(&self.runtime, 0, &mut budget);
+        let still_same = runtime_identity.is_some_and(|identity| {
+            rustix::fs::statat(
+                &self.root,
+                self.name.as_str(),
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .is_ok_and(|value| (value.st_dev, value.st_ino) == identity)
+        });
+        if still_same {
+            let _ = rustix::fs::unlinkat(
+                &self.root,
+                self.name.as_str(),
+                rustix::fs::AtFlags::REMOVEDIR,
+            );
+        }
+    }
+}
+
+fn private_probe_directories(root: &File) -> Result<ProbeDirectories, LifecycleIoError> {
+    let open_private_child = |parent: &File, name: &str| {
+        rustix::fs::mkdirat(
+            parent,
+            name,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR | rustix::fs::Mode::XUSR,
+        )
+        .map_err(|_| LifecycleIoError)?;
+        let descriptor = rustix::fs::openat(
+            parent,
+            name,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|_| LifecycleIoError)?;
+        let metadata = rustix::fs::fstat(&descriptor).map_err(|_| LifecycleIoError)?;
+        if metadata.st_uid != rustix::process::getuid().as_raw() || metadata.st_mode & 0o077 != 0 {
+            return Err(LifecycleIoError);
+        }
+        Ok(File::from(descriptor))
+    };
+    let mut created = None;
+    for _ in 0..4 {
+        let mut entropy = [0_u8; 16];
+        File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut entropy))
+            .map_err(|_| LifecycleIoError)?;
+        let name = format!(
+            ".self-test-runtime-{}",
+            entropy
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        match rustix::fs::mkdirat(
+            root,
+            name.as_str(),
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR | rustix::fs::Mode::XUSR,
+        ) {
+            Err(rustix::io::Errno::EXIST) => continue,
+            Err(_) => return Err(LifecycleIoError),
+            Ok(()) => {}
+        }
+        let runtime = match rustix::fs::openat(
+            root,
+            name.as_str(),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        ) {
+            Ok(runtime) => File::from(runtime),
+            Err(_) => {
+                let _ = rustix::fs::unlinkat(root, name.as_str(), rustix::fs::AtFlags::REMOVEDIR);
+                return Err(LifecycleIoError);
+            }
+        };
+        created = Some((name, runtime));
+        break;
+    }
+    let (name, runtime) = created.ok_or(LifecycleIoError)?;
+    let mut probes = ProbeDirectories {
+        root: root.try_clone().map_err(|_| LifecycleIoError)?,
+        name,
+        runtime,
+        config: None,
+        cache: None,
+    };
+    probes.config = Some(open_private_child(&probes.runtime, "config")?);
+    probes.cache = Some(open_private_child(&probes.runtime, "cache")?);
+    let config = probes.config.as_ref().ok_or(LifecycleIoError)?;
+    let cache = probes.cache.as_ref().ok_or(LifecycleIoError)?;
+    rustix::io::fcntl_setfd(config, rustix::io::FdFlags::empty()).map_err(|_| LifecycleIoError)?;
+    rustix::io::fcntl_setfd(cache, rustix::io::FdFlags::empty()).map_err(|_| LifecycleIoError)?;
+    Ok(probes)
+}
+
+static SELF_TEST_PROCESS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+const PROCESS_CLEANUP_TIME: Duration = Duration::from_millis(750);
+
+struct CandidateProcess {
+    child: std::process::Child,
+    leader: rustix::process::Pid,
+    leader_fd: OwnedFd,
+    cleaned: bool,
+}
+
+impl CandidateProcess {
+    fn spawn(command: &mut Command) -> Result<Self, LifecycleIoError> {
+        command.process_group(0);
+        let mut child = command.spawn().map_err(|_| LifecycleIoError)?;
+        let leader = rustix::process::Pid::from_raw(child.id() as i32).ok_or(LifecycleIoError)?;
+        let leader_fd =
+            match rustix::process::pidfd_open(leader, rustix::process::PidfdFlags::NONBLOCK) {
+                Ok(fd) => fd,
+                Err(_) => {
+                    let _ =
+                        rustix::process::kill_process_group(leader, rustix::process::Signal::KILL);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(LifecycleIoError);
+                }
+            };
+        Ok(Self {
+            child,
+            leader,
+            leader_fd,
+            cleaned: false,
+        })
+    }
+
+    fn exited_without_reaping(&self) -> Result<bool, LifecycleIoError> {
+        rustix::process::waitid(
+            rustix::process::WaitId::PidFd(self.leader_fd.as_fd()),
+            rustix::process::WaitIdOptions::EXITED
+                | rustix::process::WaitIdOptions::NOHANG
+                | rustix::process::WaitIdOptions::NOWAIT,
+        )
+        .map(|status| status.is_some())
+        .map_err(|_| LifecycleIoError)
+    }
+
+    fn terminate_tree(&mut self) -> Result<std::process::ExitStatus, LifecycleIoError> {
+        if self.cleaned {
+            return self.child.try_wait().ok().flatten().ok_or(LifecycleIoError);
+        }
+        let group_signal =
+            rustix::process::kill_process_group(self.leader, rustix::process::Signal::KILL);
+        let leader_signal =
+            rustix::process::pidfd_send_signal(&self.leader_fd, rustix::process::Signal::KILL);
+        let deadline = Instant::now() + PROCESS_CLEANUP_TIME;
+        let status = loop {
+            if let Some(status) = self.child.try_wait().map_err(|_| LifecycleIoError)? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                return Err(LifecycleIoError);
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        self.cleaned = true;
+        let signal_succeeded = |result: rustix::io::Result<()>| {
+            matches!(result, Ok(()) | Err(rustix::io::Errno::SRCH))
+        };
+        if signal_succeeded(group_signal) && signal_succeeded(leader_signal) {
+            Ok(status)
+        } else {
+            Err(LifecycleIoError)
+        }
+    }
+}
+
+impl Drop for CandidateProcess {
+    fn drop(&mut self) {
+        let _ = self.terminate_tree();
+    }
+}
+
+fn candidate_confinement_filter() -> Result<BpfProgram, LifecycleIoError> {
+    let rules = [libc::SYS_setpgid, libc::SYS_setsid]
+        .into_iter()
+        .map(|syscall| (syscall, Vec::new()))
+        .collect();
+    SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EPERM as u32),
+        TargetArch::try_from(std::env::consts::ARCH).map_err(|_| LifecycleIoError)?,
+    )
+    .map_err(|_| LifecycleIoError)?
+    .try_into()
+    .map_err(|_| LifecycleIoError)
+}
+
+/// Execute a sealed self-test candidate after denying all process-group/session escape syscalls.
+///
+/// This is an internal CLI boundary. The caller must already place this supervisor in a fresh
+/// process group and pass the candidate's inherited sealed memfd path as the first argument.
+#[doc(hidden)]
+pub fn run_self_test_supervisor(arguments: &[String]) -> Result<(), LifecycleIoError> {
+    let (candidate_path, candidate_arguments) = arguments.split_first().ok_or(LifecycleIoError)?;
+    let candidate = File::open(candidate_path).map_err(|_| LifecycleIoError)?;
+    let required = rustix::fs::SealFlags::WRITE
+        | rustix::fs::SealFlags::GROW
+        | rustix::fs::SealFlags::SHRINK
+        | rustix::fs::SealFlags::SEAL;
+    if !rustix::fs::fcntl_get_seals(&candidate)
+        .map_err(|_| LifecycleIoError)?
+        .contains(required)
+    {
+        return Err(LifecycleIoError);
+    }
+    rustix::io::fcntl_setfd(&candidate, rustix::io::FdFlags::empty())
+        .map_err(|_| LifecycleIoError)?;
+    let program = format!("/proc/self/fd/{}", candidate.as_raw_fd());
+    let filter = candidate_confinement_filter()?;
+    seccompiler::apply_filter(&filter).map_err(|_| LifecycleIoError)?;
+    Err(Command::new(program).args(candidate_arguments).exec()).map_err(|_| LifecycleIoError)
+}
+
+fn executable_self_test(
+    installation: &Installation,
+    bytes: &[u8],
+    lifecycle_root: &File,
+    supervisor: &File,
+) -> Result<(), LifecycleIoError> {
     let executable = executable_memfd("asb-tui-self-test", bytes)?;
-    let program = format!("/proc/self/fd/{}", executable.as_raw_fd());
-    let mut child = Command::new(program)
+    let candidate = format!("/proc/self/fd/{}", executable.as_raw_fd());
+    let supervisor = format!("/proc/self/fd/{}", supervisor.as_raw_fd());
+    let probes = private_probe_directories(lifecycle_root)?;
+    let (config_path, cache_path) = probes.inherited_paths()?;
+    let (input, _, _) = controlling_terminal()?;
+    let mut command = Command::new(supervisor);
+    command
         .args([
+            "__self-test-supervisor",
+            candidate.as_str(),
             "lifecycle-self-test",
             "--release",
             installation.release.as_str(),
+            "--asb-version",
+            installation.asb_version.as_str(),
+            "--protocol-version",
+            &installation.protocol_version.to_string(),
             "--format",
             "json",
         ])
@@ -384,40 +883,94 @@ fn executable_self_test(installation: &Installation, bytes: &[u8]) -> Result<(),
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("LANG", "C.UTF-8")
         .env("LLVM_PROFILE_FILE", "/dev/null")
-        .stdin(Stdio::inherit())
+        .env("XDG_CONFIG_HOME", config_path)
+        .env("XDG_CACHE_HOME", cache_path)
+        .stdin(input)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    for name in ["TERM", "COLORTERM"] {
+        if let Ok(value) = std::env::var(name)
+            && !value.is_empty()
+            && value.len() <= 128
+            && !value.chars().any(char::is_control)
+        {
+            command.env(name, value);
+        }
+    }
+    for (source, normalized) in [
+        ("SSH_CONNECTION", "SSH_CONNECTION"),
+        ("SSH_TTY", "SSH_TTY"),
+        ("TMUX", "TMUX"),
+        ("STY", "STY"),
+    ] {
+        if std::env::var_os(source).is_some() {
+            command.env(normalized, "present");
+        }
+    }
+    let _process_lock = SELF_TEST_PROCESS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
         .map_err(|_| LifecycleIoError)?;
-    let mut stdout = child.stdout.take().ok_or(LifecycleIoError)?;
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = Read::by_ref(&mut stdout)
-            .take(SELF_TEST_OUTPUT_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map(|_| bytes);
-        let _ = sender.send(result);
-    });
+    let mut child = CandidateProcess::spawn(&mut command)?;
+    let mut stdout = child.child.stdout.take().ok_or(LifecycleIoError)?;
+    let flags = rustix::fs::fcntl_getfl(&stdout).map_err(|_| LifecycleIoError)?;
+    rustix::fs::fcntl_setfl(&stdout, flags | rustix::fs::OFlags::NONBLOCK)
+        .map_err(|_| LifecycleIoError)?;
     let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|_| LifecycleIoError)? {
-            break status;
+    let mut output = Vec::new();
+    let mut eof = false;
+    loop {
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => {
+                    eof = true;
+                    break;
+                }
+                Ok(count) => {
+                    output.extend_from_slice(&chunk[..count]);
+                    if output.len() > SELF_TEST_OUTPUT_BYTES as usize {
+                        let _ = child.terminate_tree();
+                        return Err(LifecycleIoError);
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(_) => {
+                    let _ = child.terminate_tree();
+                    return Err(LifecycleIoError);
+                }
+            }
+        }
+        if child.exited_without_reaping()? {
+            break;
         }
         if started.elapsed() >= SELF_TEST_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.terminate_tree();
             return Err(LifecycleIoError);
         }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let remaining = SELF_TEST_TIMEOUT
-        .checked_sub(started.elapsed())
-        .ok_or(LifecycleIoError)?;
-    let output = receiver
-        .recv_timeout(remaining)
-        .map_err(|_| LifecycleIoError)?
-        .map_err(|_| LifecycleIoError)?;
+        thread::sleep(Duration::from_millis(5));
+    }
+    let status = child.terminate_tree()?;
+    let drain_deadline = Instant::now() + PROCESS_CLEANUP_TIME;
+    while !eof && Instant::now() < drain_deadline {
+        let mut chunk = [0_u8; 4096];
+        match stdout.read(&mut chunk) {
+            Ok(0) => eof = true,
+            Ok(count) => {
+                output.extend_from_slice(&chunk[..count]);
+                if output.len() > SELF_TEST_OUTPUT_BYTES as usize {
+                    return Err(LifecycleIoError);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return Err(LifecycleIoError),
+        }
+    }
+    if !eof {
+        return Err(LifecycleIoError);
+    }
     let response: ExecutableSelfTestResponse =
         serde_json::from_slice(&output).map_err(|_| LifecycleIoError)?;
     if status.success()
@@ -443,7 +996,7 @@ fn executable_self_test(installation: &Installation, bytes: &[u8]) -> Result<(),
 }
 
 fn executable_memfd(name: &str, bytes: &[u8]) -> Result<File, LifecycleIoError> {
-    let descriptor = rustix::fs::memfd_create(name, rustix::fs::MemfdFlags::empty())
+    let descriptor = rustix::fs::memfd_create(name, rustix::fs::MemfdFlags::ALLOW_SEALING)
         .map_err(|_| LifecycleIoError)?;
     let mut executable: File = descriptor.into();
     executable.write_all(bytes).map_err(|_| LifecycleIoError)?;
@@ -451,6 +1004,17 @@ fn executable_memfd(name: &str, bytes: &[u8]) -> Result<File, LifecycleIoError> 
     executable
         .set_permissions(fs::Permissions::from_mode(0o700))
         .map_err(|_| LifecycleIoError)?;
+    let required = rustix::fs::SealFlags::WRITE
+        | rustix::fs::SealFlags::GROW
+        | rustix::fs::SealFlags::SHRINK
+        | rustix::fs::SealFlags::SEAL;
+    rustix::fs::fcntl_add_seals(&executable, required).map_err(|_| LifecycleIoError)?;
+    if !rustix::fs::fcntl_get_seals(&executable)
+        .map_err(|_| LifecycleIoError)?
+        .contains(required)
+    {
+        return Err(LifecycleIoError);
+    }
     Ok(executable)
 }
 
@@ -466,6 +1030,25 @@ pub trait FrontendLauncher {
 #[derive(Default)]
 pub struct ProcessLauncher;
 
+fn controlling_terminal() -> Result<(Stdio, Stdio, Stdio), LifecycleIoError> {
+    let terminal = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| LifecycleIoError)?;
+    let metadata = terminal.metadata().map_err(|_| LifecycleIoError)?;
+    if !terminal.is_terminal() || !metadata.file_type().is_char_device() {
+        return Err(LifecycleIoError);
+    }
+    let input = terminal.try_clone().map_err(|_| LifecycleIoError)?;
+    let output = terminal.try_clone().map_err(|_| LifecycleIoError)?;
+    Ok((
+        Stdio::from(input),
+        Stdio::from(output),
+        Stdio::from(terminal),
+    ))
+}
+
 impl FrontendLauncher for ProcessLauncher {
     fn launch_frontend(
         &mut self,
@@ -474,10 +1057,11 @@ impl FrontendLauncher for ProcessLauncher {
     ) -> Result<(), LifecycleIoError> {
         let executable = executable_memfd("asb-tui-frontend", executable)?;
         let program = format!("/proc/self/fd/{}", executable.as_raw_fd());
+        let (input, output, error) = controlling_terminal()?;
         let status = Command::new(program)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stdin(input)
+            .stdout(output)
+            .stderr(error)
             .status()
             .map_err(|_| LifecycleIoError)?;
         status.success().then_some(()).ok_or(LifecycleIoError)
@@ -791,4 +1375,66 @@ pub fn launch(
     launcher
         .launch_frontend(&installation, &executable)
         .map_err(|_| "frontend_launch_failed")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executable_memfd_is_immutable_after_complete_write() {
+        let mut executable = executable_memfd("asb-tui-seal-test", b"immutable").unwrap();
+        let required = rustix::fs::SealFlags::WRITE
+            | rustix::fs::SealFlags::GROW
+            | rustix::fs::SealFlags::SHRINK
+            | rustix::fs::SealFlags::SEAL;
+        assert_eq!(
+            rustix::fs::fcntl_get_seals(&executable).unwrap() & required,
+            required
+        );
+        assert!(executable.write_all(b"tamper").is_err());
+        assert!(executable.set_len(0).is_err());
+    }
+
+    #[test]
+    fn stale_probe_cleanup_is_bounded_and_never_reuses_residue() {
+        let root =
+            std::env::temp_dir().join(format!("asb-tui-probe-cleanup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700).create(&root).unwrap();
+        let runtime_name = ".self-test-runtime-cccccccccccccccccccccccccccccccc";
+        let runtime = root.join(runtime_name);
+        fs::create_dir(&runtime).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        for index in 0..(PROBE_CLEANUP_ITEMS + 32) {
+            File::create(runtime.join(format!("residue-{index}"))).unwrap();
+        }
+        let root_fd = File::open(&root).unwrap();
+        cleanup_stale_probe_directories(&root_fd);
+        assert!(
+            runtime.exists(),
+            "bounded cleanup unexpectedly widened its budget"
+        );
+        let remaining = fs::read_dir(&runtime).unwrap().count();
+        assert!(
+            remaining > 0 && remaining < PROBE_CLEANUP_ITEMS + 32,
+            "unexpected remaining residue count {remaining}"
+        );
+        cleanup_stale_probe_directories(&root_fd);
+        assert!(
+            !runtime.exists(),
+            "a later exclusive pass did not prune residue"
+        );
+        drop(root_fd);
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn candidate_confinement_filter_compiles_and_cleanup_has_no_proc_dependency() {
+        assert!(!candidate_confinement_filter().unwrap().is_empty());
+        let source = include_str!("lifecycle.rs");
+        assert!(!source.contains(&["/proc/self", "/task"].concat()));
+        assert!(!source.contains(&["set_child_", "subreaper"].concat()));
+    }
 }

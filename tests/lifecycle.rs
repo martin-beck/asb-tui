@@ -12,8 +12,12 @@ use asb_tui::{
         remove, status,
     },
 };
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
+use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, process::Command, sync::Mutex};
 use support::PrivateDirectory;
+
+// A fork temporarily inherits every open file description until exec closes CLOEXEC descriptors.
+// Keep subprocess probes from inheriting another test case lifecycle flock across drop/reopen.
+static PROCESS_SPAWN_ISOLATION: Mutex<()> = Mutex::new(());
 
 fn manifest() -> asb_tui::bundle::BundleManifest {
     parse_and_validate_manifest(
@@ -264,6 +268,7 @@ fn filesystem_install_is_private_atomic_idempotent_and_removable() {
 
 #[test]
 fn filesystem_upgrade_reconnect_and_existing_version_reuse_are_verified() {
+    let _process_spawn_guard = PROCESS_SPAWN_ISOLATION.lock().unwrap();
     let directory = PrivateDirectory::create();
     let mut store = FilesystemLifecycle::open(directory.path()).unwrap();
     let mut first = Installation {
@@ -366,6 +371,24 @@ fn filesystem_rejects_concurrent_lifecycle_owner_without_waiting() {
 
 #[test]
 fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response() {
+    let _process_spawn_guard = PROCESS_SPAWN_ISOLATION.lock().unwrap();
+    const CHILD: &str = "ASB_TUI_EXECUTABLE_SELF_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let command = format!(
+            "{} --exact executable_self_test_runs_exact_candidate_and_requires_closed_ready_response --nocapture",
+            std::env::current_exe().unwrap().display()
+        );
+        let status = Command::new("/usr/bin/script")
+            .args(["-q", "-e", "-c", &command, "/dev/null"])
+            .env(CHILD, "1")
+            .env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
+            .status()
+            .unwrap();
+        assert!(status.success(), "PTY self-test probe failed");
+        return;
+    }
+
     let mut store = Store::default();
     let mut probe = Probe {
         pass: true,
@@ -392,17 +415,303 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
         installed.quality_version,
         installed.quality_commit
     );
-    let candidate = format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", response);
-    let mut self_test = ExecutableSelfTest;
+    let candidate = format!(
+        concat!(
+            "#!/bin/sh\nset -eu\n",
+            "test -t 0\n",
+            "case $XDG_CONFIG_HOME in /proc/self/fd/*) ;; *) exit 11;; esac\n",
+            "case $XDG_CACHE_HOME in /proc/self/fd/*) ;; *) exit 12;; esac\n",
+            "test -d \"$XDG_CONFIG_HOME\" && test -d \"$XDG_CACHE_HOME\"\n",
+            "printf probe >\"$XDG_CONFIG_HOME/write-test\"\n",
+            "printf probe >\"$XDG_CACHE_HOME/write-test\"\n",
+            "test \"$1\" = lifecycle-self-test && test \"$2\" = --release\n",
+            "test \"$4\" = --asb-version && test \"$5\" = 0.1.0\n",
+            "test \"$6\" = --protocol-version && test \"$7\" = 1\n",
+            "test \"$8\" = --format && test \"$9\" = json\n",
+            "printf '%s\\n' '{}'\n"
+        ),
+        response
+    );
+    let directory = PrivateDirectory::create();
+    let original = directory.path().join("original");
+    let retained = directory.path().join("retained");
+    fs::create_dir(&original).unwrap();
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime_store = FilesystemLifecycle::open(&original).unwrap();
+    let supervisor_bytes = fs::read(env!("CARGO_BIN_EXE_asb-tui")).unwrap();
+    let supervisor_path = directory.path().join("authenticated-supervisor");
+    fs::write(&supervisor_path, &supervisor_bytes).unwrap();
+    fs::set_permissions(&supervisor_path, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let supervisor_link = directory.path().join("supervisor-link");
+    std::os::unix::fs::symlink(&supervisor_path, &supervisor_link).unwrap();
+    assert!(
+        ExecutableSelfTest::for_store_with_authenticated_supervisor(
+            &runtime_store,
+            &supervisor_link,
+            &supervisor_bytes,
+        )
+        .is_err(),
+        "a symlink supervisor was accepted"
+    );
+    for mode in [0o720, 0o702] {
+        fs::set_permissions(&supervisor_path, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(
+            ExecutableSelfTest::for_store_with_authenticated_supervisor(
+                &runtime_store,
+                &supervisor_path,
+                &supervisor_bytes,
+            )
+            .is_err(),
+            "a writable supervisor with mode {mode:o} was accepted"
+        );
+    }
+    fs::set_permissions(&supervisor_path, fs::Permissions::from_mode(0o700)).unwrap();
+    let substituted = directory.path().join("substituted-supervisor");
+    let mut substituted_bytes = supervisor_bytes.clone();
+    substituted_bytes[0] ^= 1;
+    fs::write(&substituted, &substituted_bytes).unwrap();
+    fs::set_permissions(&substituted, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        ExecutableSelfTest::for_store_with_authenticated_supervisor(
+            &runtime_store,
+            &substituted,
+            &supervisor_bytes,
+        )
+        .is_err(),
+        "substituted supervisor bytes were accepted"
+    );
+
+    let mut self_test = ExecutableSelfTest::for_store_with_authenticated_supervisor(
+        &runtime_store,
+        &supervisor_path,
+        &supervisor_bytes,
+    )
+    .unwrap();
+    fs::write(&supervisor_path, b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::rename(&original, &retained).unwrap();
+    fs::create_dir(&original).unwrap();
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(self_test.verify_protocol_and_terminal(&installed, candidate.as_bytes()));
+    let runtime_artifacts = || {
+        fs::read_dir(&retained)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".self-test-runtime-")
+            })
+            .count()
+    };
+    assert_eq!(runtime_artifacts(), 0, "successful probe residue remained");
+    assert!(
+        self_test.verify_protocol_and_terminal(&installed, candidate.as_bytes()),
+        "a second probe should receive a fresh private runtime"
+    );
+    assert_eq!(runtime_artifacts(), 0, "repeated probe residue remained");
+    assert!(
+        fs::read_dir(&original).unwrap().next().is_none(),
+        "the replacement root was modified"
+    );
 
     let hostile = candidate.replace("\"ready\":true", "\"ready\":true,\"host\":\"secret\"");
     assert!(!self_test.verify_protocol_and_terminal(&installed, hostile.as_bytes()));
+    assert_eq!(runtime_artifacts(), 0, "rejected probe residue remained");
+    let crashing = "#!/bin/sh\nset -eu\nmkdir -p \"$XDG_CONFIG_HOME/nested\"\nprintf residue >\"$XDG_CONFIG_HOME/nested/file\"\nkill -KILL $$\n";
+    assert!(!self_test.verify_protocol_and_terminal(&installed, crashing.as_bytes()));
+    assert_eq!(runtime_artifacts(), 0, "crashed probe residue remained");
     assert!(!self_test.verify_protocol_and_terminal(&installed, b"not executable"));
+    assert_eq!(runtime_artifacts(), 0, "spawn failure residue remained");
+
+    let assert_reaped = |marker: &std::path::Path| {
+        for _ in 0..100 {
+            if let Ok(pid) = fs::read_to_string(marker).map(|value| value.trim().to_owned())
+                && !std::path::Path::new(&format!("/proc/{pid}")).exists()
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("candidate descendant remained live: {}", marker.display());
+    };
+
+    let rejected_marker = directory.path().join("rejected-child.pid");
+    let rejected = format!(
+        "#!/bin/sh\nsleep 30 & echo $! >'{}'\nexit 7\n",
+        rejected_marker.display()
+    );
+    let started = std::time::Instant::now();
+    assert!(!self_test.verify_protocol_and_terminal(&installed, rejected.as_bytes()));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert_reaped(&rejected_marker);
+
+    let escaped_marker = directory.path().join("escaped-child.pid");
+    let escape_denied = directory.path().join("setsid-denied");
+    let regroup_denied = directory.path().join("setpgid-denied");
+    let thread_denied = directory.path().join("thread-setpgid-denied");
+    let namespace_result = directory.path().join("namespace-result");
+    let escaped = format!(
+        concat!(
+            "#!/bin/sh\n",
+            "setsid sh -c 'sleep 30' || printf denied >'{}'\n",
+            "/usr/bin/python3 -c 'import os; os.setpgid(0, 0)' || printf denied >'{}'\n",
+            "/usr/bin/python3 <<'PY'\n",
+            "import ctypes, errno, threading\n",
+            "libc = ctypes.CDLL(None, use_errno=True)\n",
+            "result = []\n",
+            "def regroup():\n",
+            "    result.append((libc.setpgid(0, 0), ctypes.get_errno()))\n",
+            "thread = threading.Thread(target=regroup)\n",
+            "thread.start()\n",
+            "thread.join()\n",
+            "open(r'{}', 'w').write('denied' if result == [(-1, errno.EPERM)] else repr(result))\n",
+            "PY\n",
+            "/usr/bin/python3 <<'PY'\n",
+            "import ctypes, errno, os\n",
+            "libc = ctypes.CDLL(None, use_errno=True)\n",
+            "result = r'{}'\n",
+            "rc = libc.unshare(0x10000000 | 0x20000000)\n",
+            "if rc != 0:\n",
+            "    open(result, 'w').write('unavailable:%d' % ctypes.get_errno())\n",
+            "else:\n",
+            "    child = os.fork()\n",
+            "    if child == 0:\n",
+            "        session = libc.setsid()\n",
+            "        code = 0 if session == -1 and ctypes.get_errno() == errno.EPERM else 20\n",
+            "        os._exit(code)\n",
+            "    _, status = os.waitpid(child, 0)\n",
+            "    value = 'denied' if os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 else 'escape'\n",
+            "    open(result, 'w').write(value)\n",
+            "PY\n",
+            "(sh -c 'sleep 30 & echo $! >\"{}\"' &)\n",
+            "while [ ! -s '{}' ]; do :; done\n",
+            "exit 7\n"
+        ),
+        escape_denied.display(),
+        regroup_denied.display(),
+        thread_denied.display(),
+        namespace_result.display(),
+        escaped_marker.display(),
+        escaped_marker.display()
+    );
+    assert!(!self_test.verify_protocol_and_terminal(&installed, escaped.as_bytes()));
+    assert_eq!(fs::read_to_string(&escape_denied).unwrap(), "denied");
+    assert_eq!(fs::read_to_string(&regroup_denied).unwrap(), "denied");
+    assert_eq!(fs::read_to_string(&thread_denied).unwrap(), "denied");
+    let namespace = fs::read_to_string(&namespace_result).unwrap();
+    eprintln!("namespace confinement probe: {namespace}");
+    let namespace_unavailable = namespace
+        .strip_prefix("unavailable:")
+        .and_then(|value| value.parse::<i32>().ok())
+        .is_some_and(|errno| matches!(errno, libc::EPERM | libc::EINVAL | libc::ENOSYS));
+    assert!(namespace == "denied" || namespace_unavailable);
+    assert_reaped(&escaped_marker);
+
+    let success_marker = directory.path().join("success-child.pid");
+    let success_with_child = candidate.replace(
+        "printf '%s\\n'",
+        &format!(
+            "sleep 30 & echo $! >'{}'\nprintf '%s\\n'",
+            success_marker.display()
+        ),
+    );
+    assert!(self_test.verify_protocol_and_terminal(&installed, success_with_child.as_bytes()));
+    assert_reaped(&success_marker);
+
+    let timeout_marker = directory.path().join("timeout-child.pid");
+    let timeout = format!(
+        "#!/bin/sh\nsleep 30 & echo $! >'{}'\nsleep 30\n",
+        timeout_marker.display()
+    );
+    assert!(!self_test.verify_protocol_and_terminal(&installed, timeout.as_bytes()));
+    assert_reaped(&timeout_marker);
+
+    for (name, body) in [
+        ("malformed", "printf 'not-json\\n'"),
+        ("oversized", "head -c 70000 /dev/zero"),
+        ("signalled", "kill -TERM $$"),
+    ] {
+        let marker = directory.path().join(format!("{name}-child.pid"));
+        let probe = format!(
+            "#!/bin/sh\nsleep 30 & echo $! >'{}'\n{body}\n",
+            marker.display()
+        );
+        assert!(!self_test.verify_protocol_and_terminal(&installed, probe.as_bytes()));
+        assert_reaped(&marker);
+    }
+
+    for repetition in 0..10 {
+        let marker = directory
+            .path()
+            .join(format!("race-child-{repetition}.pid"));
+        let probe = format!(
+            "#!/bin/sh\nsleep 30 & echo $! >'{}'\nexit 7\n",
+            marker.display()
+        );
+        assert!(!self_test.verify_protocol_and_terminal(&installed, probe.as_bytes()));
+        assert_reaped(&marker);
+    }
+
+    let ready = directory.path().join("concurrent-ready");
+    let acknowledged = directory.path().join("concurrent-acknowledged");
+    let concurrent_candidate = candidate.replace(
+        "printf '%s\\n'",
+        &format!(
+            "printf ready >'{}'\nwhile [ ! -s '{}' ]; do sleep 0.005; done\nprintf '%s\\n'",
+            ready.display(),
+            acknowledged.display()
+        ),
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let unrelated_thread = std::thread::spawn(move || {
+        let mut observed_ready = false;
+        for _ in 0..100 {
+            if ready.exists() {
+                observed_ready = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(observed_ready, "candidate readiness handshake timed out");
+        let mut unrelated = Command::new("/usr/bin/sleep").arg("30").spawn().unwrap();
+        assert!(unrelated.try_wait().unwrap().is_none());
+        fs::write(&acknowledged, b"live").unwrap();
+        sender.send(unrelated).unwrap();
+    });
+    assert!(self_test.verify_protocol_and_terminal(&installed, concurrent_candidate.as_bytes()));
+    unrelated_thread.join().unwrap();
+    let mut unrelated = receiver.recv().unwrap();
+    assert!(
+        unrelated.try_wait().unwrap().is_none(),
+        "concurrently spawned unrelated child was signalled or reaped"
+    );
+    unrelated.kill().unwrap();
+    unrelated.wait().unwrap();
 }
 
 #[test]
-fn process_launcher_runs_exact_bytes_and_reports_frontend_failure() {
+fn process_launcher_requires_a_controlling_terminal() {
+    let _process_spawn_guard = PROCESS_SPAWN_ISOLATION.lock().unwrap();
+    const CHILD: &str = "ASB_TUI_LAUNCHER_NO_TTY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = Command::new("/usr/bin/setsid")
+            .args([
+                "--fork",
+                "--wait",
+                std::env::current_exe().unwrap().to_str().unwrap(),
+                "--exact",
+                "process_launcher_requires_a_controlling_terminal",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "detached launcher probe failed");
+        return;
+    }
+
     let mut store = Store::default();
     let mut probe = Probe {
         pass: true,
@@ -410,22 +719,21 @@ fn process_launcher_runs_exact_bytes_and_reports_frontend_failure() {
     };
     let installed = install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
     let mut launcher = ProcessLauncher;
-    launcher
-        .launch_frontend(&installed, b"#!/bin/sh\nexit 0\n")
-        .unwrap();
     assert!(
         launcher
-            .launch_frontend(&installed, b"#!/bin/sh\nexit 9\n")
+            .launch_frontend(&installed, b"#!/bin/sh\nexit 0\n")
             .is_err()
     );
 }
 
 #[test]
 fn local_self_test_response_validates_release_and_reports_observed_readiness() {
-    assert!(local_self_test_response("1.2.3").is_none());
-    assert!(local_self_test_response("v1.2").is_none());
-    assert!(local_self_test_response("v1.two.3").is_none());
-    let response = local_self_test_response("v1.2.3").unwrap();
+    assert!(local_self_test_response("1.2.3", "0.1.0", 1).is_none());
+    assert!(local_self_test_response("v1.2", "0.1.0", 1).is_none());
+    assert!(local_self_test_response("v1.two.3", "0.1.0", 1).is_none());
+    assert!(local_self_test_response("v1.2.3", "9.9.9", 1).is_none());
+    assert!(local_self_test_response("v1.2.3", "0.1.0", 2).is_none());
+    let response = local_self_test_response("v1.2.3", "0.1.0", 1).unwrap();
     assert_eq!(response.classification, "source_only_unverified");
     assert!(!response.ready);
 }
