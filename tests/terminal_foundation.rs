@@ -752,20 +752,43 @@ struct TmuxServerObservation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SocketErrnoClass {
+    Refused,
+    Disappeared,
+    Permission,
+    TypeProtocol,
+    ResourceTransient,
+    Unknown,
+}
+
+impl SocketErrnoClass {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Refused => "refused",
+            Self::Disappeared => "disappeared",
+            Self::Permission => "permission",
+            Self::TypeProtocol => "type_protocol",
+            Self::ResourceTransient => "resource_transient",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TmuxServerObservationStage {
     Unavailable,
     SocketMetadataUnavailable,
     SocketMetadataInvalid,
     SocketPathInvalid,
     SocketCreationUnavailable,
-    SocketConnectRejected,
+    SocketConnectRejected(SocketErrnoClass),
     SocketPollUnavailable,
     SocketPollTimeout,
     SocketPollInvalid,
     SocketPollNoCompletion,
     SocketErrorUnavailable,
     SocketErrorMalformed,
-    SocketErrorNonzero,
+    SocketErrorNonzero(SocketErrnoClass),
     PeerCredentialsUnavailable,
     PeerCredentialsInvalid,
     ProcessGenerationUnavailable,
@@ -775,27 +798,31 @@ enum TmuxServerObservationStage {
 }
 
 impl TmuxServerObservationStage {
-    const fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Self::Unavailable => "unavailable",
-            Self::SocketMetadataUnavailable => "socket_metadata_unavailable",
-            Self::SocketMetadataInvalid => "socket_metadata_invalid",
-            Self::SocketPathInvalid => "socket_path_invalid",
-            Self::SocketCreationUnavailable => "socket_creation_unavailable",
-            Self::SocketConnectRejected => "socket_connect_rejected",
-            Self::SocketPollUnavailable => "socket_poll_unavailable",
-            Self::SocketPollTimeout => "socket_poll_timeout",
-            Self::SocketPollInvalid => "socket_poll_invalid",
-            Self::SocketPollNoCompletion => "socket_poll_no_completion",
-            Self::SocketErrorUnavailable => "socket_error_unavailable",
-            Self::SocketErrorMalformed => "socket_error_malformed",
-            Self::SocketErrorNonzero => "socket_error_nonzero",
-            Self::PeerCredentialsUnavailable => "peer_credentials_unavailable",
-            Self::PeerCredentialsInvalid => "peer_credentials_invalid",
-            Self::ProcessGenerationUnavailable => "process_generation_unavailable",
-            Self::RepeatedPeerIdentityChanged => "repeated_peer_identity_changed",
-            Self::RepeatedSocketIdentityChanged => "repeated_socket_identity_changed",
-            Self::ProcessGenerationChanged => "process_generation_changed",
+            Self::SocketConnectRejected(class) => {
+                format!("socket_connect_rejected_{}", class.label())
+            }
+            Self::SocketErrorNonzero(class) => {
+                format!("socket_error_nonzero_{}", class.label())
+            }
+            Self::Unavailable => "unavailable".into(),
+            Self::SocketMetadataUnavailable => "socket_metadata_unavailable".into(),
+            Self::SocketMetadataInvalid => "socket_metadata_invalid".into(),
+            Self::SocketPathInvalid => "socket_path_invalid".into(),
+            Self::SocketCreationUnavailable => "socket_creation_unavailable".into(),
+            Self::SocketPollUnavailable => "socket_poll_unavailable".into(),
+            Self::SocketPollTimeout => "socket_poll_timeout".into(),
+            Self::SocketPollInvalid => "socket_poll_invalid".into(),
+            Self::SocketPollNoCompletion => "socket_poll_no_completion".into(),
+            Self::SocketErrorUnavailable => "socket_error_unavailable".into(),
+            Self::SocketErrorMalformed => "socket_error_malformed".into(),
+            Self::PeerCredentialsUnavailable => "peer_credentials_unavailable".into(),
+            Self::PeerCredentialsInvalid => "peer_credentials_invalid".into(),
+            Self::ProcessGenerationUnavailable => "process_generation_unavailable".into(),
+            Self::RepeatedPeerIdentityChanged => "repeated_peer_identity_changed".into(),
+            Self::RepeatedSocketIdentityChanged => "repeated_socket_identity_changed".into(),
+            Self::ProcessGenerationChanged => "process_generation_changed".into(),
         }
     }
 }
@@ -803,7 +830,7 @@ impl TmuxServerObservationStage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TmuxStartupObservationStage {
     Unavailable,
-    ServerBeforeUnavailable,
+    ServerBefore(TmuxServerObservationStage),
     SessionBeforeUnavailable,
     WindowBeforeUnavailable,
     PaneIdentityUnavailable,
@@ -822,7 +849,7 @@ enum TmuxStartupObservationStage {
     ForegroundGenerationChanged,
     SessionAfterUnavailable,
     WindowAfterUnavailable,
-    ServerAfterUnavailable,
+    ServerAfter(TmuxServerObservationStage),
     ServerChanged,
     SessionChanged,
     WindowChanged,
@@ -832,35 +859,35 @@ enum TmuxStartupObservationStage {
 }
 
 impl TmuxStartupObservationStage {
-    const fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Self::Unavailable => "unavailable",
-            Self::ServerBeforeUnavailable => "server_before_unavailable",
-            Self::SessionBeforeUnavailable => "session_before_unavailable",
-            Self::WindowBeforeUnavailable => "window_before_unavailable",
-            Self::PaneIdentityUnavailable => "pane_identity_unavailable",
-            Self::PaneIdentityMalformed => "pane_identity_malformed",
-            Self::TtyIdentityUnavailable => "tty_identity_unavailable",
-            Self::PaneGenerationUnavailable => "pane_generation_unavailable",
-            Self::ProcessListBeforeUnavailable => "process_list_before_unavailable",
-            Self::ProcessTupleInvalid => "process_tuple_invalid",
-            Self::ForegroundGenerationUnavailable => "foreground_generation_unavailable",
-            Self::ProcessListAfterUnavailable => "process_list_after_unavailable",
-            Self::ProcessTupleAfterInvalid => "process_tuple_after_invalid",
-            Self::ProcessTupleChanged => "process_tuple_changed",
-            Self::PaneIdentityChanged => "pane_identity_changed",
-            Self::TtyIdentityChanged => "tty_identity_changed",
-            Self::PaneGenerationChanged => "pane_generation_changed",
-            Self::ForegroundGenerationChanged => "foreground_generation_changed",
-            Self::SessionAfterUnavailable => "session_after_unavailable",
-            Self::WindowAfterUnavailable => "window_after_unavailable",
-            Self::ServerAfterUnavailable => "server_after_unavailable",
-            Self::ServerChanged => "server_changed",
-            Self::SessionChanged => "session_changed",
-            Self::WindowChanged => "window_changed",
-            Self::StartupIdentityChanged => "startup_identity_changed",
-            Self::RetainedServerChanged => "retained_server_changed",
-            Self::CreationWindowChanged => "creation_window_changed",
+            Self::ServerBefore(stage) => format!("server_before_{}", stage.label()),
+            Self::ServerAfter(stage) => format!("server_after_{}", stage.label()),
+            Self::Unavailable => "unavailable".into(),
+            Self::SessionBeforeUnavailable => "session_before_unavailable".into(),
+            Self::WindowBeforeUnavailable => "window_before_unavailable".into(),
+            Self::PaneIdentityUnavailable => "pane_identity_unavailable".into(),
+            Self::PaneIdentityMalformed => "pane_identity_malformed".into(),
+            Self::TtyIdentityUnavailable => "tty_identity_unavailable".into(),
+            Self::PaneGenerationUnavailable => "pane_generation_unavailable".into(),
+            Self::ProcessListBeforeUnavailable => "process_list_before_unavailable".into(),
+            Self::ProcessTupleInvalid => "process_tuple_invalid".into(),
+            Self::ForegroundGenerationUnavailable => "foreground_generation_unavailable".into(),
+            Self::ProcessListAfterUnavailable => "process_list_after_unavailable".into(),
+            Self::ProcessTupleAfterInvalid => "process_tuple_after_invalid".into(),
+            Self::ProcessTupleChanged => "process_tuple_changed".into(),
+            Self::PaneIdentityChanged => "pane_identity_changed".into(),
+            Self::TtyIdentityChanged => "tty_identity_changed".into(),
+            Self::PaneGenerationChanged => "pane_generation_changed".into(),
+            Self::ForegroundGenerationChanged => "foreground_generation_changed".into(),
+            Self::SessionAfterUnavailable => "session_after_unavailable".into(),
+            Self::WindowAfterUnavailable => "window_after_unavailable".into(),
+            Self::ServerChanged => "server_changed".into(),
+            Self::SessionChanged => "session_changed".into(),
+            Self::WindowChanged => "window_changed".into(),
+            Self::StartupIdentityChanged => "startup_identity_changed".into(),
+            Self::RetainedServerChanged => "retained_server_changed".into(),
+            Self::CreationWindowChanged => "creation_window_changed".into(),
         }
     }
 }
@@ -1501,9 +1528,50 @@ fn classify_unix_connect_attempt(
     if connected == 0 {
         return Ok(false);
     }
-    matches!(error, Some(code) if code == libc::EINPROGRESS || code == libc::EAGAIN)
-        .then_some(true)
-        .ok_or(TmuxServerObservationStage::SocketConnectRejected)
+    if matches!(error, Some(code) if code == libc::EINPROGRESS || code == libc::EAGAIN) {
+        return Ok(true);
+    }
+    Err(TmuxServerObservationStage::SocketConnectRejected(
+        classify_socket_errno(error),
+    ))
+}
+
+fn classify_socket_errno(error: Option<i32>) -> SocketErrnoClass {
+    let Some(error) = error else {
+        return SocketErrnoClass::Unknown;
+    };
+    if error == libc::ECONNREFUSED {
+        SocketErrnoClass::Refused
+    } else if [libc::ENOENT, libc::ECONNRESET, libc::ENOTCONN].contains(&error) {
+        SocketErrnoClass::Disappeared
+    } else if [libc::EACCES, libc::EPERM].contains(&error) {
+        SocketErrnoClass::Permission
+    } else if [
+        libc::EPROTOTYPE,
+        libc::EPROTONOSUPPORT,
+        libc::ESOCKTNOSUPPORT,
+        libc::EAFNOSUPPORT,
+        libc::EINVAL,
+    ]
+    .contains(&error)
+    {
+        SocketErrnoClass::TypeProtocol
+    } else if [
+        libc::EINTR,
+        libc::ENOMEM,
+        libc::ENOBUFS,
+        libc::EMFILE,
+        libc::ENFILE,
+        libc::ETIMEDOUT,
+        libc::EAGAIN,
+        libc::EINPROGRESS,
+    ]
+    .contains(&error)
+    {
+        SocketErrnoClass::ResourceTransient
+    } else {
+        SocketErrnoClass::Unknown
+    }
 }
 
 fn classify_unix_connect_completion(
@@ -1533,7 +1601,9 @@ fn classify_unix_connect_completion(
         return Err(TmuxServerObservationStage::SocketErrorMalformed);
     }
     if socket_error != 0 {
-        return Err(TmuxServerObservationStage::SocketErrorNonzero);
+        return Err(TmuxServerObservationStage::SocketErrorNonzero(
+            classify_socket_errno(Some(socket_error)),
+        ));
     }
     Ok(())
 }
@@ -1691,8 +1761,8 @@ fn tmux_startup_observation_diagnostic(
     socket: &str,
     session: &str,
 ) -> Result<TmuxStartupObservation, TmuxStartupObservationStage> {
-    let server_before = tmux_server_observation(socket, session)
-        .ok_or(TmuxStartupObservationStage::ServerBeforeUnavailable)?;
+    let server_before = tmux_server_observation_diagnostic(socket, session)
+        .map_err(TmuxStartupObservationStage::ServerBefore)?;
     let session_before = tmux_current_session_identity(socket, session)
         .ok_or(TmuxStartupObservationStage::SessionBeforeUnavailable)?;
     let window_before = tmux_current_window_identity(socket, session)
@@ -1702,8 +1772,8 @@ fn tmux_startup_observation_diagnostic(
         .ok_or(TmuxStartupObservationStage::SessionAfterUnavailable)?;
     let window_after = tmux_current_window_identity(socket, session)
         .ok_or(TmuxStartupObservationStage::WindowAfterUnavailable)?;
-    let server_after = tmux_server_observation(socket, session)
-        .ok_or(TmuxStartupObservationStage::ServerAfterUnavailable)?;
+    let server_after = tmux_server_observation_diagnostic(socket, session)
+        .map_err(TmuxStartupObservationStage::ServerAfter)?;
     if server_before != server_after {
         return Err(TmuxStartupObservationStage::ServerChanged);
     }
@@ -2536,20 +2606,18 @@ fn synthetic_startup_observation(seed: u32, window: &str) -> TmuxStartupObservat
 
 #[test]
 fn tmux_server_observation_diagnostics_are_closed_bounded_and_sequence_exact() {
-    let stages = [
+    let mut stages = vec![
         TmuxServerObservationStage::Unavailable,
         TmuxServerObservationStage::SocketMetadataUnavailable,
         TmuxServerObservationStage::SocketMetadataInvalid,
         TmuxServerObservationStage::SocketPathInvalid,
         TmuxServerObservationStage::SocketCreationUnavailable,
-        TmuxServerObservationStage::SocketConnectRejected,
         TmuxServerObservationStage::SocketPollUnavailable,
         TmuxServerObservationStage::SocketPollTimeout,
         TmuxServerObservationStage::SocketPollInvalid,
         TmuxServerObservationStage::SocketPollNoCompletion,
         TmuxServerObservationStage::SocketErrorUnavailable,
         TmuxServerObservationStage::SocketErrorMalformed,
-        TmuxServerObservationStage::SocketErrorNonzero,
         TmuxServerObservationStage::PeerCredentialsUnavailable,
         TmuxServerObservationStage::PeerCredentialsInvalid,
         TmuxServerObservationStage::ProcessGenerationUnavailable,
@@ -2557,10 +2625,21 @@ fn tmux_server_observation_diagnostics_are_closed_bounded_and_sequence_exact() {
         TmuxServerObservationStage::RepeatedSocketIdentityChanged,
         TmuxServerObservationStage::ProcessGenerationChanged,
     ];
+    for class in [
+        SocketErrnoClass::Refused,
+        SocketErrnoClass::Disappeared,
+        SocketErrnoClass::Permission,
+        SocketErrnoClass::TypeProtocol,
+        SocketErrnoClass::ResourceTransient,
+        SocketErrnoClass::Unknown,
+    ] {
+        stages.push(TmuxServerObservationStage::SocketConnectRejected(class));
+        stages.push(TmuxServerObservationStage::SocketErrorNonzero(class));
+    }
     let mut labels = std::collections::BTreeSet::new();
     for stage in stages {
         let label = stage.label();
-        assert!(label.len() <= 40);
+        assert!(label.len() <= 48);
         assert!(
             label
                 .bytes()
@@ -2572,7 +2651,9 @@ fn tmux_server_observation_diagnostics_are_closed_bounded_and_sequence_exact() {
     let expected = synthetic_startup_observation(300, "@9").server;
     let mut eventually_available = [
         Err(TmuxServerObservationStage::SocketMetadataUnavailable),
-        Err(TmuxServerObservationStage::SocketConnectRejected),
+        Err(TmuxServerObservationStage::SocketConnectRejected(
+            SocketErrnoClass::Refused,
+        )),
         Ok(expected.clone()),
     ]
     .into_iter();
@@ -2635,7 +2716,9 @@ fn unix_socket_peer_credentials_bind_the_exact_live_process_generation() {
     let absent = scratch.path().join("absent.sock");
     assert_eq!(
         tmux_socket_peer_process(&absent),
-        Err(TmuxServerObservationStage::SocketConnectRejected)
+        Err(TmuxServerObservationStage::SocketConnectRejected(
+            SocketErrnoClass::Disappeared
+        ))
     );
 
     let nul_path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"invalid\0socket"));
@@ -2665,10 +2748,14 @@ fn unix_socket_nonblocking_completion_uses_exact_so_error() {
         classify_unix_connect_attempt(-1, Some(libc::EAGAIN)),
         Ok(true)
     );
-    for error in [None, Some(libc::ECONNREFUSED), Some(libc::EINTR)] {
+    for (error, class) in [
+        (None, SocketErrnoClass::Unknown),
+        (Some(libc::ECONNREFUSED), SocketErrnoClass::Refused),
+        (Some(libc::EINTR), SocketErrnoClass::ResourceTransient),
+    ] {
         assert_eq!(
             classify_unix_connect_attempt(-1, error),
-            Err(TmuxServerObservationStage::SocketConnectRejected)
+            Err(TmuxServerObservationStage::SocketConnectRejected(class))
         );
     }
 
@@ -2749,12 +2836,56 @@ fn unix_socket_nonblocking_completion_uses_exact_so_error() {
             0,
             exact_len,
             libc::ECONNREFUSED,
-            TmuxServerObservationStage::SocketErrorNonzero,
+            TmuxServerObservationStage::SocketErrorNonzero(SocketErrnoClass::Refused),
         ),
     ] {
         assert_eq!(
             classify_unix_connect_completion(ready, revents, status, length, error),
             Err(expected)
+        );
+    }
+}
+
+#[test]
+fn unix_socket_errno_classes_are_closed_and_propagate_in_both_connect_stages() {
+    let cases = [
+        (libc::ECONNREFUSED, SocketErrnoClass::Refused),
+        (libc::ENOENT, SocketErrnoClass::Disappeared),
+        (libc::ECONNRESET, SocketErrnoClass::Disappeared),
+        (libc::ENOTCONN, SocketErrnoClass::Disappeared),
+        (libc::EACCES, SocketErrnoClass::Permission),
+        (libc::EPERM, SocketErrnoClass::Permission),
+        (libc::EPROTOTYPE, SocketErrnoClass::TypeProtocol),
+        (libc::EPROTONOSUPPORT, SocketErrnoClass::TypeProtocol),
+        (libc::ESOCKTNOSUPPORT, SocketErrnoClass::TypeProtocol),
+        (libc::EAFNOSUPPORT, SocketErrnoClass::TypeProtocol),
+        (libc::EINVAL, SocketErrnoClass::TypeProtocol),
+        (libc::EINTR, SocketErrnoClass::ResourceTransient),
+        (libc::ENOMEM, SocketErrnoClass::ResourceTransient),
+        (libc::ENOBUFS, SocketErrnoClass::ResourceTransient),
+        (libc::EMFILE, SocketErrnoClass::ResourceTransient),
+        (libc::ENFILE, SocketErrnoClass::ResourceTransient),
+        (libc::ETIMEDOUT, SocketErrnoClass::ResourceTransient),
+        (libc::EAGAIN, SocketErrnoClass::ResourceTransient),
+        (libc::EINPROGRESS, SocketErrnoClass::ResourceTransient),
+        (123_456, SocketErrnoClass::Unknown),
+        (-123_456, SocketErrnoClass::Unknown),
+    ];
+    assert_eq!(classify_socket_errno(None), SocketErrnoClass::Unknown);
+    let exact_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    for (error, class) in cases {
+        assert_eq!(classify_socket_errno(Some(error)), class);
+        assert_eq!(
+            classify_unix_connect_attempt(-1, Some(error)),
+            if error == libc::EAGAIN || error == libc::EINPROGRESS {
+                Ok(true)
+            } else {
+                Err(TmuxServerObservationStage::SocketConnectRejected(class))
+            }
+        );
+        assert_eq!(
+            classify_unix_connect_completion(1, libc::POLLOUT, 0, exact_len, error),
+            Err(TmuxServerObservationStage::SocketErrorNonzero(class))
         );
     }
 }
@@ -2852,9 +2983,8 @@ fn tmux_startup_requires_consecutive_complete_equal_observations() {
 #[test]
 fn tmux_startup_observation_diagnostics_are_closed_and_sequence_exact() {
     let mut labels = BTreeSet::new();
-    for stage in [
+    let mut stages = vec![
         TmuxStartupObservationStage::Unavailable,
-        TmuxStartupObservationStage::ServerBeforeUnavailable,
         TmuxStartupObservationStage::SessionBeforeUnavailable,
         TmuxStartupObservationStage::WindowBeforeUnavailable,
         TmuxStartupObservationStage::PaneIdentityUnavailable,
@@ -2873,16 +3003,50 @@ fn tmux_startup_observation_diagnostics_are_closed_and_sequence_exact() {
         TmuxStartupObservationStage::ForegroundGenerationChanged,
         TmuxStartupObservationStage::SessionAfterUnavailable,
         TmuxStartupObservationStage::WindowAfterUnavailable,
-        TmuxStartupObservationStage::ServerAfterUnavailable,
         TmuxStartupObservationStage::ServerChanged,
         TmuxStartupObservationStage::SessionChanged,
         TmuxStartupObservationStage::WindowChanged,
         TmuxStartupObservationStage::StartupIdentityChanged,
         TmuxStartupObservationStage::RetainedServerChanged,
         TmuxStartupObservationStage::CreationWindowChanged,
+    ];
+    let mut nested_server_stages = vec![
+        TmuxServerObservationStage::Unavailable,
+        TmuxServerObservationStage::SocketMetadataUnavailable,
+        TmuxServerObservationStage::SocketMetadataInvalid,
+        TmuxServerObservationStage::SocketPathInvalid,
+        TmuxServerObservationStage::SocketCreationUnavailable,
+        TmuxServerObservationStage::SocketPollUnavailable,
+        TmuxServerObservationStage::SocketPollTimeout,
+        TmuxServerObservationStage::SocketPollInvalid,
+        TmuxServerObservationStage::SocketPollNoCompletion,
+        TmuxServerObservationStage::SocketErrorUnavailable,
+        TmuxServerObservationStage::SocketErrorMalformed,
+        TmuxServerObservationStage::PeerCredentialsUnavailable,
+        TmuxServerObservationStage::PeerCredentialsInvalid,
+        TmuxServerObservationStage::ProcessGenerationUnavailable,
+        TmuxServerObservationStage::RepeatedPeerIdentityChanged,
+        TmuxServerObservationStage::RepeatedSocketIdentityChanged,
+        TmuxServerObservationStage::ProcessGenerationChanged,
+    ];
+    for class in [
+        SocketErrnoClass::Refused,
+        SocketErrnoClass::Disappeared,
+        SocketErrnoClass::Permission,
+        SocketErrnoClass::TypeProtocol,
+        SocketErrnoClass::ResourceTransient,
+        SocketErrnoClass::Unknown,
     ] {
+        nested_server_stages.push(TmuxServerObservationStage::SocketConnectRejected(class));
+        nested_server_stages.push(TmuxServerObservationStage::SocketErrorNonzero(class));
+    }
+    for server_stage in nested_server_stages {
+        stages.push(TmuxStartupObservationStage::ServerBefore(server_stage));
+        stages.push(TmuxStartupObservationStage::ServerAfter(server_stage));
+    }
+    for stage in stages {
         let label = stage.label();
-        assert!(label.len() <= 40);
+        assert!(label.len() <= 64);
         assert!(
             label
                 .bytes()
@@ -2890,6 +3054,21 @@ fn tmux_startup_observation_diagnostics_are_closed_and_sequence_exact() {
         );
         assert!(labels.insert(label));
     }
+
+    assert_eq!(
+        TmuxStartupObservationStage::ServerBefore(
+            TmuxServerObservationStage::SocketConnectRejected(SocketErrnoClass::Permission)
+        )
+        .label(),
+        "server_before_socket_connect_rejected_permission"
+    );
+    assert_eq!(
+        TmuxStartupObservationStage::ServerAfter(TmuxServerObservationStage::SocketErrorNonzero(
+            SocketErrnoClass::TypeProtocol
+        ))
+        .label(),
+        "server_after_socket_error_nonzero_type_protocol"
+    );
 
     let first = synthetic_startup_observation(100, "@7");
     let mut sequence = [
