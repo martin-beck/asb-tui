@@ -488,11 +488,11 @@ fn start_guarded_tmux_session(
     socket: &str,
     session: &str,
     args: &[&str],
-) -> Result<MultiplexerSession, &'static str> {
+) -> Result<MultiplexerSession, String> {
     let (created, output) =
         tmux_new_session_output(socket, session, args).ok_or(TMUX_CREATION_FAILED)?;
     if !created {
-        return Err(TMUX_CREATION_FAILED);
+        return Err(TMUX_CREATION_FAILED.to_owned());
     }
     finish_guarded_tmux_session(socket, session, output)
 }
@@ -501,7 +501,7 @@ fn finish_guarded_tmux_session(
     socket: &str,
     session: &str,
     output: Option<Vec<u8>>,
-) -> Result<MultiplexerSession, &'static str> {
+) -> Result<MultiplexerSession, String> {
     let mut guard = MultiplexerSession::Tmux {
         socket: socket.to_owned(),
         session: session.to_owned(),
@@ -510,10 +510,15 @@ fn finish_guarded_tmux_session(
         startup: None,
     };
     let server =
-        wait_for_available_observation(TMUX_STARTUP_ATTEMPTS, Duration::from_millis(10), || {
-            tmux_server_observation(socket, session)
+        wait_for_server_observation(TMUX_STARTUP_ATTEMPTS, Duration::from_millis(10), || {
+            tmux_server_observation_diagnostic(socket, session)
         })
-        .ok_or(TMUX_STARTUP_NOT_READY)?;
+        .map_err(|stage| {
+            format!(
+                "{TMUX_STARTUP_NOT_READY}:server_observation={}",
+                stage.label()
+            )
+        })?;
     guard.set_server(server.clone());
     let startup = wait_for_stable_matching_observation(
         TMUX_STARTUP_ATTEMPTS,
@@ -522,16 +527,34 @@ fn finish_guarded_tmux_session(
         |observed| observed.server == server,
         |observed| guard.set_pane_process(observed.pane_process.clone()),
     )
-    .ok_or(TMUX_STARTUP_NOT_READY)?;
+    .ok_or_else(|| TMUX_STARTUP_NOT_READY.to_owned())?;
     let window = output
         .as_deref()
         .and_then(parse_tmux_window_identity)
-        .ok_or(TMUX_MALFORMED_WINDOW_IDENTITY)?;
+        .ok_or_else(|| TMUX_MALFORMED_WINDOW_IDENTITY.to_owned())?;
     if window != startup.window {
-        return Err(TMUX_STARTUP_NOT_READY);
+        return Err(TMUX_STARTUP_NOT_READY.to_owned());
     }
     guard.set_startup(startup);
     Ok(guard)
+}
+
+fn wait_for_server_observation(
+    attempts: usize,
+    delay: Duration,
+    mut observe: impl FnMut() -> Result<TmuxServerObservation, TmuxServerObservationStage>,
+) -> Result<TmuxServerObservation, TmuxServerObservationStage> {
+    let mut last_stage = TmuxServerObservationStage::Unavailable;
+    for attempt in 0..attempts {
+        match observe() {
+            Ok(observation) => return Ok(observation),
+            Err(stage) => last_stage = stage,
+        }
+        if attempt + 1 < attempts {
+            thread::sleep(delay);
+        }
+    }
+    Err(last_stage)
 }
 
 fn wait_for_available_observation<T>(
@@ -665,6 +688,35 @@ struct TmuxServerObservation {
     process: ProcessGeneration,
     socket_device: u64,
     socket_inode: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TmuxServerObservationStage {
+    Unavailable,
+    SocketMetadataUnavailable,
+    SocketMetadataInvalid,
+    ServerPidCommandUnavailable,
+    ServerPidOutputMalformed,
+    ProcessGenerationUnavailable,
+    RepeatedPidChanged,
+    RepeatedSocketIdentityChanged,
+    ProcessGenerationChanged,
+}
+
+impl TmuxServerObservationStage {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::SocketMetadataUnavailable => "socket_metadata_unavailable",
+            Self::SocketMetadataInvalid => "socket_metadata_invalid",
+            Self::ServerPidCommandUnavailable => "server_pid_command_unavailable",
+            Self::ServerPidOutputMalformed => "server_pid_output_malformed",
+            Self::ProcessGenerationUnavailable => "process_generation_unavailable",
+            Self::RepeatedPidChanged => "repeated_pid_changed",
+            Self::RepeatedSocketIdentityChanged => "repeated_socket_identity_changed",
+            Self::ProcessGenerationChanged => "process_generation_changed",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1150,38 +1202,59 @@ fn tmux_pane_identity(socket: &str, session: &str) -> Option<Vec<u8>> {
 }
 
 fn tmux_server_observation(socket: &str, session: &str) -> Option<TmuxServerObservation> {
+    tmux_server_observation_diagnostic(socket, session).ok()
+}
+
+fn tmux_server_observation_diagnostic(
+    socket: &str,
+    session: &str,
+) -> Result<TmuxServerObservation, TmuxServerObservationStage> {
     let read_pid = || {
-        bounded_tmux_output(socket, &["display-message", "-p", "-t", session, "#{pid}"])
-            .filter(|(success, _)| *success)
-            .and_then(|(_, output)| String::from_utf8(output).ok())?
-            .strip_suffix('\n')?
+        let (success, output) =
+            bounded_tmux_output(socket, &["display-message", "-p", "-t", session, "#{pid}"])
+                .ok_or(TmuxServerObservationStage::ServerPidCommandUnavailable)?;
+        if !success {
+            return Err(TmuxServerObservationStage::ServerPidCommandUnavailable);
+        }
+        String::from_utf8(output)
+            .ok()
+            .and_then(|value| value.strip_suffix('\n').map(str::to_owned))
+            .ok_or(TmuxServerObservationStage::ServerPidOutputMalformed)?
             .parse::<u32>()
             .ok()
             .filter(|pid| *pid > 1)
+            .ok_or(TmuxServerObservationStage::ServerPidOutputMalformed)
     };
     let path = MultiplexerSession::tmux_socket_path(socket);
-    let metadata = fs::symlink_metadata(&path).ok()?;
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|_| TmuxServerObservationStage::SocketMetadataUnavailable)?;
     if !metadata.file_type().is_socket() || metadata.uid() != rustix::process::getuid().as_raw() {
-        return None;
+        return Err(TmuxServerObservationStage::SocketMetadataInvalid);
     }
     let pid = read_pid()?;
-    let start_time = process_start_time(pid)?;
+    let start_time =
+        process_start_time(pid).ok_or(TmuxServerObservationStage::ProcessGenerationUnavailable)?;
     let observation = TmuxServerObservation {
         process: ProcessGeneration { pid, start_time },
         socket_device: metadata.dev(),
         socket_inode: metadata.ino(),
     };
-    let after = fs::symlink_metadata(path).ok()?;
-    if read_pid()? != pid
-        || !process_generation_matches(&observation.process)
-        || !after.file_type().is_socket()
+    let after = fs::symlink_metadata(path)
+        .map_err(|_| TmuxServerObservationStage::RepeatedSocketIdentityChanged)?;
+    if read_pid()? != pid {
+        return Err(TmuxServerObservationStage::RepeatedPidChanged);
+    }
+    if !after.file_type().is_socket()
         || after.uid() != rustix::process::getuid().as_raw()
         || after.dev() != observation.socket_device
         || after.ino() != observation.socket_inode
     {
-        return None;
+        return Err(TmuxServerObservationStage::RepeatedSocketIdentityChanged);
     }
-    Some(observation)
+    if !process_generation_matches(&observation.process) {
+        return Err(TmuxServerObservationStage::ProcessGenerationChanged);
+    }
+    Ok(observation)
 }
 
 fn tmux_server_matches(socket: &str, session: &str, expected: &TmuxServerObservation) -> bool {
@@ -1881,7 +1954,7 @@ fn malformed_created_window_identity_drops_the_fully_authorized_guard() {
     // The guarded finisher must be the first operation after creation. The
     // dedicated HUP-resistant fixture proves exact group cleanup in detail.
     let result = finish_guarded_tmux_session(&socket, &session, Some(b"@1\n@2\n".to_vec())).err();
-    assert_eq!(result, Some(TMUX_MALFORMED_WINDOW_IDENTITY));
+    assert_eq!(result.as_deref(), Some(TMUX_MALFORMED_WINDOW_IDENTITY));
     assert!(!bounded_tmux(&socket, &["has-session", "-t", &session]));
 }
 
@@ -2090,6 +2163,57 @@ fn synthetic_startup_observation(seed: u32, window: &str) -> TmuxStartupObservat
         session_identity: format!("${seed}"),
         window: window.to_owned(),
     }
+}
+
+#[test]
+fn tmux_server_observation_diagnostics_are_closed_bounded_and_sequence_exact() {
+    let stages = [
+        TmuxServerObservationStage::Unavailable,
+        TmuxServerObservationStage::SocketMetadataUnavailable,
+        TmuxServerObservationStage::SocketMetadataInvalid,
+        TmuxServerObservationStage::ServerPidCommandUnavailable,
+        TmuxServerObservationStage::ServerPidOutputMalformed,
+        TmuxServerObservationStage::ProcessGenerationUnavailable,
+        TmuxServerObservationStage::RepeatedPidChanged,
+        TmuxServerObservationStage::RepeatedSocketIdentityChanged,
+        TmuxServerObservationStage::ProcessGenerationChanged,
+    ];
+    let mut labels = std::collections::BTreeSet::new();
+    for stage in stages {
+        let label = stage.label();
+        assert!(label.len() <= 40);
+        assert!(
+            label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        );
+        assert!(labels.insert(label), "diagnostic labels must be unique");
+    }
+
+    let expected = synthetic_startup_observation(300, "@9").server;
+    let mut eventually_available = [
+        Err(TmuxServerObservationStage::SocketMetadataUnavailable),
+        Err(TmuxServerObservationStage::ServerPidCommandUnavailable),
+        Ok(expected.clone()),
+    ]
+    .into_iter();
+    assert_eq!(
+        wait_for_server_observation(3, Duration::ZERO, || {
+            eventually_available.next().unwrap()
+        }),
+        Ok(expected)
+    );
+
+    let mut exhausted = [
+        Err(TmuxServerObservationStage::SocketMetadataUnavailable),
+        Err(TmuxServerObservationStage::ServerPidOutputMalformed),
+    ]
+    .into_iter();
+    assert_eq!(
+        wait_for_server_observation(2, Duration::ZERO, || exhausted.next().unwrap()),
+        Err(TmuxServerObservationStage::ServerPidOutputMalformed),
+        "exhaustion must report only the final closed observation stage"
+    );
 }
 
 #[test]
