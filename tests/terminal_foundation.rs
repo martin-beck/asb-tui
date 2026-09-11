@@ -16,6 +16,9 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
     fs::{self, OpenOptions},
     io::{self, Read, Write},
+    mem::MaybeUninit,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::unix::ffi::OsStrExt,
     os::unix::fs::{FileTypeExt, MetadataExt},
     process::{Command, Stdio},
     thread,
@@ -695,10 +698,11 @@ enum TmuxServerObservationStage {
     Unavailable,
     SocketMetadataUnavailable,
     SocketMetadataInvalid,
-    ServerPidCommandUnavailable,
-    ServerPidOutputMalformed,
+    SocketConnectionUnavailable,
+    PeerCredentialsUnavailable,
+    PeerCredentialsInvalid,
     ProcessGenerationUnavailable,
-    RepeatedPidChanged,
+    RepeatedPeerIdentityChanged,
     RepeatedSocketIdentityChanged,
     ProcessGenerationChanged,
 }
@@ -709,10 +713,11 @@ impl TmuxServerObservationStage {
             Self::Unavailable => "unavailable",
             Self::SocketMetadataUnavailable => "socket_metadata_unavailable",
             Self::SocketMetadataInvalid => "socket_metadata_invalid",
-            Self::ServerPidCommandUnavailable => "server_pid_command_unavailable",
-            Self::ServerPidOutputMalformed => "server_pid_output_malformed",
+            Self::SocketConnectionUnavailable => "socket_connection_unavailable",
+            Self::PeerCredentialsUnavailable => "peer_credentials_unavailable",
+            Self::PeerCredentialsInvalid => "peer_credentials_invalid",
             Self::ProcessGenerationUnavailable => "process_generation_unavailable",
-            Self::RepeatedPidChanged => "repeated_pid_changed",
+            Self::RepeatedPeerIdentityChanged => "repeated_peer_identity_changed",
             Self::RepeatedSocketIdentityChanged => "repeated_socket_identity_changed",
             Self::ProcessGenerationChanged => "process_generation_changed",
         }
@@ -1207,42 +1212,26 @@ fn tmux_server_observation(socket: &str, session: &str) -> Option<TmuxServerObse
 
 fn tmux_server_observation_diagnostic(
     socket: &str,
-    session: &str,
+    _session: &str,
 ) -> Result<TmuxServerObservation, TmuxServerObservationStage> {
-    let read_pid = || {
-        let (success, output) =
-            bounded_tmux_output(socket, &["display-message", "-p", "-t", session, "#{pid}"])
-                .ok_or(TmuxServerObservationStage::ServerPidCommandUnavailable)?;
-        if !success {
-            return Err(TmuxServerObservationStage::ServerPidCommandUnavailable);
-        }
-        String::from_utf8(output)
-            .ok()
-            .and_then(|value| value.strip_suffix('\n').map(str::to_owned))
-            .ok_or(TmuxServerObservationStage::ServerPidOutputMalformed)?
-            .parse::<u32>()
-            .ok()
-            .filter(|pid| *pid > 1)
-            .ok_or(TmuxServerObservationStage::ServerPidOutputMalformed)
-    };
     let path = MultiplexerSession::tmux_socket_path(socket);
     let metadata = fs::symlink_metadata(&path)
         .map_err(|_| TmuxServerObservationStage::SocketMetadataUnavailable)?;
     if !metadata.file_type().is_socket() || metadata.uid() != rustix::process::getuid().as_raw() {
         return Err(TmuxServerObservationStage::SocketMetadataInvalid);
     }
-    let pid = read_pid()?;
-    let start_time =
-        process_start_time(pid).ok_or(TmuxServerObservationStage::ProcessGenerationUnavailable)?;
+    let process = tmux_socket_peer_process(&path)?;
     let observation = TmuxServerObservation {
-        process: ProcessGeneration { pid, start_time },
+        process,
         socket_device: metadata.dev(),
         socket_inode: metadata.ino(),
     };
     let after = fs::symlink_metadata(path)
         .map_err(|_| TmuxServerObservationStage::RepeatedSocketIdentityChanged)?;
-    if read_pid()? != pid {
-        return Err(TmuxServerObservationStage::RepeatedPidChanged);
+    if tmux_socket_peer_process(&MultiplexerSession::tmux_socket_path(socket))?
+        != observation.process
+    {
+        return Err(TmuxServerObservationStage::RepeatedPeerIdentityChanged);
     }
     if !after.file_type().is_socket()
         || after.uid() != rustix::process::getuid().as_raw()
@@ -1255,6 +1244,113 @@ fn tmux_server_observation_diagnostic(
         return Err(TmuxServerObservationStage::ProcessGenerationChanged);
     }
     Ok(observation)
+}
+
+fn tmux_socket_peer_process(
+    path: &std::path::Path,
+) -> Result<ProcessGeneration, TmuxServerObservationStage> {
+    let path_bytes = path.as_os_str().as_bytes();
+    let mut address = unsafe {
+        // SAFETY: Zero is a valid initialization for sockaddr_un before its family and path are set.
+        MaybeUninit::<libc::sockaddr_un>::zeroed().assume_init()
+    };
+    if path_bytes.is_empty()
+        || path_bytes.contains(&0)
+        || path_bytes.len() >= address.sun_path.len()
+    {
+        return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, source) in address.sun_path.iter_mut().zip(path_bytes) {
+        *destination = *source as libc::c_char;
+    }
+    let address_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path_bytes.len() + 1)
+        .try_into()
+        .map_err(|_| TmuxServerObservationStage::SocketConnectionUnavailable)?;
+    let raw_fd = unsafe {
+        // SAFETY: The constants describe a Linux Unix stream socket and no borrowed pointer is used.
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            0,
+        )
+    };
+    if raw_fd < 0 {
+        return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
+    }
+    let socket = unsafe {
+        // SAFETY: raw_fd was just returned uniquely by socket and is transferred exactly once.
+        OwnedFd::from_raw_fd(raw_fd)
+    };
+    let connected = unsafe {
+        // SAFETY: address is initialized above and address_len covers its family and pathname.
+        libc::connect(
+            socket.as_raw_fd(),
+            (&raw const address).cast::<libc::sockaddr>(),
+            address_len,
+        )
+    };
+    if connected != 0 {
+        if io::Error::last_os_error().raw_os_error() != Some(libc::EINPROGRESS) {
+            return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
+        }
+        let mut descriptor = libc::pollfd {
+            fd: socket.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let ready = unsafe {
+            // SAFETY: descriptor points to one initialized pollfd for the duration of this call.
+            libc::poll(&raw mut descriptor, 1, 100)
+        };
+        if ready != 1 || descriptor.revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+            return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
+        }
+        let mut socket_error = 0;
+        let mut socket_error_len = std::mem::size_of_val(&socket_error) as libc::socklen_t;
+        let status = unsafe {
+            // SAFETY: socket_error and its exact initialized length are valid getsockopt outputs.
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                (&raw mut socket_error).cast(),
+                &raw mut socket_error_len,
+            )
+        };
+        if status != 0 || socket_error != 0 {
+            return Err(TmuxServerObservationStage::SocketConnectionUnavailable);
+        }
+    }
+    let mut credentials = MaybeUninit::<libc::ucred>::uninit();
+    let mut credentials_len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let status = unsafe {
+        // SAFETY: credentials has the exact ucred size advertised to getsockopt and is read only on success.
+        libc::getsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            credentials.as_mut_ptr().cast(),
+            &raw mut credentials_len,
+        )
+    };
+    if status != 0 || credentials_len as usize != std::mem::size_of::<libc::ucred>() {
+        return Err(TmuxServerObservationStage::PeerCredentialsUnavailable);
+    }
+    let credentials = unsafe {
+        // SAFETY: A successful getsockopt above initialized all bytes of the exact ucred output.
+        credentials.assume_init()
+    };
+    let pid = u32::try_from(credentials.pid)
+        .ok()
+        .filter(|pid| *pid > 1)
+        .ok_or(TmuxServerObservationStage::PeerCredentialsInvalid)?;
+    if credentials.uid != rustix::process::getuid().as_raw() {
+        return Err(TmuxServerObservationStage::PeerCredentialsInvalid);
+    }
+    let start_time =
+        process_start_time(pid).ok_or(TmuxServerObservationStage::ProcessGenerationUnavailable)?;
+    Ok(ProcessGeneration { pid, start_time })
 }
 
 fn tmux_server_matches(socket: &str, session: &str, expected: &TmuxServerObservation) -> bool {
@@ -2171,10 +2267,11 @@ fn tmux_server_observation_diagnostics_are_closed_bounded_and_sequence_exact() {
         TmuxServerObservationStage::Unavailable,
         TmuxServerObservationStage::SocketMetadataUnavailable,
         TmuxServerObservationStage::SocketMetadataInvalid,
-        TmuxServerObservationStage::ServerPidCommandUnavailable,
-        TmuxServerObservationStage::ServerPidOutputMalformed,
+        TmuxServerObservationStage::SocketConnectionUnavailable,
+        TmuxServerObservationStage::PeerCredentialsUnavailable,
+        TmuxServerObservationStage::PeerCredentialsInvalid,
         TmuxServerObservationStage::ProcessGenerationUnavailable,
-        TmuxServerObservationStage::RepeatedPidChanged,
+        TmuxServerObservationStage::RepeatedPeerIdentityChanged,
         TmuxServerObservationStage::RepeatedSocketIdentityChanged,
         TmuxServerObservationStage::ProcessGenerationChanged,
     ];
@@ -2193,7 +2290,7 @@ fn tmux_server_observation_diagnostics_are_closed_bounded_and_sequence_exact() {
     let expected = synthetic_startup_observation(300, "@9").server;
     let mut eventually_available = [
         Err(TmuxServerObservationStage::SocketMetadataUnavailable),
-        Err(TmuxServerObservationStage::ServerPidCommandUnavailable),
+        Err(TmuxServerObservationStage::SocketConnectionUnavailable),
         Ok(expected.clone()),
     ]
     .into_iter();
@@ -2206,13 +2303,57 @@ fn tmux_server_observation_diagnostics_are_closed_bounded_and_sequence_exact() {
 
     let mut exhausted = [
         Err(TmuxServerObservationStage::SocketMetadataUnavailable),
-        Err(TmuxServerObservationStage::ServerPidOutputMalformed),
+        Err(TmuxServerObservationStage::PeerCredentialsUnavailable),
     ]
     .into_iter();
     assert_eq!(
         wait_for_server_observation(2, Duration::ZERO, || exhausted.next().unwrap()),
-        Err(TmuxServerObservationStage::ServerPidOutputMalformed),
+        Err(TmuxServerObservationStage::PeerCredentialsUnavailable),
         "exhaustion must report only the final closed observation stage"
+    );
+}
+
+#[test]
+fn unix_socket_peer_credentials_bind_the_exact_live_process_generation() {
+    if std::env::var(CHILD_MODE).as_deref() == Ok("peer-credentials-server") {
+        let socket = std::env::var_os("ASB_TUI_PEER_SOCKET").unwrap();
+        let marker = std::env::var_os("ASB_TUI_PEER_READY").unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        fs::write(marker, b"ready").unwrap();
+        listener.accept().map(|_| ()).unwrap();
+        return;
+    }
+    let scratch = PrivateDirectory::create();
+    let socket = scratch.path().join("peer-credentials.sock");
+    let ready = scratch.path().join("peer-ready");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "unix_socket_peer_credentials_bind_the_exact_live_process_generation",
+        ])
+        .env(CHILD_MODE, "peer-credentials-server")
+        .env("ASB_TUI_PEER_SOCKET", &socket)
+        .env("ASB_TUI_PEER_READY", &ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(wait_for_marker(&ready), "peer fixture did not become ready");
+    let pid = child.id();
+    assert_eq!(
+        tmux_socket_peer_process(&socket),
+        Ok(ProcessGeneration {
+            pid,
+            start_time: process_start_time(pid).unwrap(),
+        })
+    );
+    assert!(child.wait().unwrap().success());
+
+    let absent = scratch.path().join("absent.sock");
+    assert_eq!(
+        tmux_socket_peer_process(&absent),
+        Err(TmuxServerObservationStage::SocketConnectionUnavailable)
     );
 }
 
