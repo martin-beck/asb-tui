@@ -12,8 +12,12 @@ use asb_tui::{
         remove, status,
     },
 };
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, process::Command, sync::Mutex};
 use support::PrivateDirectory;
+
+// A fork temporarily inherits every open file description until exec closes CLOEXEC descriptors.
+// Keep subprocess probes from inheriting another test case lifecycle flock across drop/reopen.
+static PROCESS_SPAWN_ISOLATION: Mutex<()> = Mutex::new(());
 
 fn manifest() -> asb_tui::bundle::BundleManifest {
     parse_and_validate_manifest(
@@ -264,6 +268,7 @@ fn filesystem_install_is_private_atomic_idempotent_and_removable() {
 
 #[test]
 fn filesystem_upgrade_reconnect_and_existing_version_reuse_are_verified() {
+    let _process_spawn_guard = PROCESS_SPAWN_ISOLATION.lock().unwrap();
     let directory = PrivateDirectory::create();
     let mut store = FilesystemLifecycle::open(directory.path()).unwrap();
     let mut first = Installation {
@@ -366,6 +371,7 @@ fn filesystem_rejects_concurrent_lifecycle_owner_without_waiting() {
 
 #[test]
 fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response() {
+    let _process_spawn_guard = PROCESS_SPAWN_ISOLATION.lock().unwrap();
     const CHILD: &str = "ASB_TUI_EXECUTABLE_SELF_TEST_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let command = format!(
@@ -687,6 +693,7 @@ fn executable_self_test_runs_exact_candidate_and_requires_closed_ready_response(
 
 #[test]
 fn process_launcher_requires_a_controlling_terminal() {
+    let _process_spawn_guard = PROCESS_SPAWN_ISOLATION.lock().unwrap();
     const CHILD: &str = "ASB_TUI_LAUNCHER_NO_TTY_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let status = Command::new("/usr/bin/setsid")
