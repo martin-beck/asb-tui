@@ -7,12 +7,21 @@ name: Repository quality
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      concurrency-scope:
+        description: Distinguish a reusable native-gate invocation from the direct workflow.
+        required: false
+        type: string
+        default: direct
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    repository-quality-${{ inputs.concurrency-scope || 'direct' }}-${{
+    github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
