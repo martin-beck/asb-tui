@@ -60,6 +60,22 @@ implement the proposed external capability protocol.
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before reporting or changing
 the boundary.
 
+## Additive AWQ shadow
+
+The pull-request-only `AWQ shadow observation` workflow runs authenticated Agent Workflow Quality
+v0.32.0 after the complete native repository workflow succeeds. It checks the minimal core profile
+and reports pass, failure, skip, unsupported, or tool-error classification, but is deliberately
+advisory: every native gate remains required and no native/AWQ equivalence or enforcement is
+claimed. The exact release identities and artifact digests are recorded in
+`provenance/dependencies.lock.json`; `tools/run-awq-shadow.sh` refuses a different wheel before
+executing it. Local use requires an independently authenticated wheel and reviewed Python 3.12 or
+3.13 interpreter:
+
+```sh
+AWQ_PYTHON=python3 AWQ_WHEEL=/path/to/agent_workflow_quality-0.32.0-py3-none-any.whl \
+  tools/awq --root . check --tier pr --format json
+```
+
 The current public channel is source-only and explicitly unverified. It has no installable GitHub
 release, package publication, or supported top-level ASB command. See
 [release channels](docs/RELEASE_CHANNELS.md) for the audit result, public lifecycle expectations,
