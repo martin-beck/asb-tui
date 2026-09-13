@@ -34,3 +34,9 @@ fail closed.
 
 Do not run code from public pull requests on persistent self-hosted runners. The self-hosted canary
 is manual, main-only, checkout-free, and contains no repository-controlled execution.
+
+Before an agent changes this repository, it must consult the Git-backed coordination authority in
+[`martin-beck/asb-tui-state`](https://github.com/martin-beck/asb-tui-state), claim a dependency-ready
+AR, and use its registered isolated branch and worktree. Existing autonomous work must reach a
+durable reviewed handoff before overlapping coordinated work starts; creating an AR does not launch
+a worker or authorize adopting another agent's changes.
