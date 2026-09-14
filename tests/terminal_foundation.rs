@@ -31,7 +31,10 @@ use support::PrivateDirectory;
 const CHILD_MODE: &str = "ASB_TUI_TERMINAL_FOUNDATION_CHILD";
 const MAX_MULTIPLEXER_OUTPUT: usize = 4_096;
 const RENDER_WAIT_ATTEMPTS: usize = 100;
-const TMUX_STARTUP_ATTEMPTS: usize = 100;
+// Detached tmux startup can take several seconds on the hosted runner before
+// its private socket accepts authenticated peer observation. Keep the wait
+// bounded while allowing that documented asynchronous interval to elapse.
+const TMUX_STARTUP_ATTEMPTS: usize = 500;
 static LIVE_TMUX_FIXTURE_LOCK: Mutex<()> = Mutex::new(());
 
 fn serialize_live_tmux_fixture() -> MutexGuard<'static, ()> {
