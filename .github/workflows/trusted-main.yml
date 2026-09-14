@@ -64,6 +64,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The live terminal fixtures create and authenticate their own
+          # private tmux servers.  This runner is long-lived, so never let an
+          # ambient multiplexer session or socket-root override contaminate
+          # the fixture's exact-server checks.
+          unset TMUX TMUX_TMPDIR
           cargo +1.93.0 fmt --all --check
           cargo +1.93.0 clippy --locked --all-targets -- -D warnings
           cargo +1.93.0 test --locked
