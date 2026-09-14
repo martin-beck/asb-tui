@@ -13,7 +13,16 @@ MODEL = ROOT / "docs" / "ui-state-model.json"
 GENERATED = ROOT / "docs" / "ui-state-model.generated.json"
 ROLES = {"action", "editable", "selectable", "navigation", "status"}
 LAYOUTS = {"wide", "compact", "tiny"}
-UI_OWNERS = {"src/app.rs", "src/actions.rs", "src/help.rs", "src/renderer.rs", "src/shell.rs", "src/terminal.rs", "src/ui.rs"}
+UI_OWNERS = {
+    # State, projection, interaction, and terminal modules are the complete
+    # standalone UI surface. Backend protocol and lifecycle modules are
+    # intentionally excluded to avoid requiring model churn for unrelated
+    # implementation changes.
+    "src/actions.rs", "src/app.rs", "src/configuration.rs", "src/help.rs",
+    "src/landing.rs", "src/live_projection.rs", "src/renderer.rs",
+    "src/reports.rs", "src/runtime.rs", "src/selection.rs", "src/shell.rs",
+    "src/terminal.rs", "src/ui.rs", "src/visual.rs",
+}
 MODEL_FILES = {"docs/ui-state-model.json", "docs/ui-state-model.generated.json", "tools/generate-ui-state-model.py", "tools/validate-ui-state-model.py", "tools/test-ui-state-model.py"}
 
 
