@@ -11,6 +11,7 @@ pub mod delegated;
 pub mod lifecycle;
 pub mod release_channel;
 pub mod renderer;
+pub mod reports;
 pub mod runtime;
 pub mod system_probe;
 pub mod terminal;
