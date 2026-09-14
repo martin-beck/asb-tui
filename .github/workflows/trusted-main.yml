@@ -61,6 +61,10 @@ jobs:
       - name: Run complete locked Rust and supply-chain gates
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/asb-tui-target
+          # The dedicated runner account is intentionally nologin.  Terminal
+          # fixtures launch panes through the account's configured shell, so
+          # provide an explicit non-login shell for this isolated test gate.
+          SHELL: /bin/bash
         shell: bash
         run: |
           set -euo pipefail
