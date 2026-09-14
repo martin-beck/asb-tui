@@ -35,6 +35,12 @@ class ReleaseBuilderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.identity("a" * 39, "commit")
 
+    def test_architecture_maps_to_target_specific_output_directory(self) -> None:
+        self.assertEqual(MODULE.target_triple("x86_64"), "x86_64-unknown-linux-gnu")
+        self.assertEqual(MODULE.target_triple("aarch64"), "aarch64-unknown-linux-gnu")
+        with self.assertRaises(ValueError):
+            MODULE.target_triple("riscv64")
+
 
 if __name__ == "__main__":
     unittest.main()
