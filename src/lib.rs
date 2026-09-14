@@ -14,6 +14,7 @@ pub mod renderer;
 pub mod runtime;
 pub mod system_probe;
 pub mod terminal;
+pub mod ui;
 
 use serde::Deserialize;
 use std::{
