@@ -63,6 +63,15 @@ pub struct ControlProjection {
 }
 
 impl ControlProjection {
+    /// Seed the projection from the already authenticated negotiation result.
+    /// This avoids fabricating a wire response while keeping all subsequent
+    /// operations behind the same negotiated connection gate.
+    pub fn accept_negotiated(&mut self, negotiated: Negotiated) -> Result<(), ProjectionError> {
+        self.connection = Connection::Negotiated;
+        self.negotiated = Some(negotiated);
+        Ok(())
+    }
+
     pub fn apply(
         &mut self,
         request: &ControlRequest,

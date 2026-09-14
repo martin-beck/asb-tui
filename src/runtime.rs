@@ -4,6 +4,8 @@
 
 use crate::{
     app::{Action, AppError, AppState},
+    control_transport::AuthenticatedBrokerSession,
+    live_projection::ControlProjection,
     terminal::{RenderPolicy, frame_dimensions_are_safe},
     ui,
 };
@@ -118,6 +120,22 @@ impl From<AppError> for RuntimeError {
     fn from(error: AppError) -> Self {
         Self(io::Error::other(error))
     }
+}
+
+/// Perform one authenticated, read-only control refresh and publish it to the
+/// workspace. The transport layer validates every response; the projection is
+/// cloned and committed atomically so a failed refresh leaves the prior UI
+/// snapshot intact.
+pub fn poll_authenticated_workspace(
+    session: &mut AuthenticatedBrokerSession,
+    projection: &mut ControlProjection,
+    workspace: &mut ui::WorkspaceState,
+) -> Result<(), RuntimeError> {
+    session
+        .poll_projection(projection)
+        .map_err(|error| RuntimeError(io::Error::other(error)))?;
+    workspace.apply_live_snapshot(projection.snapshot());
+    Ok(())
 }
 
 trait LifecycleOps {

@@ -8,12 +8,13 @@
 //! typed JSON-RPC boundary.
 
 use crate::control_codec::{
-    self, CodecError, ControlLimits, ControlRequest, ControlResponse, ControlSuccess,
-    NegotiateParams, RequestId,
+    self, CodecError, ControlCall, ControlLimits, ControlRequest, ControlResponse, ControlSuccess,
+    NegotiateParams, PageParams, RequestId, Revision,
 };
 use crate::{
     broker_adoption::{AdoptionError, BrokerGeneration, ReceivedChannel},
     control_client::{AdoptedChannel, PeerCredentials, RunnerIdentity},
+    live_projection::ControlProjection,
 };
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
@@ -28,6 +29,8 @@ pub enum TransportError {
     NotNegotiated,
     BrokerPacket(AdoptionError),
     Continuity,
+    Projection,
+    RemoteFailure,
 }
 impl From<CodecError> for TransportError {
     fn from(value: CodecError) -> Self {
@@ -165,6 +168,16 @@ impl FramedControlStream {
             control_codec::decode(&frame, self.limits.max_frame_bytes as usize)?;
         response.validate_for(request, self.limits)?;
         Ok(response)
+    }
+
+    /// Execute one bounded typed request and validate its response against the
+    /// exact request envelope before returning it to a projection layer.
+    pub fn round_trip(
+        &mut self,
+        request: &ControlRequest,
+    ) -> Result<ControlResponse, TransportError> {
+        self.write_request(request)?;
+        self.read_response(request)
     }
 
     fn set_read_deadline(&self, timeout_ms: u64) -> Result<(), TransportError> {
@@ -338,6 +351,50 @@ impl AuthenticatedBrokerSession {
     pub fn transport_mut(&mut self) -> &mut FramedControlStream {
         &mut self.transport
     }
+
+    /// Poll the bounded read-only bootstrap state used by the workspace.
+    /// Projection happens on a clone and is committed only after all three
+    /// responses validate, so a malformed, stale, or failed response cannot
+    /// leave a partially refreshed UI snapshot.
+    pub fn poll_projection(
+        &mut self,
+        projection: &mut ControlProjection,
+    ) -> Result<(), TransportError> {
+        let mut next = projection.clone();
+        next.accept_negotiated(self.negotiated.clone())
+            .map_err(|_| TransportError::Projection)?;
+        let limits = self.negotiated.limits;
+        let calls = [
+            ControlCall::Capabilities,
+            ControlCall::MeasurementCatalog,
+            ControlCall::History(PageParams {
+                after: None::<Revision>,
+                limit: limits.max_page_items,
+            }),
+        ];
+        for (offset, call) in calls.into_iter().enumerate() {
+            if matches!(&call, ControlCall::MeasurementCatalog)
+                && self.negotiated.version < control_codec::CONTROL_MEASUREMENT_CATALOG_V1
+            {
+                return Err(TransportError::NotNegotiated);
+            }
+            let id = RequestId(u64::try_from(offset + 2).map_err(|_| TransportError::Io)?);
+            let request = ControlRequest {
+                jsonrpc: control_codec::JSONRPC_VERSION.into(),
+                id,
+                timeout_ms: limits.max_timeout_ms,
+                call,
+            };
+            let response = self.transport.round_trip(&request)?;
+            if !matches!(response, ControlResponse::Success(_)) {
+                return Err(TransportError::RemoteFailure);
+            }
+            next.apply(&request, &response, limits)
+                .map_err(|_| TransportError::Projection)?;
+        }
+        *projection = next;
+        Ok(())
+    }
 }
 
 impl std::fmt::Display for TransportError {
@@ -462,29 +519,62 @@ mod tests {
         let (offered, mut server) = UnixStream::pair().unwrap();
         let runner = "runner-7";
         let join = thread::spawn(move || {
-            let mut header = [0_u8; 4];
-            server.read_exact(&mut header).unwrap();
-            let size = u32::from_be_bytes(header) as usize;
-            let mut request = vec![0_u8; size];
-            server.read_exact(&mut request).unwrap();
-            let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
-                jsonrpc: "2.0".into(),
-                id: RequestId(1),
-                result: ControlSuccess::Negotiated(crate::control_codec::Negotiated {
-                    version: crate::control_codec::V1_3,
-                    limits: ControlLimits::default(),
-                    runner_instance_id: runner.into(),
-                    oldest_revision: crate::control_codec::Revision(1),
-                    latest_revision: crate::control_codec::Revision(4),
-                }),
-            });
-            server
-                .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
-                .unwrap();
+            for index in 0..3 {
+                let mut header = [0_u8; 4];
+                server.read_exact(&mut header).unwrap();
+                let size = u32::from_be_bytes(header) as usize;
+                let mut request_body = vec![0_u8; size];
+                server.read_exact(&mut request_body).unwrap();
+                let request: ControlRequest = serde_json::from_slice(&request_body).unwrap();
+                let response = if index == 0 {
+                    ControlResponse::Success(crate::control_codec::SuccessResponse {
+                        jsonrpc: "2.0".into(),
+                        id: request.id,
+                        result: ControlSuccess::Negotiated(crate::control_codec::Negotiated {
+                            version: crate::control_codec::V1_3,
+                            limits: ControlLimits::default(),
+                            runner_instance_id: runner.into(),
+                            oldest_revision: crate::control_codec::Revision(1),
+                            latest_revision: crate::control_codec::Revision(4),
+                        }),
+                    })
+                } else if index == 1 {
+                    ControlResponse::Success(crate::control_codec::SuccessResponse {
+                        jsonrpc: "2.0".into(),
+                        id: request.id,
+                        result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                            request_sha256:
+                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                    .into(),
+                            result: crate::control_codec::ControlResult::Capabilities(
+                                crate::control_codec::Capabilities {
+                                    validate_settings: true,
+                                    run_control: true,
+                                    repeat: true,
+                                    analysis: true,
+                                    events: true,
+                                },
+                            ),
+                        }),
+                    })
+                } else {
+                    ControlResponse::Failure(crate::control_codec::FailureResponse {
+                        jsonrpc: "2.0".into(),
+                        id: request.id,
+                        error: crate::control_codec::RpcError {
+                            code: -32000,
+                            message: "catalog unavailable".into(),
+                        },
+                    })
+                };
+                server
+                    .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                    .unwrap();
+            }
         });
         send_handoff(&handoff_sender, &offered, runner);
         let received = crate::broker_adoption::receive_single(&handoff_receiver).unwrap();
-        let session =
+        let mut session =
             AuthenticatedBrokerSession::establish_from_broker(received, ControlLimits::default())
                 .unwrap();
         assert_eq!(session.negotiated().runner_instance_id, runner);
@@ -495,6 +585,13 @@ mod tests {
             rustix::process::geteuid().as_raw()
         );
         assert!(session.peer_credentials().pid() > 0);
+        let mut projection = crate::live_projection::ControlProjection::default();
+        assert_eq!(
+            session.poll_projection(&mut projection),
+            Err(TransportError::RemoteFailure)
+        );
+        assert_eq!(projection.run_count(), 0);
+        assert!(projection.snapshot().capabilities.is_none());
         join.join().unwrap();
     }
 
