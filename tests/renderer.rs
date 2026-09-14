@@ -4,7 +4,13 @@
 
 use asb_tui::{
     app::{Action, AppState, ControlEvent, ControlEventKind},
+    help::HelpModel,
+    landing::{
+        ActivityRecord, ActivityStatus, ConnectionStatus, Freshness, LandingInput, RunState,
+        TrustStatus, project,
+    },
     renderer,
+    shell::Route,
     terminal::{CapabilityTier, RenderPolicy},
 };
 use ratatui::{Terminal, backend::TestBackend, style::Color};
@@ -124,4 +130,133 @@ fn plain_policy_has_no_color_and_plain_text_is_equivalent() {
             "runner ownership remains external\n"
         )
     );
+}
+
+#[test]
+fn landing_renderer_exposes_next_action_recent_activity_and_routes() {
+    let projection = project(LandingInput {
+        connection: ConnectionStatus::Connected,
+        trust: TrustStatus::Trusted,
+        freshness: Freshness::Fresh,
+        run: RunState::None,
+        activity: vec![ActivityRecord {
+            run_id: "run-42".into(),
+            label: "nightly benchmark".into(),
+            status: ActivityStatus::Succeeded,
+            observed_at: 42,
+            cursor: 7,
+        }],
+        capabilities: None,
+    })
+    .unwrap();
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            renderer::render_landing(frame, &projection, policy(CapabilityTier::IndexedColor))
+        })
+        .unwrap();
+    let content: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(content.contains("Configure a benchmark"));
+    assert!(content.contains("run-42"));
+    assert!(content.contains("Recent runs"));
+    assert!(content.contains("× Measures (not connected)"));
+    assert!(content.contains("? help"));
+    let plain = renderer::landing_plain_text(&projection);
+    assert!(plain.contains("next: Configure a benchmark"));
+    assert!(plain.is_ascii());
+}
+
+#[test]
+fn landing_renderer_has_bounded_tiny_fallback() {
+    let projection = project(LandingInput {
+        connection: ConnectionStatus::Unavailable,
+        trust: TrustStatus::Unknown,
+        freshness: Freshness::Unknown,
+        run: RunState::None,
+        activity: Vec::new(),
+        capabilities: None,
+    })
+    .unwrap();
+    let backend = TestBackend::new(24, 3);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| renderer::render_landing(frame, &projection, policy(CapabilityTier::Plain)))
+        .unwrap();
+    let rows: Vec<String> = (0..3)
+        .map(|y| {
+            (0..24)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(rows, ["ASB", "next: Install or connect", "? help | q quit"]);
+}
+
+#[test]
+fn help_renderer_shows_context_actions_and_disabled_reason() {
+    let model = HelpModel::new();
+    let backend = TestBackend::new(160, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            renderer::render_help(
+                frame,
+                &model,
+                Route::Landing,
+                None,
+                policy(CapabilityTier::IndexedColor),
+            )
+        })
+        .unwrap();
+    let content: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(content.contains("Help and shortcuts"));
+    assert!(content.contains("Search:"));
+    assert!(content.contains("Home"));
+    assert!(content.contains("Measures"));
+    assert!(content.contains("connect to ASB first"));
+    assert!(content.contains("Esc back"));
+}
+
+#[test]
+fn help_renderer_tiny_fallback_is_bounded_and_plain() {
+    let mut model = HelpModel::new();
+    model.set_query("run").unwrap();
+    let backend = TestBackend::new(20, 2);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            renderer::render_help(
+                frame,
+                &model,
+                Route::Help,
+                None,
+                policy(CapabilityTier::Plain),
+            )
+        })
+        .unwrap();
+    let content: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(content.contains("? help"));
+    assert!(content.contains("Esc back"));
+    assert!(content.is_ascii());
 }
