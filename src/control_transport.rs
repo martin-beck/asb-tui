@@ -211,6 +211,26 @@ pub struct BrokerContinuity {
     generation: BrokerGeneration,
 }
 
+/// Kernel credentials retained from the adopted control stream.  The process
+/// id is an observation, not a locator or a value taken from user input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BrokerPeerCredentials {
+    uid: u32,
+    pid: u32,
+}
+
+impl BrokerPeerCredentials {
+    #[must_use]
+    pub const fn uid(self) -> u32 {
+        self.uid
+    }
+
+    #[must_use]
+    pub const fn pid(self) -> u32 {
+        self.pid
+    }
+}
+
 impl BrokerContinuity {
     fn new(generation: BrokerGeneration) -> Result<Self, TransportError> {
         if generation.epoch == [0; 16] || generation.sequence == 0 {
@@ -249,6 +269,7 @@ pub struct AuthenticatedBrokerSession {
     transport: FramedControlStream,
     negotiated: crate::control_codec::Negotiated,
     continuity: BrokerContinuity,
+    peer: BrokerPeerCredentials,
 }
 
 impl AuthenticatedBrokerSession {
@@ -274,7 +295,29 @@ impl AuthenticatedBrokerSession {
             transport,
             negotiated,
             continuity,
+            peer: BrokerPeerCredentials {
+                uid: expected_uid,
+                pid: expected_pid,
+            },
         })
+    }
+
+    /// Establish a broker session using only local policy and kernel evidence.
+    /// AR-1060 does not transmit a caller-asserted remote uid/pid: the peer
+    /// must be the current effective user, and its nonzero pid observed at
+    /// descriptor receipt must match a fresh `SO_PEERCRED` read before I/O.
+    /// No argv, environment variable, filesystem path, or packet field is
+    /// consulted for peer authority.
+    pub fn establish_from_broker(
+        received: ReceivedChannel,
+        limits: ControlLimits,
+    ) -> Result<Self, TransportError> {
+        let expected_uid = rustix::process::geteuid().as_raw();
+        let expected_pid = received.peer_pid();
+        if expected_pid == 0 {
+            return Err(TransportError::PeerIdentity);
+        }
+        Self::establish(received, expected_uid, expected_pid, limits)
     }
 
     #[must_use]
@@ -285,6 +328,11 @@ impl AuthenticatedBrokerSession {
     #[must_use]
     pub fn continuity(&self) -> BrokerContinuity {
         self.continuity
+    }
+
+    #[must_use]
+    pub fn peer_credentials(&self) -> BrokerPeerCredentials {
+        self.peer
     }
 
     pub fn transport_mut(&mut self) -> &mut FramedControlStream {
@@ -436,14 +484,17 @@ mod tests {
         });
         send_handoff(&handoff_sender, &offered, runner);
         let received = crate::broker_adoption::receive_single(&handoff_receiver).unwrap();
-        let uid = rustix::process::getuid().as_raw();
-        let pid = std::process::id();
         let session =
-            AuthenticatedBrokerSession::establish(received, uid, pid, ControlLimits::default())
+            AuthenticatedBrokerSession::establish_from_broker(received, ControlLimits::default())
                 .unwrap();
         assert_eq!(session.negotiated().runner_instance_id, runner);
         assert_eq!(session.continuity().generation().epoch, [9; 16]);
         assert_eq!(session.continuity().generation().sequence, 4);
+        assert_eq!(
+            session.peer_credentials().uid(),
+            rustix::process::geteuid().as_raw()
+        );
+        assert!(session.peer_credentials().pid() > 0);
         join.join().unwrap();
     }
 
