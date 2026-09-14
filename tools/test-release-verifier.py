@@ -29,6 +29,17 @@ class ReleaseVerifierTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 MODULE.verify(bundle, ROOT / "provenance/allowed_signers", "martin.beck2@gmx.de", "asb-tui-bundle-v1")
 
+    def test_non_string_artifact_name_is_a_bounded_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory)
+            (bundle / "manifest.json").write_text(
+                '{"schema_version":1,"artifacts":[{"name":[]},{"name":"source"},{"name":"licenses"},{"name":"sbom"},{"name":"provenance"}],"components":[],"release":"v0.1.0","source_commit":"' + "a" * 40 + '","source_tree":"' + "b" * 40 + '"}',
+                encoding="utf-8",
+            )
+            (bundle / "manifest.json.sig").write_bytes(b"invalid")
+            with self.assertRaises(SystemExit):
+                MODULE.verify(bundle, ROOT / "provenance/allowed_signers", "martin.beck2@gmx.de", "asb-tui-bundle-v1")
+
 
 if __name__ == "__main__":
     unittest.main()
