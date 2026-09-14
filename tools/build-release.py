@@ -87,14 +87,20 @@ def source_archive(output: Path, source_date_epoch: int) -> None:
                         archive.addfile(info)
 
 
-def license_report() -> dict[str, object]:
+def license_report(release: str) -> dict[str, object]:
     lock = run(["cargo", "metadata", "--locked", "--offline", "--format-version", "1"])
     metadata = json.loads(lock)
     packages = [{"name": item["name"], "version": item["version"],
                  "license": item.get("license") or "NOASSERTION"}
                 for item in metadata["packages"]]
-    return {"schema_version": 1, "generator": "asb-tui/tools/build-release.py",
+    return {"schema_version": 1, "release": release,
             "packages": sorted(packages, key=lambda item: (item["name"], item["version"]))}
+
+
+def provenance_report(release: str, source_commit: str, source_tree: str) -> dict[str, object]:
+    """Return the strict runtime provenance document for a release candidate."""
+    return {"schema_version": 1, "release": release, "source_commit": source_commit,
+            "source_tree": source_tree, "builder": "github-actions", "reproducible": True}
 
 
 def main() -> int:
@@ -151,7 +157,7 @@ def main() -> int:
         shutil.copy2(built, executable)
         executable.chmod(0o755)
         source_archive(staging / "source.tar.gz", args.issued_unix)
-        write_json(staging / "licenses.json", license_report())
+        write_json(staging / "licenses.json", license_report(args.release))
         sbom_path = ROOT / "provenance/sbom.spdx.json"
         original_sbom = sbom_path.read_bytes()
         try:
@@ -177,13 +183,7 @@ def main() -> int:
         ]
         artifact_files = {"asb-tui": executable, "source": staging / "source.tar.gz",
                           "licenses": staging / "licenses.json", "sbom": staging / "sbom.spdx.json"}
-        provenance = {"schema_version": 1, "release": args.release, "source_commit": source_commit,
-                      "source_tree": source_tree, "workflow": {"name": "local-release-candidate"},
-                      "artifacts": []}
-        for name, _kind in ARTIFACTS[:-1]:
-            path = artifact_files[name]
-            provenance["artifacts"].append({"name": name, "size": path.stat().st_size,
-                                            "sha256": digest(path)})
+        provenance = provenance_report(args.release, source_commit, source_tree)
         write_json(staging / "provenance.json", provenance)
         artifact_files["provenance"] = staging / "provenance.json"
         manifest_artifacts = []
