@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = (("asb-tui", "executable"), ("source", "source"),
              ("licenses", "license_report"), ("sbom", "sbom"),
              ("provenance", "provenance"))
+TARGETS = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linux-gnu"}
 
 
 def run(command: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> str:
@@ -49,6 +50,13 @@ def identity(value: str, name: str, length: int = 40) -> str:
     if len(value) != length or any(char not in "0123456789abcdef" for char in value):
         raise ValueError(f"{name} must be lowercase hexadecimal ({length} characters)")
     return value
+
+
+def target_triple(architecture: str) -> str:
+    try:
+        return TARGETS[architecture]
+    except KeyError as error:
+        raise ValueError(f"unsupported architecture: {architecture}") from error
 
 
 def write_json(path: Path, value: object) -> None:
@@ -132,8 +140,12 @@ def main() -> int:
         env.update(ASB_TUI_SOURCE_COMMIT=source_commit, ASB_TUI_SOURCE_TREE=source_tree)
         target_dir = staging / "target"
         env["CARGO_TARGET_DIR"] = str(target_dir)
+        target = target_triple(args.architecture)
+        env["CARGO_BUILD_TARGET"] = target
+        if args.architecture == "aarch64":
+            env.setdefault("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER", "aarch64-linux-gnu-gcc")
         run(["cargo", "build", "--locked", "--offline", "--release"], env=env)
-        built = target_dir / "release" / "asb-tui"
+        built = target_dir / target / "release" / "asb-tui"
         if not built.is_file():
             raise SystemExit("cargo did not produce the asb-tui executable")
         shutil.copy2(built, executable)
