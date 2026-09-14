@@ -8,7 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const V1_0: ControlVersion = ControlVersion { major: 1, minor: 0 };
@@ -21,6 +24,9 @@ pub const MAX_PAGE_ITEMS: u16 = 256;
 pub const MAX_ANALYSIS_RUNS: usize = 256;
 pub const MAX_JSON_NODES: usize = 4096;
 pub const MAX_JSON_DEPTH: usize = 16;
+pub const MAX_MEASUREMENT_GROUPS: usize = 7;
+pub const MAX_MEASUREMENTS: usize = 128;
+pub const MAX_MEASUREMENT_CATALOG_WIRE_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -108,6 +114,7 @@ pub struct ControlRequest {
 pub enum ControlCall {
     Negotiate(NegotiateParams),
     Capabilities,
+    MeasurementCatalog,
     ValidateSettings { settings: Value },
     CreatePlan(MutationParams),
     Launch(LaunchParams),
@@ -278,6 +285,144 @@ pub struct Capabilities {
     pub analysis: bool,
     pub events: bool,
 }
+
+/// The additive control extension that publishes the immutable measurement
+/// catalog.  ASB defines this at control version 1.2.
+pub const CONTROL_MEASUREMENT_CATALOG_V1: ControlVersion = ControlVersion { major: 1, minor: 2 };
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementCatalogFreshness {
+    ContentAddressed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementCatalogPublicationSource {
+    BuiltInCollectors,
+}
+
+/// Public group metadata. IDs are kept as strings here because the ASB
+/// protocol's enum is intentionally extensible only at its own boundary.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementGroup {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+}
+
+/// Selection-facing definition fields plus a bounded retention of the
+/// remaining ASB definition fields. The latter lets this client remain wire
+/// compatible with the full catalog without treating execution metadata as
+/// renderer authority.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MeasurementDefinition {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub group: String,
+    #[serde(flatten)]
+    pub metadata: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementCatalog {
+    pub schema_version: u16,
+    pub catalog_sha256: String,
+    pub groups: Vec<MeasurementGroup>,
+    pub measurements: Vec<MeasurementDefinition>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementCatalogPublication {
+    pub version: ControlVersion,
+    pub freshness: MeasurementCatalogFreshness,
+    pub source: MeasurementCatalogPublicationSource,
+    pub catalog: MeasurementCatalog,
+}
+
+impl MeasurementCatalogPublication {
+    pub fn validate(&self) -> Result<(), CodecError> {
+        if self.version != CONTROL_MEASUREMENT_CATALOG_V1
+            || self.catalog.schema_version != 1
+            || self.catalog.groups.len() > MAX_MEASUREMENT_GROUPS
+            || self.catalog.measurements.len() > MAX_MEASUREMENTS
+        {
+            return Err(CodecError::InvalidValue("measurement_catalog"));
+        }
+        validate_digest(&self.catalog.catalog_sha256)?;
+        let mut groups = BTreeSet::new();
+        for group in &self.catalog.groups {
+            validate_catalog_text(&group.id, 128)?;
+            validate_catalog_text(&group.label, MAX_PUBLIC_STRING_BYTES)?;
+            validate_catalog_text(&group.description, MAX_PUBLIC_STRING_BYTES)?;
+            if !groups.insert(group.id.as_str()) {
+                return Err(CodecError::InvalidValue("measurement_catalog.groups"));
+            }
+        }
+        let mut ids = BTreeSet::new();
+        for definition in &self.catalog.measurements {
+            validate_catalog_id(&definition.id)?;
+            validate_catalog_text(&definition.name, MAX_PUBLIC_STRING_BYTES)?;
+            validate_catalog_text(&definition.description, MAX_PUBLIC_STRING_BYTES)?;
+            validate_catalog_text(&definition.group, 128)?;
+            if !groups.contains(definition.group.as_str()) || !ids.insert(definition.id.as_str()) {
+                return Err(CodecError::InvalidValue("measurement_catalog.measurements"));
+            }
+            const DEFINITION_FIELDS: &[&str] = &[
+                "quantity",
+                "unit",
+                "aggregation",
+                "scope",
+                "provenance",
+                "source_identity",
+                "resolution_ns",
+                "overhead",
+                "live",
+                "replay",
+                "platforms",
+                "evidence_limits",
+            ];
+            for (key, value) in &definition.metadata {
+                if !DEFINITION_FIELDS.contains(&key.as_str()) {
+                    return Err(CodecError::InvalidValue(
+                        "measurement_catalog.measurements.metadata",
+                    ));
+                }
+                validate_json(value)?;
+            }
+        }
+        let encoded = serde_json::to_vec(self).map_err(|_| CodecError::Serialization)?;
+        if encoded.len() > MAX_MEASUREMENT_CATALOG_WIRE_BYTES {
+            return Err(CodecError::FrameTooLarge);
+        }
+        Ok(())
+    }
+}
+
+fn validate_catalog_text(value: &str, max: usize) -> Result<(), CodecError> {
+    if value.is_empty() || value.len() > max || value.chars().any(char::is_control) {
+        return Err(CodecError::InvalidValue("measurement_catalog.text"));
+    }
+    Ok(())
+}
+
+fn validate_catalog_id(value: &str) -> Result<(), CodecError> {
+    if value.len() < 3
+        || value.len() > MAX_ID_BYTES
+        || !value.is_ascii()
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || !value.as_bytes()[0].is_ascii_lowercase()
+    {
+        return Err(CodecError::InvalidValue("measurement_catalog.id"));
+    }
+    Ok(())
+}
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanReference {
@@ -345,6 +490,7 @@ pub struct Page<T> {
 )]
 pub enum ControlResult {
     Capabilities(Capabilities),
+    MeasurementCatalog(MeasurementCatalogPublication),
     SettingsValidation(SettingsValidation),
     Plan(PlanReference),
     Launch(RunSummary),
@@ -498,6 +644,7 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
             validate_digest(digest)?;
         }
         ControlCall::Capabilities => {}
+        ControlCall::MeasurementCatalog => {}
     }
     Ok(())
 }
@@ -520,6 +667,7 @@ fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(
 fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), CodecError> {
     match result {
         ControlResult::Capabilities(_) => {}
+        ControlResult::MeasurementCatalog(v) => v.validate()?,
         ControlResult::SettingsValidation(v) => {
             if v.issues.len() > limits.max_page_items as usize
                 || v.valid != v.issues.is_empty()
@@ -641,6 +789,7 @@ impl ControlResult {
         matches!(
             (call, self),
             (ControlCall::Capabilities, Self::Capabilities(_))
+                | (ControlCall::MeasurementCatalog, Self::MeasurementCatalog(_))
                 | (
                     ControlCall::ValidateSettings { .. },
                     Self::SettingsValidation(_)
@@ -753,6 +902,78 @@ mod tests {
         assert_eq!(
             r.validate(ControlLimits::default()),
             Err(CodecError::UnsupportedVersion)
+        );
+    }
+
+    fn catalog() -> MeasurementCatalogPublication {
+        MeasurementCatalogPublication {
+            version: CONTROL_MEASUREMENT_CATALOG_V1,
+            freshness: MeasurementCatalogFreshness::ContentAddressed,
+            source: MeasurementCatalogPublicationSource::BuiltInCollectors,
+            catalog: MeasurementCatalog {
+                schema_version: 1,
+                catalog_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .into(),
+                groups: vec![MeasurementGroup {
+                    id: "latency".into(),
+                    label: "Latency".into(),
+                    description: "timing".into(),
+                }],
+                measurements: vec![MeasurementDefinition {
+                    id: "latency.first_response".into(),
+                    name: "First response".into(),
+                    description: "time until first response".into(),
+                    group: "latency".into(),
+                    metadata: [("quantity".into(), Value::String("time".into()))]
+                        .into_iter()
+                        .collect(),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn measurement_catalog_round_trips_and_matches_call() {
+        let request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(4),
+            timeout_ms: 1_000,
+            call: ControlCall::MeasurementCatalog,
+        };
+        request.validate(ControlLimits::default()).unwrap();
+        let response = ControlResponse::Success(SuccessResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(4),
+            result: ControlSuccess::Operation(BoundResult {
+                request_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .into(),
+                result: ControlResult::MeasurementCatalog(catalog()),
+            }),
+        });
+        response
+            .validate_for(&request, ControlLimits::default())
+            .unwrap();
+        let bytes = encode(&response, MAX_MEASUREMENT_CATALOG_WIRE_BYTES).unwrap();
+        let decoded: ControlResponse = decode(&bytes, MAX_MEASUREMENT_CATALOG_WIRE_BYTES).unwrap();
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn measurement_catalog_rejects_unknown_group_and_duplicate_id() {
+        let mut publication = catalog();
+        publication.catalog.measurements[0].group = "missing".into();
+        assert_eq!(
+            publication.validate(),
+            Err(CodecError::InvalidValue("measurement_catalog.measurements"))
+        );
+        let mut publication = catalog();
+        publication
+            .catalog
+            .measurements
+            .push(publication.catalog.measurements[0].clone());
+        assert_eq!(
+            publication.validate(),
+            Err(CodecError::InvalidValue("measurement_catalog.measurements"))
         );
     }
 }

@@ -9,7 +9,7 @@
 
 use crate::control_codec::{
     ControlCall, ControlLimits, ControlRequest, ControlResponse, ControlResult, ControlSuccess,
-    Negotiated, Revision, RunSummary,
+    MeasurementCatalog, Negotiated, Revision, RunSummary,
 };
 use std::{collections::BTreeMap, fmt};
 
@@ -28,6 +28,7 @@ pub struct LiveSnapshot {
     pub runner_instance_id: Option<String>,
     pub latest_revision: Option<Revision>,
     pub capabilities: Option<crate::control_codec::Capabilities>,
+    pub measurement_catalog: Option<MeasurementCatalog>,
     pub runs: Vec<RunSummary>,
 }
 
@@ -57,6 +58,7 @@ pub struct ControlProjection {
     connection: Connection,
     negotiated: Option<Negotiated>,
     capabilities: Option<crate::control_codec::Capabilities>,
+    measurement_catalog: Option<MeasurementCatalog>,
     runs: BTreeMap<String, RunSummary>,
 }
 
@@ -99,6 +101,14 @@ impl ControlProjection {
         match (call, result) {
             (ControlCall::Capabilities, ControlResult::Capabilities(value)) => {
                 self.capabilities = Some(value.clone());
+            }
+            (ControlCall::MeasurementCatalog, ControlResult::MeasurementCatalog(value)) => {
+                if self.negotiated.as_ref().is_none_or(|session| {
+                    session.version < crate::control_codec::CONTROL_MEASUREMENT_CATALOG_V1
+                }) {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.measurement_catalog = Some(value.catalog.clone());
             }
             (ControlCall::History(_), ControlResult::History(page)) => {
                 if self.runs.len() + page.items.len() > MAX_PROJECTED_RUNS {
@@ -152,6 +162,7 @@ impl ControlProjection {
                 .map(|value| value.runner_instance_id.clone()),
             latest_revision: self.negotiated.as_ref().map(|value| value.latest_revision),
             capabilities: self.capabilities.clone(),
+            measurement_catalog: self.measurement_catalog.clone(),
             runs,
         }
     }
