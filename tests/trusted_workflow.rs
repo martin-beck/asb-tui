@@ -42,9 +42,15 @@ fn trusted_runner_workflow_is_main_only_and_exact_revision_bound() {
     assert!(hosted.contains("pull_request:"));
     assert!(hosted.contains("runs-on: ubuntu-24.04"));
     assert!(!hosted.contains("asb-development-v1-x86_64-ubuntu2404"));
+    assert!(hosted.contains("tools/generate-ui-state-model.py"));
+    assert!(hosted.contains("tools/test-ui-state-model.py"));
+    assert!(hosted.contains("tools/validate-ui-state-model.py --base"));
     for workflow in [&workflow, &hosted] {
         assert!(workflow.contains("python3 tools/validate-compatibility-schemas.py"));
     }
+    assert!(workflow.contains("tools/generate-ui-state-model.py"));
+    assert!(workflow.contains("tools/test-ui-state-model.py"));
+    assert!(workflow.contains("tools/validate-ui-state-model.py"));
 }
 
 #[test]

@@ -42,6 +42,21 @@ jobs:
           tools/test-promoted-self-test.sh
           python3 -m json.tool provenance/dependencies.lock.json >/dev/null
           python3 -m json.tool provenance/sbom.spdx.json >/dev/null
+      - name: Enforce formal UI model and change ownership
+        env:
+          RANGE_BASE: ${{ github.event.pull_request.base.sha || '' }}
+          RANGE_HEAD: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/generate-ui-state-model.py
+          git diff --exit-code -- docs/ui-state-model.generated.json
+          python3 tools/test-ui-state-model.py
+          if [[ -n "$RANGE_BASE" ]]; then
+            python3 tools/validate-ui-state-model.py --base "$RANGE_BASE" --head "$RANGE_HEAD"
+          else
+            python3 tools/validate-ui-state-model.py
+          fi
       - name: Run digest-pinned shell quality
         run: tools/run-shell-quality.sh
       - name: Enforce DCO for introduced commits
