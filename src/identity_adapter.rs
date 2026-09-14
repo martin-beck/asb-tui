@@ -4,7 +4,7 @@
 //!
 //! ASB's durable identity contains an opaque runner digest, an execution
 //! epoch, and a journal sequence.  The adopted TUI channel has kernel-derived
-//! peer credentials and a service generation.  This module is deliberately a
+//! peer credentials and an independently supplied service-generation value. This module is deliberately a
 //! pure compatibility gate: it does not derive one identity from another,
 //! open a socket, or perform transport I/O.  Callers must provide the
 //! authenticated values from both sides and pass this gate before using them.
@@ -42,7 +42,6 @@ pub struct IdentityMapping {
 pub enum IdentityCompatibilityError {
     InvalidRunnerDigest,
     InvalidRunnerIdentity,
-    EpochGenerationMismatch,
     PeerChanged,
     RunnerChanged,
     SequenceRegressed,
@@ -80,17 +79,12 @@ impl TuiPeerIdentity {
 impl IdentityMapping {
     /// Validate the explicit cross-repository contract.
     ///
-    /// Equality between `epoch` and `service_generation` is intentional and
-    /// must be documented by the broker handshake.  The runner digest is not
-    /// hashed into `runner_instance_id`; the latter is accepted only as an
-    /// independently authenticated value, preventing accidental identity
-    /// derivation from a truncated or differently-scoped identifier.
+    /// ASB's execution epoch and the peer service-generation value are
+    /// independent domains; neither is derived from the other. The runner
+    /// digest is checked independently against the negotiated identity.
     pub fn validate(&self) -> Result<(), IdentityCompatibilityError> {
         self.asb.validate()?;
         self.tui.validate()?;
-        if self.asb.epoch != self.tui.credentials.service_generation {
-            return Err(IdentityCompatibilityError::EpochGenerationMismatch);
-        }
         Ok(())
     }
 
@@ -157,10 +151,7 @@ mod tests {
 
         let mut generation = mapping(5);
         generation.asb.epoch = 8;
-        assert_eq!(
-            current.accept_next(&generation),
-            Err(IdentityCompatibilityError::EpochGenerationMismatch)
-        );
+        assert!(current.accept_next(&generation).is_ok());
 
         let mut peer = mapping(5);
         peer.tui.credentials.pid = 43;
