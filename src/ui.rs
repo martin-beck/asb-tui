@@ -471,10 +471,20 @@ fn footer(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: Ren
     } else {
         "? help"
     };
+    let context = match state.screen {
+        Screen::Landing => "Enter open   2 measures   3 configure   4 reports",
+        Screen::Measures => "Up/Down move   Space item   g group   type search",
+        Screen::Configuration => "Up/Down move   Enter edit   Ctrl-S save",
+        Screen::Reports => "Up/Down move   Enter open/compare",
+        Screen::Help => "Esc close help",
+    };
     frame.render_widget(
-        Paragraph::new(format!("{}    Tab/Left/Right navigate    q quit", help))
-            .alignment(Alignment::Center)
-            .style(muted(policy)),
+        Paragraph::new(format!(
+            "{}    {}    Tab/Left/Right navigate    q quit",
+            help, context
+        ))
+        .alignment(Alignment::Center)
+        .style(muted(policy)),
         area,
     );
 }
@@ -488,7 +498,9 @@ fn help_overlay(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
             Line::from("Tab / arrows  navigate"),
             Line::from("Up/Down  move selection"),
             Line::from("Space  toggle measure"),
+            Line::from("g  toggle the current measure group"),
             Line::from("Type / Backspace  search measures"),
+            Line::from("Enter  open, edit, or compare the focused item"),
             Line::from("q / Ctrl-C  quit"),
             Line::from("Esc  close this window"),
         ])
@@ -576,7 +588,7 @@ mod tests {
     }
     #[test]
     fn test_backend_snapshot_contains_contextual_controls() {
-        let s = WorkspaceState::default();
+        let mut s = WorkspaceState::default();
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal.draw(|f| render(f, &s, policy())).unwrap();
         let text = terminal
@@ -588,5 +600,16 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("Welcome to ASB"));
         assert!(text.contains("? help"));
+        s.screen = Screen::Measures;
+        terminal.draw(|f| render(f, &s, policy())).unwrap();
+        let measures_text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(measures_text.contains("Space item"));
+        assert!(measures_text.contains("g group"));
     }
 }
