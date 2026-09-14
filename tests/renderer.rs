@@ -4,6 +4,10 @@
 
 use asb_tui::{
     app::{Action, AppState, ControlEvent, ControlEventKind},
+    landing::{
+        ActivityRecord, ActivityStatus, ConnectionStatus, Freshness, LandingInput, RunState,
+        TrustStatus, project,
+    },
     renderer,
     terminal::{CapabilityTier, RenderPolicy},
 };
@@ -124,4 +128,71 @@ fn plain_policy_has_no_color_and_plain_text_is_equivalent() {
             "runner ownership remains external\n"
         )
     );
+}
+
+#[test]
+fn landing_renderer_exposes_next_action_recent_activity_and_routes() {
+    let projection = project(LandingInput {
+        connection: ConnectionStatus::Connected,
+        trust: TrustStatus::Trusted,
+        freshness: Freshness::Fresh,
+        run: RunState::None,
+        activity: vec![ActivityRecord {
+            run_id: "run-42".into(),
+            label: "nightly benchmark".into(),
+            status: ActivityStatus::Succeeded,
+            observed_at: 42,
+            cursor: 7,
+        }],
+        capabilities: None,
+    })
+    .unwrap();
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            renderer::render_landing(frame, &projection, policy(CapabilityTier::IndexedColor))
+        })
+        .unwrap();
+    let content: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(content.contains("Configure a benchmark"));
+    assert!(content.contains("run-42"));
+    assert!(content.contains("Recent runs"));
+    assert!(content.contains("× Measures (not connected)"));
+    assert!(content.contains("? help"));
+    assert!(renderer::landing_plain_text(&projection).contains("next: Configure a benchmark"));
+}
+
+#[test]
+fn landing_renderer_has_bounded_tiny_fallback() {
+    let projection = project(LandingInput {
+        connection: ConnectionStatus::Unavailable,
+        trust: TrustStatus::Unknown,
+        freshness: Freshness::Unknown,
+        run: RunState::None,
+        activity: Vec::new(),
+        capabilities: None,
+    })
+    .unwrap();
+    let backend = TestBackend::new(24, 3);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| renderer::render_landing(frame, &projection, policy(CapabilityTier::Plain)))
+        .unwrap();
+    let rows: Vec<String> = (0..3)
+        .map(|y| {
+            (0..24)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(rows, ["ASB", "next: Install or connect", "? help | q quit"]);
 }

@@ -4,6 +4,11 @@
 
 use crate::{
     app::AppState,
+    landing::{
+        ActivityStatus, ConnectionStatus, Destination, Freshness, LandingProjection, PrimaryAction,
+        TrustStatus,
+    },
+    shell::{DisabledReason, Route, RouteAvailability},
     terminal::{CapabilityTier, RenderPolicy},
 };
 use ratatui::{
@@ -56,6 +61,233 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState, policy: RenderPolicy) {
             .style(muted(policy)),
         regions[2],
     );
+}
+
+/// Render the standalone application's state-aware home screen.
+///
+/// The projection is deliberately supplied by the control-client boundary;
+/// this function only formats bounded public fields and never queries ASB or
+/// dispatches a destination.  Callers can therefore test the landing screen
+/// without a runner, socket, or benchmark payload.
+pub fn render_landing(frame: &mut Frame<'_>, projection: &LandingProjection, policy: RenderPolicy) {
+    let area = frame.area();
+    if area.width < 28 || area.height < 8 {
+        render_landing_tiny(frame, area, projection, policy);
+        return;
+    }
+
+    let regions = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(5),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    let title = Paragraph::new(Line::from(vec![
+        Span::styled("ASB", accent(policy)),
+        Span::raw("  Agent Systems Benchmark"),
+    ]))
+    .alignment(Alignment::Center)
+    .block(panel_block(" Home ", policy));
+    frame.render_widget(title, regions[0]);
+    frame.render_widget(primary_panel(projection, policy), regions[1]);
+
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
+        .split(regions[2]);
+    frame.render_widget(recent_panel(projection, policy), body[0]);
+    frame.render_widget(destination_panel(&projection.destinations, policy), body[1]);
+
+    frame.render_widget(
+        Paragraph::new(navigation_hint(policy))
+            .alignment(Alignment::Center)
+            .style(muted(policy)),
+        regions[3],
+    );
+}
+
+/// Stable plain-text landing equivalent for pipes and unknown terminals.
+pub fn landing_plain_text(projection: &LandingProjection) -> String {
+    let mut output = format!(
+        "Agent Systems Benchmark\nconnection: {} | trust: {} | freshness: {}\nnext: {}\nrecent runs:\n",
+        connection_name(projection.connection),
+        trust_name(projection.trust),
+        freshness_name(projection.freshness),
+        primary_name(projection.primary_action),
+    );
+    if projection.recent_activity.is_empty() {
+        output.push_str("  none\n");
+    } else {
+        for item in &projection.recent_activity {
+            output.push_str(&format!(
+                "  {} | {} | {}\n",
+                item.run_id,
+                item.label,
+                activity_name(item.status)
+            ));
+        }
+    }
+    output.push_str("shortcuts: up/down navigate | Enter select | ? help | q quit\n");
+    output
+}
+
+fn render_landing_tiny(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    projection: &LandingProjection,
+    policy: RenderPolicy,
+) {
+    let primary = primary_name(projection.primary_action);
+    let text = if area.height > 2 {
+        format!("ASB\nnext: {primary}\n? help | q quit")
+    } else if area.height > 1 {
+        format!("ASB\n{primary}")
+    } else {
+        "ASB | ? help | q quit".to_owned()
+    };
+    frame.render_widget(Paragraph::new(text).style(accent(policy)), area);
+}
+
+fn primary_panel(projection: &LandingProjection, policy: RenderPolicy) -> Paragraph<'static> {
+    Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("Next action: ", accent(policy)),
+            Span::raw(primary_name(projection.primary_action)),
+        ]),
+        Line::from(format!(
+            "Connection: {}  Trust: {}  Freshness: {}",
+            connection_name(projection.connection),
+            trust_name(projection.trust),
+            freshness_name(projection.freshness)
+        )),
+    ])
+    .wrap(Wrap { trim: true })
+    .block(panel_block(" Ready when you are ", policy))
+}
+
+fn recent_panel(projection: &LandingProjection, policy: RenderPolicy) -> Paragraph<'static> {
+    let mut lines = vec![Line::from(Span::styled("Latest activity", accent(policy)))];
+    if projection.recent_activity.is_empty() {
+        lines.push(Line::from("No runs yet — configure a benchmark to begin."));
+    } else {
+        lines.extend(projection.recent_activity.iter().map(|item| {
+            Line::from(format!(
+                "{}  {}  [{}]",
+                item.run_id,
+                item.label,
+                activity_name(item.status)
+            ))
+        }));
+    }
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: true })
+        .block(panel_block(" Recent runs ", policy))
+}
+
+fn destination_panel(destinations: &[Destination], policy: RenderPolicy) -> Paragraph<'static> {
+    let mut lines = vec![Line::from(Span::styled("Workspaces", accent(policy)))];
+    for destination in destinations {
+        let marker = match destination.availability {
+            RouteAvailability::Available => "•",
+            RouteAvailability::Disabled(_) => "×",
+        };
+        lines.push(Line::from(format!(
+            "{marker} {}{}",
+            route_name(destination.route),
+            disabled_suffix(destination.availability)
+        )));
+    }
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: true })
+        .block(panel_block(" Navigate ", policy))
+}
+
+fn disabled_suffix(availability: RouteAvailability) -> String {
+    match availability {
+        RouteAvailability::Available => String::new(),
+        RouteAvailability::Disabled(reason) => format!(" ({})", disabled_name(reason)),
+    }
+}
+
+fn route_name(route: Route) -> &'static str {
+    match route {
+        Route::Landing => "Home",
+        Route::Configuration => "Configure",
+        Route::MeasurementSelection => "Measures",
+        Route::RunControl => "Run control",
+        Route::RecentRuns => "Recent runs",
+        Route::Reports => "Reports",
+        Route::Help => "Help",
+    }
+}
+
+fn disabled_name(reason: DisabledReason) -> &'static str {
+    match reason {
+        DisabledReason::NotNegotiated => "not connected",
+        DisabledReason::Analysis => "analysis unavailable",
+        DisabledReason::Cancel => "cancel unavailable",
+        DisabledReason::Events => "events unavailable",
+        DisabledReason::History => "history unavailable",
+        DisabledReason::Launch => "launch unavailable",
+        DisabledReason::Planning => "planning unavailable",
+    }
+}
+
+fn primary_name(action: PrimaryAction) -> &'static str {
+    match action {
+        PrimaryAction::InstallOrConnect => "Install or connect",
+        PrimaryAction::Reconnect => "Reconnect",
+        PrimaryAction::Monitor => "Monitor active run",
+        PrimaryAction::ContinueReview => "Continue draft review",
+        PrimaryAction::Configure => "Configure a benchmark",
+    }
+}
+
+fn connection_name(value: ConnectionStatus) -> &'static str {
+    match value {
+        ConnectionStatus::Unavailable => "unavailable",
+        ConnectionStatus::Disconnected => "disconnected",
+        ConnectionStatus::Negotiating => "connecting",
+        ConnectionStatus::Connected => "connected",
+    }
+}
+
+fn trust_name(value: TrustStatus) -> &'static str {
+    match value {
+        TrustStatus::Unknown => "unknown",
+        TrustStatus::Untrusted => "untrusted",
+        TrustStatus::Trusted => "trusted",
+    }
+}
+
+fn freshness_name(value: Freshness) -> &'static str {
+    match value {
+        Freshness::Unknown => "unknown",
+        Freshness::Stale => "stale",
+        Freshness::Fresh => "fresh",
+    }
+}
+
+fn activity_name(value: ActivityStatus) -> &'static str {
+    match value {
+        ActivityStatus::Running => "running",
+        ActivityStatus::Succeeded => "succeeded",
+        ActivityStatus::Failed => "failed",
+        ActivityStatus::Cancelled => "cancelled",
+        ActivityStatus::Draft => "draft",
+    }
+}
+
+fn navigation_hint(policy: RenderPolicy) -> &'static str {
+    if policy.unicode {
+        "↑/↓ navigate  Enter select  ? help  q quit"
+    } else {
+        "up/down navigate  Enter select  ? help  q quit"
+    }
 }
 
 fn render_tiny(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
