@@ -74,7 +74,7 @@ fn unknown_arguments_fail_without_json_or_environment_output() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         String::from_utf8(output.stderr).expect("UTF-8 usage"),
-        "usage: asb-tui [run] | (doctor|compatibility) --format json | doctor --terminal\n"
+        "usage: asb-tui [run|run --broker] | (doctor|compatibility) --format json | doctor --terminal\n"
     );
 }
 
