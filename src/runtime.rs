@@ -6,6 +6,7 @@ use crate::{
     app::{Action, AppError, AppState},
     control_transport::AuthenticatedBrokerSession,
     live_projection::ControlProjection,
+    shell::{ApplicationShell, ShellAction},
     terminal::{RenderPolicy, frame_dimensions_are_safe},
     ui,
 };
@@ -351,6 +352,37 @@ fn run_interactive_loop(
     let mut session = TerminalSession::enter(policy)?;
     let backend = BoundedBackend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
+    let size = terminal.size()?;
+    let mut shell = ApplicationShell::new(size.width, size.height)?;
+    if let Some(snapshot) = workspace.live.as_ref() {
+        if let Some(capabilities) = snapshot.capabilities.clone() {
+            // The legacy shell gate is intentionally narrower than the
+            // negotiated control schema. Keep this translation explicit until
+            // the authenticated adapter publishes the unified capability
+            // contract; never treat an absent field as an enabled operation.
+            shell.set_capabilities(crate::Capabilities {
+                analysis: capabilities.analysis,
+                artifacts: capabilities.analysis,
+                cancel: capabilities.run_control,
+                events: capabilities.events,
+                history: capabilities.analysis,
+                launch: capabilities.run_control,
+                planning: capabilities.validate_settings,
+                repeat: capabilities.repeat,
+            });
+        }
+        if let Some(baseline) = snapshot.latest_revision {
+            shell.apply(ShellAction::Connected {
+                baseline: baseline.0,
+            })?;
+        }
+    }
+    // The shell is the route authority. A renderer may request a route, but
+    // cannot display an unavailable or unimplemented journey by accident.
+    let _ = shell.apply(ShellAction::Navigate(workspace.route()));
+    if let Some(screen) = ui::Screen::from_route(shell.route()) {
+        workspace.screen = screen;
+    }
     while !state.should_quit() {
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
         terminal.draw(|frame| ui::render(frame, &workspace, policy))?;
@@ -358,10 +390,21 @@ fn run_interactive_loop(
             match event::read()? {
                 Event::Resize(columns, lines) if frame_dimensions_are_safe(columns, lines) => {
                     state.apply(Action::Resize { columns, lines })?;
+                    shell.apply(ShellAction::Resize { columns, lines })?;
                 }
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if matches!(workspace.handle_key(key), ui::UiAction::Quit) {
+                    let action = workspace.handle_key(key);
+                    if matches!(action, ui::UiAction::Quit) {
                         state.apply(Action::Quit)?;
+                        shell.apply(ShellAction::Quit)?;
+                    } else {
+                        let requested = workspace.route();
+                        shell.apply(ShellAction::Navigate(requested))?;
+                        if shell.route() != requested
+                            && let Some(screen) = ui::Screen::from_route(shell.route())
+                        {
+                            workspace.screen = screen;
+                        }
                     }
                 }
                 _ => {}

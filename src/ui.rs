@@ -7,6 +7,7 @@
 
 use crate::{
     live_projection::{Connection, LiveSnapshot},
+    shell::Route,
     terminal::{CapabilityTier, RenderPolicy},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -25,6 +26,37 @@ pub enum Screen {
     Configuration,
     Reports,
     Help,
+}
+
+impl Screen {
+    /// Convert the renderer screen to the stable route understood by the
+    /// application shell.  Keeping this mapping here prevents the renderer
+    /// from inventing a second navigation vocabulary.
+    #[must_use]
+    pub const fn route(self) -> Route {
+        match self {
+            Self::Landing => Route::Landing,
+            Self::Measures => Route::MeasurementSelection,
+            Self::Configuration => Route::Configuration,
+            Self::Reports => Route::Reports,
+            Self::Help => Route::Help,
+        }
+    }
+
+    /// Map a shell route to a currently rendered screen. Routes whose
+    /// backend journey has no renderer yet are intentionally rejected rather
+    /// than silently shown as an unrelated screen.
+    #[must_use]
+    pub const fn from_route(route: Route) -> Option<Self> {
+        match route {
+            Route::Landing => Some(Self::Landing),
+            Route::Configuration => Some(Self::Configuration),
+            Route::MeasurementSelection => Some(Self::Measures),
+            Route::Reports => Some(Self::Reports),
+            Route::Help => Some(Self::Help),
+            Route::RunControl | Route::RecentRuns => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,6 +128,23 @@ impl Default for WorkspaceState {
 }
 
 impl WorkspaceState {
+    /// Return the stable shell route for the visible renderer screen.
+    #[must_use]
+    pub const fn route(&self) -> Route {
+        self.screen.route()
+    }
+
+    /// Apply a shell route only when this renderer has a concrete screen for
+    /// it. Unsupported routes remain available to future screen extensions
+    /// and are never silently rendered as a different journey.
+    pub fn navigate(&mut self, route: Route) -> bool {
+        let Some(screen) = Screen::from_route(route) else {
+            return false;
+        };
+        self.screen = screen;
+        true
+    }
+
     /// Replace presentation data only after it has passed the typed control
     /// projection. No renderer input can mutate ASB state through this method.
     pub fn apply_live_snapshot(&mut self, snapshot: LiveSnapshot) {
@@ -709,5 +758,29 @@ mod tests {
             state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)),
             UiAction::Quit
         );
+    }
+
+    #[test]
+    fn screen_routes_round_trip_without_aliasing_unimplemented_journeys() {
+        for screen in [
+            Screen::Landing,
+            Screen::Measures,
+            Screen::Configuration,
+            Screen::Reports,
+            Screen::Help,
+        ] {
+            assert_eq!(Screen::from_route(screen.route()), Some(screen));
+        }
+        assert_eq!(Screen::from_route(crate::shell::Route::RunControl), None);
+        assert_eq!(Screen::from_route(crate::shell::Route::RecentRuns), None);
+    }
+
+    #[test]
+    fn workspace_navigation_rejects_routes_without_a_renderer() {
+        let mut state = WorkspaceState::default();
+        assert!(state.navigate(crate::shell::Route::Reports));
+        assert_eq!(state.screen, Screen::Reports);
+        assert!(!state.navigate(crate::shell::Route::RunControl));
+        assert_eq!(state.screen, Screen::Reports);
     }
 }
