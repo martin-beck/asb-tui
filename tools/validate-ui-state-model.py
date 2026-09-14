@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
 """Validate the renderer-independent UI state model (AR-1182 foundation)."""
 import json
 import sys
