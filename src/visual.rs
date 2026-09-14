@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+// SPDX-License-Identifier: MIT
 //! Renderer-neutral visual language for the standalone frontend.
 //!
 //! This module deliberately contains presentation contracts only.  It does not
