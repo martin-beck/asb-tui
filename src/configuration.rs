@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+// SPDX-License-Identifier: MIT
 //! Renderer-neutral configuration center state for AR-1034.
 //!
 //! This module owns bounded, non-secret frontend preferences and benchmark-plan
