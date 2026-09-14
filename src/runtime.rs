@@ -4,8 +4,10 @@
 
 use crate::{
     app::{Action, AppError, AppState},
-    renderer,
+    control_transport::AuthenticatedBrokerSession,
+    live_projection::ControlProjection,
     terminal::{RenderPolicy, frame_dimensions_are_safe},
+    ui,
 };
 use crossterm::{
     cursor::{Hide, Show},
@@ -118,6 +120,37 @@ impl From<AppError> for RuntimeError {
     fn from(error: AppError) -> Self {
         Self(io::Error::other(error))
     }
+}
+
+/// Perform one authenticated, read-only control refresh and publish it to the
+/// workspace. The transport layer validates every response; the projection is
+/// cloned and committed atomically so a failed refresh leaves the prior UI
+/// snapshot intact.
+pub fn poll_authenticated_workspace(
+    session: &mut AuthenticatedBrokerSession,
+    projection: &mut ControlProjection,
+    workspace: &mut ui::WorkspaceState,
+) -> Result<(), RuntimeError> {
+    session
+        .poll_projection(projection)
+        .map_err(|error| RuntimeError(io::Error::other(error)))?;
+    workspace.apply_live_snapshot(projection.snapshot());
+    Ok(())
+}
+
+/// Run the interactive loop after one authenticated control refresh. The
+/// mutable session is borrowed by the entry seam for the full loop lifetime;
+/// it is never replaced by a second connection and remains available to a
+/// future periodic refresh scheduler.
+pub fn run_interactive_with_control(
+    state: &mut AppState,
+    policy: RenderPolicy,
+    session: &mut AuthenticatedBrokerSession,
+) -> Result<(), RuntimeError> {
+    let mut projection = ControlProjection::default();
+    let mut workspace = ui::WorkspaceState::default();
+    poll_authenticated_workspace(session, &mut projection, &mut workspace)?;
+    run_interactive_loop(state, policy, workspace, Some(session))
 }
 
 trait LifecycleOps {
@@ -305,15 +338,34 @@ impl TerminalSession {
 
 /// Run the single-writer interactive draw loop until the operator quits.
 pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(), RuntimeError> {
+    run_interactive_loop(state, policy, ui::WorkspaceState::default(), None)
+}
+
+fn run_interactive_loop(
+    state: &mut AppState,
+    policy: RenderPolicy,
+    mut workspace: ui::WorkspaceState,
+    _control: Option<&mut AuthenticatedBrokerSession>,
+) -> Result<(), RuntimeError> {
     let mut signals = Signals::new([SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGCONT])?;
     let mut session = TerminalSession::enter(policy)?;
     let backend = BoundedBackend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
     while !state.should_quit() {
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
-        terminal.draw(|frame| renderer::render(frame, state, policy))?;
-        if let Some(action) = poll_action(Duration::from_millis(50))? {
-            state.apply(action)?;
+        terminal.draw(|frame| ui::render(frame, &workspace, policy))?;
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Resize(columns, lines) if frame_dimensions_are_safe(columns, lines) => {
+                    state.apply(Action::Resize { columns, lines })?;
+                }
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if matches!(workspace.handle_key(key), ui::UiAction::Quit) {
+                        state.apply(Action::Quit)?;
+                    }
+                }
+                _ => {}
+            }
         }
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
     }

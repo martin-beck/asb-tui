@@ -4,16 +4,31 @@
 
 //! Closed capability parsing, authenticated release discovery, and standalone frontend state.
 
+pub mod actions;
 pub mod app;
+pub mod broker_adoption;
 pub mod bundle;
 pub mod compatibility;
+pub mod configuration;
+pub mod control_client;
+pub mod control_codec;
+pub mod control_transport;
 pub mod delegated;
+pub mod identity_adapter;
+pub mod landing;
 pub mod lifecycle;
+pub mod live_projection;
 pub mod release_channel;
 pub mod renderer;
+pub mod reports;
 pub mod runtime;
+pub mod selection;
+mod sha256;
+pub mod shell;
 pub mod system_probe;
 pub mod terminal;
+pub mod ui;
+pub mod visual;
 
 use serde::Deserialize;
 use std::{
@@ -23,7 +38,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {
     pub analysis: bool,

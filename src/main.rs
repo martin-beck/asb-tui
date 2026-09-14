@@ -4,10 +4,13 @@
 
 use asb_tui::{
     app::AppState,
+    broker_adoption::{receive_from_stdin, validate_channel_shape},
     compatibility::evaluate,
+    control_codec::ControlLimits,
+    control_transport::AuthenticatedBrokerSession,
     delegated::execute_input,
     lifecycle::{local_self_test_response, run_self_test_supervisor},
-    runtime::run_interactive,
+    runtime::{run_interactive, run_interactive_with_control},
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
 };
@@ -28,6 +31,9 @@ fn main() -> ExitCode {
         } else {
             126
         });
+    }
+    if arguments == ["run", "--broker"] {
+        return launch_broker_entry();
     }
     if arguments.is_empty() || arguments == ["run"] {
         return launch();
@@ -99,8 +105,72 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: asb-tui [run] | (doctor|compatibility) --format json | doctor --terminal");
+    eprintln!(
+        "usage: asb-tui [run|run --broker] | (doctor|compatibility) --format json | doctor --terminal"
+    );
     ExitCode::from(2)
+}
+
+/// Consume the broker's inherited fd-0 handoff without entering the UI.
+///
+/// The received channel is intentionally not treated as authenticated merely
+/// because it arrived over SCM_RIGHTS: the typed generation/identity
+/// negotiation still has to be implemented by the control client. Keeping
+/// this path fail-closed also ensures lifecycle JSON remains exclusively on
+/// `lifecycle --format json` and can never be confused with broker traffic.
+fn launch_broker_entry() -> ExitCode {
+    let received = match receive_from_stdin() {
+        Ok(received) => received,
+        Err(_) => {
+            eprintln!("broker channel adoption failed");
+            return ExitCode::from(2);
+        }
+    };
+    if validate_channel_shape(received.channel()).is_err() {
+        eprintln!("broker channel adoption failed");
+        return ExitCode::from(2);
+    }
+    let mut control =
+        match AuthenticatedBrokerSession::establish_from_broker(received, ControlLimits::default())
+        {
+            Ok(control) => control,
+            Err(_) => {
+                eprintln!("broker control handshake failed");
+                return ExitCode::from(2);
+            }
+        };
+    let mut evidence = TerminalEvidence::from_environment();
+    if evidence.tty
+        && let Ok((columns, lines)) = crossterm::terminal::size()
+        && columns > 0
+        && lines > 0
+    {
+        evidence.columns = Some(columns);
+        evidence.lines = Some(lines);
+    }
+    let Ok(policy) = RenderPolicy::from_evidence(&evidence) else {
+        eprintln!("terminal capability check failed");
+        return ExitCode::from(2);
+    };
+    if !policy.alternate_screen {
+        eprintln!("interactive terminal required for broker mode");
+        return ExitCode::from(2);
+    }
+    let mut state =
+        match AppState::new(evidence.columns.unwrap_or(80), evidence.lines.unwrap_or(24)) {
+            Ok(state) => state,
+            Err(_) => {
+                eprintln!("terminal capability check failed");
+                return ExitCode::from(2);
+            }
+        };
+    match run_interactive_with_control(&mut state, policy, &mut control) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => {
+            eprintln!("terminal application failed");
+            ExitCode::from(2)
+        }
+    }
 }
 
 fn launch() -> ExitCode {
