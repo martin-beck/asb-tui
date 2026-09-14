@@ -8,6 +8,7 @@ pub mod actions;
 pub mod app;
 pub mod bundle;
 pub mod compatibility;
+pub mod configuration;
 pub mod delegated;
 pub mod landing;
 pub mod lifecycle;
