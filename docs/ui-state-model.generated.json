@@ -308,6 +308,24 @@
       ]
     },
     {
+      "event": "wizard_next",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_step_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "wizard_back",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_step_changed",
+        "focus_reset"
+      ]
+    },
+    {
       "event": "complete_wizard",
       "from": "wizard",
       "to": "landing",
@@ -337,37 +355,65 @@
     {
       "event": "open_configuration",
       "from": "landing",
-      "to": "configuration"
+      "to": "configuration",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
       "event": "open_reports",
       "from": "landing",
-      "to": "reports"
+      "to": "reports",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
       "event": "open_help",
       "from": "landing",
-      "to": "help"
+      "to": "help",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
       "event": "navigate_home",
       "from": "measurement_selection",
-      "to": "landing"
+      "to": "landing",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
       "event": "navigate_home",
       "from": "configuration",
-      "to": "landing"
+      "to": "landing",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
       "event": "navigate_home",
       "from": "reports",
-      "to": "landing"
+      "to": "landing",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
       "event": "navigate_home",
       "from": "help",
-      "to": "landing"
+      "to": "landing",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     }
   ],
   "help": [
