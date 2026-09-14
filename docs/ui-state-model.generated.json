@@ -1,0 +1,306 @@
+{
+  "schema_version": 1,
+  "model": "asb-tui.ui-state",
+  "initial": "landing",
+  "layouts": [
+    "wide",
+    "compact",
+    "tiny"
+  ],
+  "state_fields": [
+    "route",
+    "focus",
+    "hover",
+    "query",
+    "selection",
+    "connection",
+    "capabilities"
+  ],
+  "bindings": [
+    {
+      "action": "quit",
+      "element": "navigation",
+      "key": "q"
+    },
+    {
+      "action": "open_measures",
+      "element": "landing.primary",
+      "key": "2"
+    },
+    {
+      "action": "open_configuration",
+      "element": "landing.primary",
+      "key": "3"
+    },
+    {
+      "action": "open_reports",
+      "element": "landing.primary",
+      "key": "4"
+    },
+    {
+      "action": "open_help",
+      "element": "navigation",
+      "key": "?"
+    },
+    {
+      "action": "focus_measure_search",
+      "element": "measures.search",
+      "key": "/"
+    },
+    {
+      "action": "toggle_measure",
+      "element": "measures.row",
+      "key": "Space"
+    },
+    {
+      "action": "toggle_group",
+      "element": "measures.group_toggle",
+      "key": "g"
+    }
+  ],
+  "routes": [
+    {
+      "id": "landing",
+      "elements": [
+        "landing.primary",
+        "navigation",
+        "status.connection"
+      ]
+    },
+    {
+      "id": "measurement_selection",
+      "elements": [
+        "measures.search",
+        "measures.row",
+        "measures.group_toggle",
+        "navigation"
+      ]
+    },
+    {
+      "id": "configuration",
+      "elements": [
+        "configuration.entry",
+        "configuration.search",
+        "navigation"
+      ]
+    },
+    {
+      "id": "reports",
+      "elements": [
+        "reports.row",
+        "reports.compare",
+        "navigation"
+      ]
+    },
+    {
+      "id": "help",
+      "elements": [
+        "help.search",
+        "help.entry",
+        "navigation"
+      ]
+    }
+  ],
+  "elements": [
+    {
+      "id": "landing.primary",
+      "route": "landing",
+      "role": "action",
+      "help_id": "screen.landing",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "measures.search",
+      "route": "measurement_selection",
+      "role": "editable",
+      "help_id": "measures.search",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "measures.row",
+      "route": "measurement_selection",
+      "role": "selectable",
+      "help_id": "measures.row",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "measures.group_toggle",
+      "route": "measurement_selection",
+      "role": "action",
+      "help_id": "measures.group_toggle",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "configuration.entry",
+      "route": "configuration",
+      "role": "editable",
+      "help_id": "configuration.entry",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "configuration.search",
+      "route": "configuration",
+      "role": "editable",
+      "help_id": "configuration.search",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "reports.row",
+      "route": "reports",
+      "role": "selectable",
+      "help_id": "reports.row",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "reports.compare",
+      "route": "reports",
+      "role": "action",
+      "help_id": "reports.compare",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "help.search",
+      "route": "help",
+      "role": "editable",
+      "help_id": "help.search",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "help.entry",
+      "route": "help",
+      "role": "selectable",
+      "help_id": "help.entry",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "navigation",
+      "route": "global",
+      "role": "navigation",
+      "help_id": "navigation",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "status.connection",
+      "route": "landing",
+      "role": "status",
+      "help_id": "status.connection",
+      "focusable": false,
+      "hoverable": true,
+      "parent": null
+    }
+  ],
+  "transitions": [
+    {
+      "event": "open_measures",
+      "from": "landing",
+      "to": "measurement_selection"
+    },
+    {
+      "event": "open_configuration",
+      "from": "landing",
+      "to": "configuration"
+    },
+    {
+      "event": "open_reports",
+      "from": "landing",
+      "to": "reports"
+    },
+    {
+      "event": "open_help",
+      "from": "landing",
+      "to": "help"
+    },
+    {
+      "event": "navigate_home",
+      "from": "measurement_selection",
+      "to": "landing"
+    },
+    {
+      "event": "navigate_home",
+      "from": "configuration",
+      "to": "landing"
+    },
+    {
+      "event": "navigate_home",
+      "from": "reports",
+      "to": "landing"
+    },
+    {
+      "event": "navigate_home",
+      "from": "help",
+      "to": "landing"
+    }
+  ],
+  "help": [
+    {
+      "id": "screen.landing",
+      "text": "Choose a benchmark task or open another screen."
+    },
+    {
+      "id": "measures.search",
+      "text": "Type to filter benchmark measures by group or name."
+    },
+    {
+      "id": "measures.row",
+      "text": "Select or clear this measure for the benchmark."
+    },
+    {
+      "id": "measures.group_toggle",
+      "text": "Select or clear every visible measure in this group."
+    },
+    {
+      "id": "configuration.entry",
+      "text": "Edit this setting; its value controls the next benchmark."
+    },
+    {
+      "id": "configuration.search",
+      "text": "Type to find a configuration setting by name or description."
+    },
+    {
+      "id": "reports.row",
+      "text": "Choose a completed run to inspect its report."
+    },
+    {
+      "id": "reports.compare",
+      "text": "Compare the selected completed runs."
+    },
+    {
+      "id": "help.search",
+      "text": "Type to find an action or explanation."
+    },
+    {
+      "id": "help.entry",
+      "text": "Read the explanation and key for this action."
+    },
+    {
+      "id": "navigation",
+      "text": "Move between screens with the arrow keys or Tab."
+    },
+    {
+      "id": "status.connection",
+      "text": "Shows whether the ASB control connection is ready."
+    }
+  ]
+}

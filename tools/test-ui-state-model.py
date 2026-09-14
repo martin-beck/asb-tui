@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
 import copy
 import importlib.util
 import json
+import subprocess
 import unittest
 
 SPEC = importlib.util.spec_from_file_location("validator", "tools/validate-ui-state-model.py")
@@ -31,6 +34,42 @@ class UiStateModelTests(unittest.TestCase):
         model = copy.deepcopy(self.model)
         model["elements"].append(copy.deepcopy(model["elements"][0]))
         self.assertTrue(any("duplicate id" in error for error in MODULE.validate(model)))
+
+    def test_missing_help_and_focus_metadata_are_rejected(self):
+        model = copy.deepcopy(self.model)
+        model["elements"][0]["help_id"] = "missing"
+        model["elements"][1].pop("focusable")
+        errors = MODULE.validate(model)
+        self.assertIn("landing.primary: help_id does not reference a help entry", errors)
+        self.assertIn("measures.search: focusable must be boolean", errors)
+
+    def test_weak_help_prose_and_escape_path_are_rejected(self):
+        model = copy.deepcopy(self.model)
+        model["help"][0]["text"] = "..."
+        model["transitions"] = [entry for entry in model["transitions"] if entry["from"] != "help"]
+        errors = MODULE.validate(model)
+        self.assertIn("help.screen.landing: text must be meaningful prose (at least four words)", errors)
+        self.assertIn("routes: help has no escape path to landing", errors)
+
+    def test_generated_artifact_matches_authored_model(self):
+        generated = json.loads(MODULE.GENERATED.read_text(encoding="utf-8"))
+        self.assertEqual(MODULE.canonical(generated), MODULE.canonical(self.model))
+
+    def test_change_ownership_requires_model_and_focused_tests(self):
+        errors = MODULE.validate_changes(["src/ui.rs"])
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(any("formal model update" in error for error in errors))
+        self.assertTrue(any("focused formal-model test" in error for error in errors))
+        self.assertEqual(MODULE.validate_changes(["src/ui.rs", "docs/ui-state-model.json", "tests/ui.rs"]), [])
+
+    def test_binding_and_parent_cycles_are_rejected(self):
+        model = copy.deepcopy(self.model)
+        model["bindings"].append({"action": "quit", "element": "navigation", "key": "x"})
+        model["elements"][0]["parent"] = "navigation"
+        model["elements"][10]["parent"] = "landing.primary"
+        errors = MODULE.validate(model)
+        self.assertTrue(any("duplicate binding" in error for error in errors))
+        self.assertTrue(any("parent relationship contains a cycle" in error for error in errors))
 
 
 if __name__ == "__main__":
