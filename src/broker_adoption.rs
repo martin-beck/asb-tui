@@ -10,6 +10,7 @@ use std::{
     io::IoSliceMut,
     mem::MaybeUninit,
     os::fd::{AsFd, OwnedFd},
+    os::unix::net::UnixStream,
 };
 
 use rustix::{
@@ -129,6 +130,24 @@ impl BrokerPacket {
         };
         valid.then_some(packet).ok_or(AdoptionError::InvalidPacket)
     }
+
+    /// Return the canonical digest expected in a successful handoff packet.
+    /// The digest is only an identity binding; it is never used to derive a
+    /// service generation from the broker epoch or sequence.
+    pub fn runner_identity_digest(value: &str) -> Result<[u8; 32], AdoptionError> {
+        runner_identity_digest(value)
+    }
+
+    /// Verify the packet's explicit runner identity after control negotiation.
+    pub fn verify_runner_identity(&self, runner_instance_id: &str) -> Result<(), AdoptionError> {
+        if self.status != HandoffStatus::Success {
+            return Err(AdoptionError::InvalidPacket);
+        }
+        if self.expected_runner_identity != runner_identity_digest(runner_instance_id)? {
+            return Err(AdoptionError::IdentityMismatch);
+        }
+        Ok(())
+    }
 }
 
 /// An accepted descriptor and its bounded broker payload.  The descriptor is
@@ -163,6 +182,31 @@ impl ReceivedChannel {
         self.peer_pid
     }
 
+    /// Authenticate only the kernel-derived uid/pid tuple.  In particular,
+    /// this API has no service-generation argument: generation is a protocol
+    /// field that must be authenticated by typed negotiation.
+    pub fn authenticate_peer_ids(
+        &self,
+        expected_uid: u32,
+        expected_pid: u32,
+    ) -> Result<(), AdoptionError> {
+        if expected_pid == 0 || self.peer_uid != expected_uid || self.peer_pid != expected_pid {
+            return Err(AdoptionError::PeerChanged);
+        }
+        Ok(())
+    }
+
+    /// Decode the one handoff packet without consuming the adopted channel.
+    pub fn broker_packet(&self) -> Result<BrokerPacket, AdoptionError> {
+        BrokerPacket::decode(&self.payload)
+    }
+
+    /// Convert the already validated adopted descriptor into a connected
+    /// stream. The descriptor is consumed and cannot be reused elsewhere.
+    pub fn into_unix_stream(self) -> UnixStream {
+        UnixStream::from(self.channel)
+    }
+
     /// Authenticate the kernel-derived peer tuple before protocol use.  The
     /// service generation is authenticated by the control handshake and is
     /// deliberately not inferred from descriptor metadata.
@@ -184,12 +228,7 @@ impl ReceivedChannel {
         runner_instance_id: &str,
     ) -> Result<BrokerGeneration, AdoptionError> {
         let packet = BrokerPacket::decode(&self.payload)?;
-        if packet.status != HandoffStatus::Success {
-            return Err(AdoptionError::InvalidPacket);
-        }
-        if packet.expected_runner_identity != runner_identity_digest(runner_instance_id)? {
-            return Err(AdoptionError::IdentityMismatch);
-        }
+        packet.verify_runner_identity(runner_instance_id)?;
         Ok(packet.generation)
     }
 }

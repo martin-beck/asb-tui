@@ -7,26 +7,36 @@
 //! this module only binds that identity, applies deadlines and validates the
 //! typed JSON-RPC boundary.
 
-use crate::control_client::{AdoptedChannel, PeerCredentials, RunnerIdentity};
 use crate::control_codec::{
     self, CodecError, ControlLimits, ControlRequest, ControlResponse, ControlSuccess,
     NegotiateParams, RequestId,
+};
+use crate::{
+    broker_adoption::{AdoptionError, BrokerGeneration, ReceivedChannel},
+    control_client::{AdoptedChannel, PeerCredentials, RunnerIdentity},
 };
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum TransportError {
     Io,
     Codec(CodecError),
     PeerIdentity,
     NotNegotiated,
+    BrokerPacket(AdoptionError),
+    Continuity,
 }
 impl From<CodecError> for TransportError {
     fn from(value: CodecError) -> Self {
         Self::Codec(value)
+    }
+}
+impl From<AdoptionError> for TransportError {
+    fn from(value: AdoptionError) -> Self {
+        Self::BrokerPacket(value)
     }
 }
 
@@ -61,6 +71,39 @@ impl FramedControlStream {
         })
     }
 
+    /// Adopt a broker-transferred stream after validating only its kernel
+    /// peer uid/pid. Unlike the legacy `adopt` API, this cannot accept or
+    /// infer a service generation; that value is authenticated by negotiate.
+    pub fn adopt_broker(
+        stream: UnixStream,
+        peer_uid: u32,
+        peer_pid: u32,
+        limits: ControlLimits,
+    ) -> Result<Self, TransportError> {
+        let limits = limits.validate()?;
+        if stream.as_raw_fd() < 3 || peer_pid == 0 {
+            return Err(TransportError::PeerIdentity);
+        }
+        let credentials = rustix::net::sockopt::socket_peercred(&stream)
+            .map_err(|_| TransportError::PeerIdentity)?;
+        if credentials.uid.as_raw() != peer_uid || credentials.pid.as_raw_pid() as u32 != peer_pid {
+            return Err(TransportError::PeerIdentity);
+        }
+        Ok(Self {
+            stream,
+            limits,
+            expected_peer: RunnerIdentity {
+                uid: peer_uid,
+                pid: peer_pid,
+                // Deliberately an unusable sentinel: broker sessions do not
+                // authenticate generation through this legacy path.
+                service_generation: 0,
+                runner_instance_id: String::new(),
+            },
+            negotiated: false,
+        })
+    }
+
     pub fn negotiate(&mut self, id: RequestId) -> Result<ControlSuccess, TransportError> {
         let request = ControlRequest {
             jsonrpc: control_codec::JSONRPC_VERSION.into(),
@@ -85,7 +128,8 @@ impl FramedControlStream {
         let ControlSuccess::Negotiated(session) = value.result else {
             return Err(TransportError::NotNegotiated);
         };
-        if session.runner_instance_id != self.expected_peer.runner_instance_id
+        if (!self.expected_peer.runner_instance_id.is_empty()
+            && session.runner_instance_id != self.expected_peer.runner_instance_id)
             || ![
                 control_codec::V1_3,
                 control_codec::V1_2,
@@ -159,6 +203,95 @@ impl FramedControlStream {
     }
 }
 
+/// Continuity evidence carried by a broker handoff. Epoch and sequence are
+/// retained as opaque broker evidence; they are never converted to a service
+/// generation or used as an identity substitute.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BrokerContinuity {
+    generation: BrokerGeneration,
+}
+
+impl BrokerContinuity {
+    fn new(generation: BrokerGeneration) -> Result<Self, TransportError> {
+        if generation.epoch == [0; 16] || generation.sequence == 0 {
+            return Err(TransportError::Continuity);
+        }
+        Ok(Self { generation })
+    }
+
+    #[must_use]
+    pub fn generation(self) -> BrokerGeneration {
+        self.generation
+    }
+
+    /// Accept only the next packet in the same broker epoch. Wraparound is
+    /// rejected rather than treated as continuity.
+    pub fn accept_successor(&mut self, next: BrokerGeneration) -> Result<(), TransportError> {
+        if next.epoch != self.generation.epoch
+            || next.sequence
+                != self
+                    .generation
+                    .sequence
+                    .checked_add(1)
+                    .ok_or(TransportError::Continuity)?
+        {
+            return Err(TransportError::Continuity);
+        }
+        self.generation = next;
+        Ok(())
+    }
+}
+
+/// Authenticated broker control session. Construction consumes the received
+/// descriptor and exposes it only after packet, peer, typed negotiation, and
+/// runner-identity checks all succeed.
+pub struct AuthenticatedBrokerSession {
+    transport: FramedControlStream,
+    negotiated: crate::control_codec::Negotiated,
+    continuity: BrokerContinuity,
+}
+
+impl AuthenticatedBrokerSession {
+    pub fn establish(
+        received: ReceivedChannel,
+        expected_uid: u32,
+        expected_pid: u32,
+        limits: ControlLimits,
+    ) -> Result<Self, TransportError> {
+        received.authenticate_peer_ids(expected_uid, expected_pid)?;
+        let packet = received.broker_packet()?;
+        let continuity = BrokerContinuity::new(packet.generation)?;
+        let peer_uid = received.peer_uid();
+        let peer_pid = received.peer_pid();
+        let stream = received.into_unix_stream();
+        let mut transport = FramedControlStream::adopt_broker(stream, peer_uid, peer_pid, limits)?;
+        let id = RequestId(1);
+        let ControlSuccess::Negotiated(negotiated) = transport.negotiate(id)? else {
+            return Err(TransportError::NotNegotiated);
+        };
+        packet.verify_runner_identity(&negotiated.runner_instance_id)?;
+        Ok(Self {
+            transport,
+            negotiated,
+            continuity,
+        })
+    }
+
+    #[must_use]
+    pub fn negotiated(&self) -> &crate::control_codec::Negotiated {
+        &self.negotiated
+    }
+
+    #[must_use]
+    pub fn continuity(&self) -> BrokerContinuity {
+        self.continuity
+    }
+
+    pub fn transport_mut(&mut self) -> &mut FramedControlStream {
+        &mut self.transport
+    }
+}
+
 impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{self:?}")
@@ -169,7 +302,16 @@ impl std::error::Error for TransportError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
+    use rustix::net::{
+        AddressFamily, SendAncillaryBuffer, SendAncillaryMessage, SendFlags, SocketFlags,
+        SocketType, sendmsg, socketpair,
+    };
+    use std::{
+        io::{IoSlice, Read, Write},
+        mem::MaybeUninit,
+        os::fd::AsFd,
+        thread,
+    };
     fn peer() -> RunnerIdentity {
         RunnerIdentity {
             uid: 1000,
@@ -177,6 +319,25 @@ mod tests {
             service_generation: 7,
             runner_instance_id: "runner-7".into(),
         }
+    }
+
+    fn send_handoff<S: AsFd, F: AsFd>(sender: S, offered: F, runner: &str) {
+        let mut packet = [0_u8; crate::broker_adoption::BROKER_PACKET_BYTES];
+        packet[..8].copy_from_slice(b"ASBHND01");
+        packet[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        packet[10] = 1;
+        packet[11] = 1;
+        packet[16..32].fill(9);
+        packet[32..40].copy_from_slice(&4_u64.to_be_bytes());
+        packet[40..72].copy_from_slice(
+            &crate::broker_adoption::BrokerPacket::runner_identity_digest(runner).unwrap(),
+        );
+        let iov = [IoSlice::new(&packet)];
+        let mut bytes = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+        let mut ancillary = SendAncillaryBuffer::new(&mut bytes);
+        let rights = [offered.as_fd()];
+        ancillary.push(SendAncillaryMessage::ScmRights(&rights));
+        sendmsg(&sender, &iov, &mut ancillary, SendFlags::empty()).unwrap();
     }
     fn observed() -> PeerCredentials {
         PeerCredentials {
@@ -239,5 +400,80 @@ mod tests {
             FramedControlStream::adopt(client, observed(), wrong, ControlLimits::default()),
             Err(TransportError::PeerIdentity)
         ));
+    }
+
+    #[test]
+    fn broker_session_authenticates_packet_then_typed_negotiation() {
+        let (handoff_sender, handoff_receiver) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let (offered, mut server) = UnixStream::pair().unwrap();
+        let runner = "runner-7";
+        let join = thread::spawn(move || {
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let size = u32::from_be_bytes(header) as usize;
+            let mut request = vec![0_u8; size];
+            server.read_exact(&mut request).unwrap();
+            let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                jsonrpc: "2.0".into(),
+                id: RequestId(1),
+                result: ControlSuccess::Negotiated(crate::control_codec::Negotiated {
+                    version: crate::control_codec::V1_3,
+                    limits: ControlLimits::default(),
+                    runner_instance_id: runner.into(),
+                    oldest_revision: crate::control_codec::Revision(1),
+                    latest_revision: crate::control_codec::Revision(4),
+                }),
+            });
+            server
+                .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                .unwrap();
+        });
+        send_handoff(&handoff_sender, &offered, runner);
+        let received = crate::broker_adoption::receive_single(&handoff_receiver).unwrap();
+        let uid = rustix::process::getuid().as_raw();
+        let pid = std::process::id();
+        let session =
+            AuthenticatedBrokerSession::establish(received, uid, pid, ControlLimits::default())
+                .unwrap();
+        assert_eq!(session.negotiated().runner_instance_id, runner);
+        assert_eq!(session.continuity().generation().epoch, [9; 16]);
+        assert_eq!(session.continuity().generation().sequence, 4);
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn broker_continuity_rejects_epoch_change_and_sequence_skip() {
+        let mut continuity = BrokerContinuity::new(BrokerGeneration {
+            epoch: [1; 16],
+            sequence: 8,
+        })
+        .unwrap();
+        assert_eq!(
+            continuity.accept_successor(BrokerGeneration {
+                epoch: [1; 16],
+                sequence: 10,
+            }),
+            Err(TransportError::Continuity)
+        );
+        assert_eq!(
+            continuity.accept_successor(BrokerGeneration {
+                epoch: [2; 16],
+                sequence: 9,
+            }),
+            Err(TransportError::Continuity)
+        );
+        continuity
+            .accept_successor(BrokerGeneration {
+                epoch: [1; 16],
+                sequence: 9,
+            })
+            .unwrap();
+        assert_eq!(continuity.generation().sequence, 9);
     }
 }
