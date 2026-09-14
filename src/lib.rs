@@ -25,6 +25,7 @@ pub mod shell;
 pub mod system_probe;
 pub mod terminal;
 pub mod visual;
+pub mod ui;
 
 use serde::Deserialize;
 use std::{

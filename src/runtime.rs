@@ -4,8 +4,8 @@
 
 use crate::{
     app::{Action, AppError, AppState},
-    renderer,
     terminal::{RenderPolicy, frame_dimensions_are_safe},
+    ui,
 };
 use crossterm::{
     cursor::{Hide, Show},
@@ -309,11 +309,22 @@ pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(),
     let mut session = TerminalSession::enter(policy)?;
     let backend = BoundedBackend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
+    let mut workspace = ui::WorkspaceState::default();
     while !state.should_quit() {
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
-        terminal.draw(|frame| renderer::render(frame, state, policy))?;
-        if let Some(action) = poll_action(Duration::from_millis(50))? {
-            state.apply(action)?;
+        terminal.draw(|frame| ui::render(frame, &workspace, policy))?;
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Resize(columns, lines) if frame_dimensions_are_safe(columns, lines) => {
+                    state.apply(Action::Resize { columns, lines })?;
+                }
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if matches!(workspace.handle_key(key), ui::UiAction::Quit) {
+                        state.apply(Action::Quit)?;
+                    }
+                }
+                _ => {}
+            }
         }
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
     }
