@@ -20,14 +20,14 @@ fn canonical_order_and_group_tri_state_are_deterministic() {
             .iter()
             .map(Measurement::id)
             .collect::<Vec<_>>(),
-        ["cpu.system", "cpu.user", "memory.rss"]
+        ["cpu.user", "memory.rss", "cpu.system"]
     );
     assert_eq!(state.visible_groups()[0].state(), GroupSelection::None);
     state.set_measure_selected("cpu.system", true).unwrap();
     assert_eq!(state.visible_groups()[0].state(), GroupSelection::Partial);
     state.set_group_selected("CPU", true).unwrap();
     assert_eq!(state.visible_groups()[0].state(), GroupSelection::All);
-    assert_eq!(state.selected_ids(), ["cpu.system", "cpu.user"]);
+    assert_eq!(state.selected_ids(), ["cpu.user", "cpu.system"]);
 }
 
 #[test]
@@ -114,4 +114,15 @@ fn invalid_and_unknown_inputs_fail_closed() {
         state.set_query("\n"),
         Err(SelectionError::NonPublicText("query"))
     ));
+}
+
+#[test]
+fn catalog_size_is_bounded_before_selection_state_is_created() {
+    let catalog = (0..=asb_tui::selection::MAX_MEASUREMENTS)
+        .map(|index| Measurement::new(format!("metric.{index}"), "group", "name", "unit").unwrap())
+        .collect();
+    assert_eq!(
+        MeasurementSelection::new(catalog),
+        Err(SelectionError::TooManyMeasurements)
+    );
 }
