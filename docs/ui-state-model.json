@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "model": "asb-tui.ui-state",
+  "initial": "landing",
+  "routes": [
+    {"id":"landing","elements":["landing.primary","navigation","status.connection"]},
+    {"id":"measurement_selection","elements":["measures.search","measures.row","measures.group_toggle","navigation"]},
+    {"id":"configuration","elements":["configuration.entry","configuration.search","navigation"]},
+    {"id":"reports","elements":["reports.row","reports.compare","navigation"]},
+    {"id":"help","elements":["help.search","help.entry","navigation"]}
+  ],
+  "elements": [
+    {"id":"landing.primary","route":"landing","role":"action","help_id":"screen.landing"},
+    {"id":"measures.search","route":"measurement_selection","role":"editable","help_id":"measures.search"},
+    {"id":"measures.row","route":"measurement_selection","role":"selectable","help_id":"measures.row"},
+    {"id":"measures.group_toggle","route":"measurement_selection","role":"action","help_id":"measures.group_toggle"},
+    {"id":"configuration.entry","route":"configuration","role":"editable","help_id":"configuration.entry"},
+    {"id":"configuration.search","route":"configuration","role":"editable","help_id":"configuration.search"},
+    {"id":"reports.row","route":"reports","role":"selectable","help_id":"reports.row"},
+    {"id":"reports.compare","route":"reports","role":"action","help_id":"reports.compare"},
+    {"id":"help.search","route":"help","role":"editable","help_id":"help.search"},
+    {"id":"help.entry","route":"help","role":"selectable","help_id":"help.entry"},
+    {"id":"navigation","route":"global","role":"navigation","help_id":"navigation"},
+    {"id":"status.connection","route":"landing","role":"status","help_id":"status.connection"}
+  ],
+  "transitions": [
+    {"event":"open_measures","from":"landing","to":"measurement_selection"},
+    {"event":"open_configuration","from":"landing","to":"configuration"},
+    {"event":"open_reports","from":"landing","to":"reports"},
+    {"event":"open_help","from":"landing","to":"help"},
+    {"event":"navigate_home","from":"measurement_selection","to":"landing"},
+    {"event":"navigate_home","from":"configuration","to":"landing"},
+    {"event":"navigate_home","from":"reports","to":"landing"},
+    {"event":"navigate_home","from":"help","to":"landing"}
+  ]
+}
