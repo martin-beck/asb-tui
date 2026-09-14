@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -40,6 +41,21 @@ class ReleaseBuilderTests(unittest.TestCase):
         self.assertEqual(MODULE.target_triple("aarch64"), "aarch64-unknown-linux-gnu")
         with self.assertRaises(ValueError):
             MODULE.target_triple("riscv64")
+
+    def test_license_document_matches_strict_runtime_shape(self) -> None:
+        metadata = {"packages": [{"name": "demo", "version": "1.0.0", "license": "MIT"}]}
+        with patch.object(MODULE, "run", return_value=__import__("json").dumps(metadata)):
+            document = MODULE.license_report("v0.1.0")
+        self.assertEqual(set(document), {"schema_version", "release", "packages"})
+        self.assertEqual(document["schema_version"], 1)
+        self.assertEqual(document["release"], "v0.1.0")
+
+    def test_provenance_document_matches_strict_runtime_shape(self) -> None:
+        document = MODULE.provenance_report("v0.1.0", "a" * 40, "b" * 40)
+        self.assertEqual(set(document), {"schema_version", "release", "source_commit",
+                                         "source_tree", "builder", "reproducible"})
+        self.assertEqual(document["builder"], "github-actions")
+        self.assertTrue(document["reproducible"])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 """Focused negative tests for the independent release-candidate verifier."""
 
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,33 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ReleaseVerifierTests(unittest.TestCase):
+    def test_strict_documents_accept_runtime_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory)
+            manifest = {"release": "v0.1.0", "source_commit": "a" * 40, "source_tree": "b" * 40}
+            (bundle / "licenses.json").write_text(json.dumps({
+                "schema_version": 1, "release": "v0.1.0",
+                "packages": [{"name": "demo", "version": "1.0.0", "license": "MIT"}],
+            }), encoding="utf-8")
+            (bundle / "provenance.json").write_text(json.dumps({
+                "schema_version": 1, "release": "v0.1.0", "source_commit": "a" * 40,
+                "source_tree": "b" * 40, "builder": "github-actions", "reproducible": True,
+            }), encoding="utf-8")
+            MODULE.validate_documents(bundle, manifest)
+
+    def test_strict_documents_reject_unknown_provenance_field(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory)
+            manifest = {"release": "v0.1.0", "source_commit": "a" * 40, "source_tree": "b" * 40}
+            (bundle / "licenses.json").write_text(
+                '{"schema_version":1,"release":"v0.1.0","packages":[]}', encoding="utf-8")
+            (bundle / "provenance.json").write_text(json.dumps({
+                "schema_version": 1, "release": "v0.1.0", "source_commit": "a" * 40,
+                "source_tree": "b" * 40, "builder": "github-actions", "reproducible": True,
+                "workflow": {"name": "invalid"},
+            }), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                MODULE.validate_documents(bundle, manifest)
     def test_missing_signed_manifest_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(SystemExit):
