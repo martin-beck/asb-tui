@@ -172,7 +172,11 @@ fn primary_panel(projection: &LandingProjection, policy: RenderPolicy) -> Paragr
 fn recent_panel(projection: &LandingProjection, policy: RenderPolicy) -> Paragraph<'static> {
     let mut lines = vec![Line::from(Span::styled("Latest activity", accent(policy)))];
     if projection.recent_activity.is_empty() {
-        lines.push(Line::from("No runs yet — configure a benchmark to begin."));
+        lines.push(Line::from(if policy.unicode {
+            "No runs yet — configure a benchmark to begin."
+        } else {
+            "No runs yet - configure a benchmark to begin."
+        }));
     } else {
         lines.extend(projection.recent_activity.iter().map(|item| {
             Line::from(format!(
@@ -191,9 +195,11 @@ fn recent_panel(projection: &LandingProjection, policy: RenderPolicy) -> Paragra
 fn destination_panel(destinations: &[Destination], policy: RenderPolicy) -> Paragraph<'static> {
     let mut lines = vec![Line::from(Span::styled("Workspaces", accent(policy)))];
     for destination in destinations {
-        let marker = match destination.availability {
-            RouteAvailability::Available => "•",
-            RouteAvailability::Disabled(_) => "×",
+        let marker = match (destination.availability, policy.unicode) {
+            (RouteAvailability::Available, true) => "•",
+            (RouteAvailability::Disabled(_), true) => "×",
+            (RouteAvailability::Available, false) => "+",
+            (RouteAvailability::Disabled(_), false) => "!",
         };
         lines.push(Line::from(format!(
             "{marker} {}{}",

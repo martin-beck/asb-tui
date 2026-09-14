@@ -166,7 +166,9 @@ fn landing_renderer_exposes_next_action_recent_activity_and_routes() {
     assert!(content.contains("Recent runs"));
     assert!(content.contains("× Measures (not connected)"));
     assert!(content.contains("? help"));
-    assert!(renderer::landing_plain_text(&projection).contains("next: Configure a benchmark"));
+    let plain = renderer::landing_plain_text(&projection);
+    assert!(plain.contains("next: Configure a benchmark"));
+    assert!(plain.is_ascii());
 }
 
 #[test]
