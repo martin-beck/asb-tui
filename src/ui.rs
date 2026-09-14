@@ -6,6 +6,7 @@
 //! the external ASB control plane.
 
 use crate::{
+    help::{ContextualHelp, HelpModel, UiElement},
     live_projection::{Connection, LiveSnapshot},
     terminal::{CapabilityTier, RenderPolicy},
 };
@@ -45,6 +46,8 @@ pub struct WorkspaceState {
     pub report_cursor: usize,
     /// Last validated snapshot supplied by the authenticated control seam.
     pub live: Option<LiveSnapshot>,
+    /// Catalog used to resolve help for the focused workspace element.
+    pub help_model: HelpModel,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,11 +94,70 @@ impl Default for WorkspaceState {
             config_cursor: 0,
             report_cursor: 0,
             live: None,
+            help_model: HelpModel::new(),
         }
     }
 }
 
 impl WorkspaceState {
+    /// Stable route used by the action/help catalog for the visible screen.
+    #[must_use]
+    pub fn help_route(&self) -> crate::shell::Route {
+        match self.screen {
+            Screen::Landing => crate::shell::Route::Landing,
+            Screen::Measures => crate::shell::Route::MeasurementSelection,
+            Screen::Configuration => crate::shell::Route::Configuration,
+            Screen::Reports => crate::shell::Route::Reports,
+            Screen::Help => crate::shell::Route::Help,
+        }
+    }
+
+    /// Resolve the currently focused/hovered logical element without relying
+    /// on terminal coordinates. This is the lookup key for contextual help.
+    #[must_use]
+    pub fn focused_element(&self) -> UiElement {
+        match self.screen {
+            Screen::Landing => UiElement::LandingPrimary,
+            Screen::Measures => {
+                if self.search.is_empty() {
+                    UiElement::MeasureRow
+                } else {
+                    UiElement::MeasureSearch
+                }
+            }
+            Screen::Configuration => UiElement::ConfigurationEntry,
+            Screen::Reports => UiElement::ReportRun,
+            Screen::Help => UiElement::HelpSearch,
+        }
+    }
+
+    #[must_use]
+    pub fn contextual_help(&self) -> ContextualHelp {
+        let capabilities = self.live.as_ref().and_then(|snapshot| {
+            snapshot
+                .capabilities
+                .as_ref()
+                .map(|value| crate::Capabilities {
+                    analysis: value.analysis,
+                    // The v1 control capability set exposes run control as one
+                    // gate; keep the action registry's finer UI gates fail-closed
+                    // behind that negotiated capability.
+                    artifacts: true,
+                    cancel: value.run_control,
+                    events: value.events,
+                    history: value.analysis,
+                    launch: value.run_control,
+                    planning: value.validate_settings,
+                    repeat: value.repeat,
+                })
+        });
+        self.help_model.contextual_help(
+            self.help_route(),
+            capabilities.as_ref(),
+            self.focused_element(),
+        )
+    }
+
     /// Replace presentation data only after it has passed the typed control
     /// projection. No renderer input can mutate ASB state through this method.
     pub fn apply_live_snapshot(&mut self, snapshot: LiveSnapshot) {
@@ -297,7 +359,7 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
     }
     footer(frame, chunks[2], state, policy);
     if state.help {
-        help_overlay(frame, area, policy);
+        help_overlay(frame, area, state, policy);
     }
 }
 
@@ -488,24 +550,38 @@ fn footer(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: Ren
         area,
     );
 }
-fn help_overlay(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
+fn help_overlay(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
     let popup = centered(area, 70, 65);
     frame.render_widget(Clear, popup);
+    let contextual = state.contextual_help();
+    let mut lines = vec![
+        Line::from(Span::styled("Keyboard help", accent(policy))),
+        Line::from(format!("Focused: {}", contextual.element.id())),
+        Line::from(Span::styled(contextual.title, accent(policy))),
+        Line::from(contextual.description),
+        Line::from(""),
+    ];
+    for action in contextual.actions {
+        let state = action
+            .disabled
+            .map_or_else(String::new, |reason| format!(" [{}]", reason.label()));
+        lines.push(Line::from(format!(
+            "{}  {} - {}{}",
+            action.key.label(),
+            action.label,
+            action.description,
+            state
+        )));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::from("1-4 switch workspace   Tab/arrows navigate"),
+        Line::from("Esc close this window   q/Ctrl-C quit"),
+    ]);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled("Keyboard help", accent(policy))),
-            Line::from("1-4  switch workspace"),
-            Line::from("Tab / arrows  navigate"),
-            Line::from("Up/Down  move selection"),
-            Line::from("Space  toggle measure"),
-            Line::from("g  toggle the current measure group"),
-            Line::from("Type / Backspace  search measures"),
-            Line::from("Enter  open, edit, or compare the focused item"),
-            Line::from("q / Ctrl-C  quit"),
-            Line::from("Esc  close this window"),
-        ])
-        .block(panel(" Help ", policy))
-        .wrap(Wrap { trim: true }),
+        Paragraph::new(lines)
+            .block(panel(" Help ", policy))
+            .wrap(Wrap { trim: true }),
         popup,
     );
 }
@@ -709,5 +785,48 @@ mod tests {
             state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)),
             UiAction::Quit
         );
+    }
+
+    #[test]
+    fn focused_element_tracks_logical_context_for_help() {
+        let mut state = WorkspaceState::default();
+        assert_eq!(state.focused_element(), UiElement::LandingPrimary);
+        state.screen = Screen::Measures;
+        assert_eq!(state.focused_element(), UiElement::MeasureRow);
+        state.search = "lat".into();
+        assert_eq!(state.focused_element(), UiElement::MeasureSearch);
+        state.screen = Screen::Configuration;
+        assert_eq!(state.focused_element(), UiElement::ConfigurationEntry);
+        state.screen = Screen::Reports;
+        assert_eq!(state.focused_element(), UiElement::ReportRun);
+        let help = state.contextual_help();
+        assert_eq!(help.element, UiElement::ReportRun);
+        assert!(
+            help.actions
+                .iter()
+                .any(|item| item.action == crate::actions::UiAction::CompareRuns)
+        );
+    }
+
+    #[test]
+    fn help_overlay_uses_contextual_catalog_text() {
+        let state = WorkspaceState {
+            screen: Screen::Measures,
+            help: true,
+            ..WorkspaceState::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("measures.row"));
+        assert!(text.contains("Focused measure"));
     }
 }
