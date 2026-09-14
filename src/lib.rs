@@ -14,6 +14,7 @@ pub mod landing;
 pub mod lifecycle;
 pub mod release_channel;
 pub mod renderer;
+pub mod reports;
 pub mod runtime;
 pub mod selection;
 pub mod shell;
