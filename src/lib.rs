@@ -9,6 +9,7 @@ pub mod app;
 pub mod bundle;
 pub mod compatibility;
 pub mod delegated;
+pub mod landing;
 pub mod lifecycle;
 pub mod release_channel;
 pub mod renderer;
