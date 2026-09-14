@@ -58,6 +58,14 @@ jobs:
         uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
         with:
           tool: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-llvm-cov@0.9.0
+      - name: Enforce formal UI inventory before Rust tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/generate-ui-state-model.py
+          git diff --exit-code -- docs/ui-state-model.generated.json
+          python3 tools/test-ui-state-model.py
+          python3 tools/validate-ui-state-model.py
       - name: Run complete locked Rust and supply-chain gates
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/asb-tui-target
@@ -81,14 +89,6 @@ jobs:
           cargo deny --locked check
           cargo audit --deny warnings
           tools/run-coverage-clean.sh
-      - name: Enforce formal UI model and exact-tree ownership
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 tools/generate-ui-state-model.py
-          git diff --exit-code -- docs/ui-state-model.generated.json
-          python3 tools/test-ui-state-model.py
-          python3 tools/validate-ui-state-model.py
       - name: Capture terminal fixture environment on failure
         if: failure()
         shell: bash

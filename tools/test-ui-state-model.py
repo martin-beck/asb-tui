@@ -6,6 +6,7 @@ import importlib.util
 import json
 import subprocess
 import unittest
+from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location("validator", "tools/validate-ui-state-model.py")
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -16,6 +17,15 @@ class UiStateModelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.model = json.loads(MODULE.MODEL.read_text(encoding="utf-8"))
+        cls.inventory = json.loads(MODULE.INVENTORY.read_text(encoding="utf-8"))
+
+    def inventory_paths(self, inventory=None):
+        inventory = self.inventory if inventory is None else inventory
+        return [entry["path"] for entry in inventory["ui_modules"] + inventory["exemptions"]]
+
+    def actual_source_paths(self):
+        root = Path(MODULE.ROOT)
+        return sorted(path.relative_to(root).as_posix() for path in (root / "src").glob("*.rs"))
 
     def test_current_model_is_valid(self):
         self.assertEqual(MODULE.validate(self.model), [])
@@ -71,6 +81,50 @@ class UiStateModelTests(unittest.TestCase):
         errors = MODULE.validate(model)
         self.assertTrue(any("duplicate binding" in error for error in errors))
         self.assertTrue(any("parent relationship contains a cycle" in error for error in errors))
+
+    def test_module_inventory_matches_every_source_and_owner(self):
+        self.assertEqual(
+            MODULE.validate_module_inventory(self.inventory, self.actual_source_paths()), []
+        )
+
+    def test_module_addition_deletion_and_rename_fail_closed(self):
+        actual = self.actual_source_paths()
+        missing = actual.copy()
+        missing.remove("src/wizard.rs")
+        errors = MODULE.validate_module_inventory(self.inventory, missing)
+        self.assertTrue(any("stale classification for missing module src/wizard.rs" in error for error in errors))
+        added = actual + ["src/new_screen.rs"]
+        errors = MODULE.validate_module_inventory(self.inventory, added)
+        self.assertIn("module inventory: unclassified source module src/new_screen.rs", errors)
+        renamed = ["src/renamed_screen.rs" if path == "src/wizard.rs" else path for path in actual]
+        errors = MODULE.validate_module_inventory(self.inventory, renamed)
+        self.assertTrue(any("unclassified source module src/renamed_screen.rs" in error for error in errors))
+
+    def test_duplicate_and_widened_exemption_mutations_are_rejected(self):
+        duplicate = copy.deepcopy(self.inventory)
+        duplicate["ui_modules"].append(copy.deepcopy(duplicate["ui_modules"][0]))
+        errors = MODULE.validate_module_inventory(duplicate, self.inventory_paths(duplicate))
+        self.assertTrue(any("duplicate UI path" in error for error in errors))
+        widened = copy.deepcopy(self.inventory)
+        widened["exemptions"][0]["path"] = "../outside.rs"
+        errors = MODULE.validate_module_inventory(widened, self.inventory_paths(widened))
+        self.assertTrue(any("invalid or duplicate exemption path" in error for error in errors))
+
+        weak = copy.deepcopy(self.inventory)
+        weak["exemptions"][0]["reason"] = "no"
+        errors = MODULE.validate_module_inventory(weak, self.inventory_paths(weak))
+        self.assertTrue(any("needs meaningful reason and expiry" in error for error in errors))
+
+        bad_expiry = copy.deepcopy(self.inventory)
+        bad_expiry["exemptions"][0]["expires"] = "not-a-date"
+        errors = MODULE.validate_module_inventory(bad_expiry, self.inventory_paths(bad_expiry))
+        self.assertTrue(any("has invalid expiry" in error for error in errors))
+
+    def test_owner_drift_is_rejected(self):
+        owners = set(MODULE.UI_OWNERS)
+        owners.remove("src/wizard.rs")
+        errors = MODULE.validate_module_inventory(self.inventory, self.inventory_paths(), owners)
+        self.assertIn("module inventory: UI modules and UI_OWNERS differ", errors)
 
 
 if __name__ == "__main__":

@@ -26,5 +26,11 @@ the validator also compares the exact base and head revisions and reports UI fil
 the corresponding model and focused-test update. Model fixtures are deterministic and offline;
 never add provider output, credentials, private paths, or captured prompts.
 
+Adding, renaming, or deleting a UI module also requires updating
+`docs/ui-module-inventory.json`. Every source module must be either an owned UI module or an
+explicit exemption with a meaningful reason and expiry date; exemptions are reviewed and tested
+and cannot hide an unclassified or out-of-tree path. The inventory, UI owners, authored model,
+generated artifact, help catalog, and focused tests must change together for a UI-module change.
+
 Do not run code from public pull requests on persistent self-hosted runners. The self-hosted canary
 is manual, main-only, checkout-free, and contains no repository-controlled execution.

@@ -45,12 +45,28 @@ fn trusted_runner_workflow_is_main_only_and_exact_revision_bound() {
     assert!(hosted.contains("tools/generate-ui-state-model.py"));
     assert!(hosted.contains("tools/test-ui-state-model.py"));
     assert!(hosted.contains("tools/validate-ui-state-model.py --base"));
+    assert!(
+        hosted
+            .find("Enforce formal UI inventory before Rust tests")
+            .unwrap()
+            < hosted
+                .find("Verify formatting, lint, tests, and documentation")
+                .unwrap()
+    );
     for workflow in [&workflow, &hosted] {
         assert!(workflow.contains("python3 tools/validate-compatibility-schemas.py"));
     }
     assert!(workflow.contains("tools/generate-ui-state-model.py"));
     assert!(workflow.contains("tools/test-ui-state-model.py"));
     assert!(workflow.contains("tools/validate-ui-state-model.py"));
+    assert!(
+        workflow
+            .find("Enforce formal UI inventory before Rust tests")
+            .unwrap()
+            < workflow
+                .find("Run complete locked Rust and supply-chain gates")
+                .unwrap()
+    );
 }
 
 #[test]

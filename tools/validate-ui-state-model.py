@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: MIT
 """Fail-closed validation and change-ownership gate for the TUI model."""
 import argparse
+import datetime
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -21,9 +23,13 @@ UI_OWNERS = {
     "src/actions.rs", "src/app.rs", "src/configuration.rs", "src/help.rs",
     "src/landing.rs", "src/live_projection.rs", "src/renderer.rs",
     "src/reports.rs", "src/runtime.rs", "src/selection.rs", "src/shell.rs",
-    "src/terminal.rs", "src/ui.rs", "src/visual.rs", "src/wizard.rs",
+    "src/startup.rs", "src/terminal.rs", "src/ui.rs", "src/visual.rs", "src/wizard.rs",
 }
 MODEL_FILES = {"docs/ui-state-model.json", "docs/ui-state-model.generated.json", "tools/generate-ui-state-model.py", "tools/validate-ui-state-model.py", "tools/test-ui-state-model.py"}
+INVENTORY = ROOT / "docs" / "ui-module-inventory.json"
+INVENTORY_FILE = "docs/ui-module-inventory.json"
+INVENTORY_KINDS = {"state", "interaction", "projection", "rendering", "terminal", "startup"}
+PATH_RE = re.compile(r"^src/[a-z0-9_]+\.rs$")
 
 
 def validate(model):
@@ -181,6 +187,60 @@ def validate_changes(files):
     return errors
 
 
+def validate_module_inventory(inventory, actual_paths, owners=None):
+    """Compare the checked-in UI classification with the exact source tree."""
+    owners = UI_OWNERS if owners is None else set(owners)
+    errors = []
+    if not isinstance(inventory, dict) or inventory.get("schema_version") != 1:
+        return ["module inventory: schema_version must be 1"]
+    ui_entries = inventory.get("ui_modules")
+    exemptions = inventory.get("exemptions")
+    if not isinstance(ui_entries, list) or not ui_entries:
+        errors.append("module inventory: ui_modules must be a non-empty array")
+        ui_entries = []
+    if not isinstance(exemptions, list):
+        errors.append("module inventory: exemptions must be an array")
+        exemptions = []
+    ui_paths, exemption_paths = [], []
+    for entry in ui_entries:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        kind = entry.get("kind") if isinstance(entry, dict) else None
+        if path in ui_paths or not isinstance(path, str) or not PATH_RE.fullmatch(path):
+            errors.append(f"module inventory: invalid or duplicate UI path {path!r}")
+            continue
+        if kind not in INVENTORY_KINDS:
+            errors.append(f"module inventory: unknown kind for {path!r}")
+        ui_paths.append(path)
+    today = datetime.date.today()
+    for entry in exemptions:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        reason = entry.get("reason") if isinstance(entry, dict) else None
+        expires = entry.get("expires") if isinstance(entry, dict) else None
+        if path in exemption_paths or not isinstance(path, str) or not PATH_RE.fullmatch(path):
+            errors.append(f"module inventory: invalid or duplicate exemption path {path!r}")
+            continue
+        if not isinstance(reason, str) or len(reason.split()) < 4 or not isinstance(expires, str):
+            errors.append(f"module inventory: exemption {path!r} needs meaningful reason and expiry")
+        else:
+            try:
+                if datetime.date.fromisoformat(expires) < today:
+                    errors.append(f"module inventory: exemption {path!r} is expired")
+            except ValueError:
+                errors.append(f"module inventory: exemption {path!r} has invalid expiry")
+        exemption_paths.append(path)
+    if set(ui_paths) & set(exemption_paths):
+        errors.append("module inventory: a path cannot be both UI and exempt")
+    actual = set(actual_paths)
+    if any(not isinstance(path, str) or not PATH_RE.fullmatch(path) for path in actual):
+        errors.append("module inventory: actual source path is outside src/*.rs")
+    classified = set(ui_paths) | set(exemption_paths)
+    errors.extend(f"module inventory: unclassified source module {path}" for path in sorted(actual - classified))
+    errors.extend(f"module inventory: stale classification for missing module {path}" for path in sorted(classified - actual))
+    if set(ui_paths) != owners:
+        errors.append("module inventory: UI modules and UI_OWNERS differ")
+    return sorted(errors)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", help="base revision for UI ownership checks")
@@ -192,6 +252,13 @@ def main():
         print(f"UI state model invalid: {error}", file=sys.stderr)
         return 1
     errors = validate(model)
+    try:
+        inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"module inventory invalid: {error}")
+    else:
+        actual_paths = [path.relative_to(ROOT).as_posix() for path in (ROOT / "src").glob("*.rs")]
+        errors.extend(validate_module_inventory(inventory, actual_paths))
     if not GENERATED.exists():
         errors.append("generated model artifact is missing; run tools/generate-ui-state-model.py")
     else:
@@ -203,7 +270,11 @@ def main():
             errors.append(f"generated model artifact is invalid: {error}")
     if args.base:
         try:
-            errors.extend(validate_changes(changed_files(args.base, args.head)))
+            files = changed_files(args.base, args.head)
+            errors.extend(validate_changes(files))
+            source_changes = sorted(path for path in files if path.startswith("src/") and path.endswith(".rs"))
+            if source_changes and INVENTORY_FILE not in files:
+                errors.append("UI module changed without updating module inventory: " + ", ".join(source_changes))
         except (OSError, subprocess.CalledProcessError) as error:
             errors.append(f"cannot inspect changed UI files: {error}")
     if errors:
