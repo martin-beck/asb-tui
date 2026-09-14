@@ -12,6 +12,7 @@ pub mod lifecycle;
 pub mod release_channel;
 pub mod renderer;
 pub mod runtime;
+pub mod shell;
 pub mod system_probe;
 pub mod terminal;
 
@@ -23,7 +24,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {
     pub analysis: bool,
