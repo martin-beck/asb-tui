@@ -242,6 +242,74 @@ mod tests {
         projection
     }
 
+    fn catalog() -> crate::control_codec::MeasurementCatalogPublication {
+        use crate::control_codec::*;
+        MeasurementCatalogPublication {
+            version: CONTROL_MEASUREMENT_CATALOG_V1,
+            freshness: MeasurementCatalogFreshness::ContentAddressed,
+            source: MeasurementCatalogPublicationSource::BuiltInCollectors,
+            catalog: MeasurementCatalog {
+                schema_version: 1,
+                catalog_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .into(),
+                groups: vec![MeasurementGroup {
+                    id: MeasurementGroupId::Latency,
+                    label: "Latency".into(),
+                    description: "timing".into(),
+                }],
+                measurements: vec![MeasurementDefinition {
+                    id: "latency.first_response".into(),
+                    name: "First response".into(),
+                    description: "time until first response".into(),
+                    group: MeasurementGroupId::Latency,
+                    quantity: MeasurementQuantity::Time,
+                    unit: "ns".into(),
+                    aggregation: MeasurementAggregation::Gauge,
+                    scope: MeasurementScope::Attempt,
+                    provenance: MeasurementProvenance {
+                        source: MeasurementSource::AsbRunnerJournal,
+                        qualification: MeasurementQualification::Implemented,
+                    },
+                    source_identity: MeasurementSourceIdentity::ProcfsProcessStat,
+                    resolution_ns: 1,
+                    overhead: MeasurementOverhead {
+                        class: MeasurementOverheadClass::Low,
+                        minimum_interval_ns: 1,
+                        requires_privilege: false,
+                    },
+                    live: MeasurementModeSupport::Supported,
+                    replay: MeasurementModeSupport::Supported,
+                    platforms: vec![MeasurementPlatform {
+                        operating_system: MeasurementOperatingSystem::Linux,
+                        architectures: vec![MeasurementArchitecture::X86_64],
+                        required_features: vec![MeasurementPlatformFeature::Procfs],
+                    }],
+                    evidence_limits: vec![MeasurementEvidenceLimit::CollectorOverheadRecorded],
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn catalog_response_is_projected_only_after_v12_negotiation() {
+        let call = ControlCall::MeasurementCatalog;
+        let req = request(call, 1);
+        let response = response(1, ControlResult::MeasurementCatalog(catalog()));
+        let mut projection = connected_projection();
+        projection
+            .apply(&req, &response, ControlLimits::default())
+            .unwrap();
+        assert_eq!(
+            projection
+                .snapshot()
+                .measurement_catalog
+                .unwrap()
+                .measurements
+                .len(),
+            1
+        );
+    }
+
     #[test]
     fn history_response_becomes_newest_first_snapshot() {
         let call = ControlCall::History(crate::control_codec::PageParams {

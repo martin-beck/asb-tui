@@ -8,10 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use std::{collections::BTreeSet, fmt};
 
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const V1_0: ControlVersion = ControlVersion { major: 1, minor: 0 };
@@ -302,28 +299,173 @@ pub enum MeasurementCatalogPublicationSource {
     BuiltInCollectors,
 }
 
-/// Public group metadata. IDs are kept as strings here because the ASB
-/// protocol's enum is intentionally extensible only at its own boundary.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementGroupId {
+    SystemResources,
+    SchedulingContention,
+    Latency,
+    QualityReliability,
+    Fairness,
+    Cost,
+    Provenance,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementGroup {
-    pub id: String,
+    pub id: MeasurementGroupId,
     pub label: String,
     pub description: String,
 }
 
-/// Selection-facing definition fields plus a bounded retention of the
-/// remaining ASB definition fields. The latter lets this client remain wire
-/// compatible with the full catalog without treating execution metadata as
-/// renderer authority.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementQuantity {
+    Time,
+    Bytes,
+    Count,
+    Ratio,
+    Score,
+    Currency,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementScope {
+    Process,
+    Cgroup,
+    Attempt,
+    Run,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementSource {
+    AsbMetricsProcfs,
+    AsbMetricsCgroupV2,
+    AsbRunnerJournal,
+    IndependentGrader,
+    ProviderUsage,
+    OptionalCsb,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementSourceIdentity {
+    ProcfsProcessStat,
+    ProcfsProcessIo,
+    CgroupV2CpuStat,
+    CgroupV2MemoryCurrent,
+    CgroupV2MemoryPeak,
+    CgroupV2MemoryStat,
+    CgroupV2IoStat,
+    CgroupV2CpuPressure,
+    CgroupV2MemoryPressure,
+    CgroupV2IoPressure,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementQualification {
+    Implemented,
+    Unqualified,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementUnavailableReason {
+    NotQualified,
+    PlatformUnsupported,
+    PermissionRequired,
+    NotApplicable,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MeasurementModeSupport {
+    Supported,
+    Unsupported {
+        reason: MeasurementUnavailableReason,
+    },
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementOperatingSystem {
+    Linux,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementArchitecture {
+    X86_64,
+    Aarch64,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementPlatformFeature {
+    Procfs,
+    CgroupV2,
+}
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementPlatform {
+    pub operating_system: MeasurementOperatingSystem,
+    pub architectures: Vec<MeasurementArchitecture>,
+    pub required_features: Vec<MeasurementPlatformFeature>,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementOverheadClass {
+    Low,
+    Material,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementOverhead {
+    pub class: MeasurementOverheadClass,
+    pub minimum_interval_ns: u64,
+    pub requires_privilege: bool,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementEvidenceLimit {
+    MissingIsUnavailable,
+    NotCausal,
+    RequiresComparableExperiment,
+    CollectorOverheadRecorded,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementAggregation {
+    Gauge,
+    Counter,
+    Distribution,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementReplayMode {
+    Live,
+    Replay,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementProvenance {
+    pub source: MeasurementSource,
+    pub qualification: MeasurementQualification,
+}
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MeasurementDefinition {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub group: String,
-    #[serde(flatten)]
-    pub metadata: BTreeMap<String, Value>,
+    pub group: MeasurementGroupId,
+    pub quantity: MeasurementQuantity,
+    pub unit: String,
+    pub aggregation: MeasurementAggregation,
+    pub scope: MeasurementScope,
+    pub provenance: MeasurementProvenance,
+    pub source_identity: MeasurementSourceIdentity,
+    pub resolution_ns: u64,
+    pub overhead: MeasurementOverhead,
+    pub live: MeasurementModeSupport,
+    pub replay: MeasurementModeSupport,
+    pub platforms: Vec<MeasurementPlatform>,
+    pub evidence_limits: Vec<MeasurementEvidenceLimit>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -356,10 +498,9 @@ impl MeasurementCatalogPublication {
         validate_digest(&self.catalog.catalog_sha256)?;
         let mut groups = BTreeSet::new();
         for group in &self.catalog.groups {
-            validate_catalog_text(&group.id, 128)?;
             validate_catalog_text(&group.label, MAX_PUBLIC_STRING_BYTES)?;
             validate_catalog_text(&group.description, MAX_PUBLIC_STRING_BYTES)?;
-            if !groups.insert(group.id.as_str()) {
+            if !groups.insert(group.id) {
                 return Err(CodecError::InvalidValue("measurement_catalog.groups"));
             }
         }
@@ -368,31 +509,16 @@ impl MeasurementCatalogPublication {
             validate_catalog_id(&definition.id)?;
             validate_catalog_text(&definition.name, MAX_PUBLIC_STRING_BYTES)?;
             validate_catalog_text(&definition.description, MAX_PUBLIC_STRING_BYTES)?;
-            validate_catalog_text(&definition.group, 128)?;
-            if !groups.contains(definition.group.as_str()) || !ids.insert(definition.id.as_str()) {
+            validate_catalog_text(&definition.unit, 32)?;
+            if !groups.contains(&definition.group) || !ids.insert(definition.id.as_str()) {
                 return Err(CodecError::InvalidValue("measurement_catalog.measurements"));
             }
-            const DEFINITION_FIELDS: &[&str] = &[
-                "quantity",
-                "unit",
-                "aggregation",
-                "scope",
-                "provenance",
-                "source_identity",
-                "resolution_ns",
-                "overhead",
-                "live",
-                "replay",
-                "platforms",
-                "evidence_limits",
-            ];
-            for (key, value) in &definition.metadata {
-                if !DEFINITION_FIELDS.contains(&key.as_str()) {
-                    return Err(CodecError::InvalidValue(
-                        "measurement_catalog.measurements.metadata",
-                    ));
-                }
-                validate_json(value)?;
+            if definition.platforms.is_empty()
+                || definition.platforms.len() > 8
+                || definition.evidence_limits.len() > 4
+                || definition.overhead.minimum_interval_ns == 0
+            {
+                return Err(CodecError::InvalidValue("measurement_catalog.measurements"));
             }
         }
         let encoded = serde_json::to_vec(self).map_err(|_| CodecError::Serialization)?;
@@ -915,7 +1041,7 @@ mod tests {
                 catalog_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                     .into(),
                 groups: vec![MeasurementGroup {
-                    id: "latency".into(),
+                    id: MeasurementGroupId::Latency,
                     label: "Latency".into(),
                     description: "timing".into(),
                 }],
@@ -923,10 +1049,30 @@ mod tests {
                     id: "latency.first_response".into(),
                     name: "First response".into(),
                     description: "time until first response".into(),
-                    group: "latency".into(),
-                    metadata: [("quantity".into(), Value::String("time".into()))]
-                        .into_iter()
-                        .collect(),
+                    group: MeasurementGroupId::Latency,
+                    quantity: MeasurementQuantity::Time,
+                    unit: "ns".into(),
+                    aggregation: MeasurementAggregation::Gauge,
+                    scope: MeasurementScope::Attempt,
+                    provenance: MeasurementProvenance {
+                        source: MeasurementSource::AsbRunnerJournal,
+                        qualification: MeasurementQualification::Implemented,
+                    },
+                    source_identity: MeasurementSourceIdentity::ProcfsProcessStat,
+                    resolution_ns: 1,
+                    overhead: MeasurementOverhead {
+                        class: MeasurementOverheadClass::Low,
+                        minimum_interval_ns: 1,
+                        requires_privilege: false,
+                    },
+                    live: MeasurementModeSupport::Supported,
+                    replay: MeasurementModeSupport::Supported,
+                    platforms: vec![MeasurementPlatform {
+                        operating_system: MeasurementOperatingSystem::Linux,
+                        architectures: vec![MeasurementArchitecture::X86_64],
+                        required_features: vec![MeasurementPlatformFeature::Procfs],
+                    }],
+                    evidence_limits: vec![MeasurementEvidenceLimit::CollectorOverheadRecorded],
                 }],
             },
         }
@@ -961,7 +1107,7 @@ mod tests {
     #[test]
     fn measurement_catalog_rejects_unknown_group_and_duplicate_id() {
         let mut publication = catalog();
-        publication.catalog.measurements[0].group = "missing".into();
+        publication.catalog.measurements[0].group = MeasurementGroupId::Cost;
         assert_eq!(
             publication.validate(),
             Err(CodecError::InvalidValue("measurement_catalog.measurements"))
