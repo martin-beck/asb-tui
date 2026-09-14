@@ -5,7 +5,10 @@
 //! This module owns only presentation state. Benchmark execution and credentials remain in
 //! the external ASB control plane.
 
-use crate::terminal::{CapabilityTier, RenderPolicy};
+use crate::{
+    live_projection::{Connection, LiveSnapshot},
+    terminal::{CapabilityTier, RenderPolicy},
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
@@ -40,6 +43,8 @@ pub struct WorkspaceState {
     pub measures: Vec<MeasureRow>,
     pub config_cursor: usize,
     pub report_cursor: usize,
+    /// Last validated snapshot supplied by the authenticated control seam.
+    pub live: Option<LiveSnapshot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -85,11 +90,19 @@ impl Default for WorkspaceState {
             ],
             config_cursor: 0,
             report_cursor: 0,
+            live: None,
         }
     }
 }
 
 impl WorkspaceState {
+    /// Replace presentation data only after it has passed the typed control
+    /// projection. No renderer input can mutate ASB state through this method.
+    pub fn apply_live_snapshot(&mut self, snapshot: LiveSnapshot) {
+        self.live = Some(snapshot);
+        self.report_cursor = 0;
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> UiAction {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return UiAction::Quit;
@@ -276,11 +289,11 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
         chunks[0],
     );
     match state.screen {
-        Screen::Landing => landing(frame, chunks[1], policy),
+        Screen::Landing => landing(frame, chunks[1], state, policy),
         Screen::Measures => measures(frame, chunks[1], state, policy),
         Screen::Configuration => configuration(frame, chunks[1], state, policy),
         Screen::Reports => reports(frame, chunks[1], state, policy),
-        Screen::Help => landing(frame, chunks[1], policy),
+        Screen::Help => landing(frame, chunks[1], state, policy),
     }
     footer(frame, chunks[2], state, policy);
     if state.help {
@@ -288,7 +301,7 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
     }
 }
 
-fn landing(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
+fn landing(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
     let inner = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -297,6 +310,16 @@ fn landing(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
             Constraint::Length(3),
         ])
         .split(area);
+    let connection = state.live.as_ref().map_or(
+        "Connection: waiting for ASB control plane".to_string(),
+        |snapshot| match snapshot.connection {
+            Connection::Negotiated => format!(
+                "Connection: authenticated runner {}",
+                snapshot.runner_instance_id.as_deref().unwrap_or("unknown")
+            ),
+            Connection::Disconnected => "Connection: disconnected".to_string(),
+        },
+    );
     frame.render_widget(
         Paragraph::new("Welcome to ASB")
             .style(
@@ -310,7 +333,7 @@ fn landing(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from("Review benchmark plans, select measures, and compare recent runs."),
-            Line::from("Connection: waiting for ASB control plane"),
+            Line::from(connection),
             Line::from("The runner remains external; this workspace is a safe control surface."),
         ])
         .alignment(Alignment::Center)
@@ -410,12 +433,27 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
 }
 
 fn reports(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
-    let entries = [
-        "Most recent | today | complete",
-        "Previous run | yesterday | complete",
-        "Compare selected runs | Enter opens",
-    ];
-    let items: Vec<ListItem> = entries.iter().map(|x| ListItem::new(*x)).collect();
+    let entries: Vec<String> = state.live.as_ref().map_or_else(
+        || {
+            vec![
+                "No authoritative history loaded".to_string(),
+                "Connect to inspect recent runs".to_string(),
+            ]
+        },
+        |snapshot| {
+            snapshot
+                .runs
+                .iter()
+                .map(|run| {
+                    format!(
+                        "{} | {:?} | revision {}",
+                        run.run_id.0, run.state, run.revision.0
+                    )
+                })
+                .collect()
+        },
+    );
+    let items: Vec<ListItem> = entries.into_iter().map(ListItem::new).collect();
     let mut ls = ListState::default();
     ls.select(Some(state.report_cursor));
     frame.render_stateful_widget(
