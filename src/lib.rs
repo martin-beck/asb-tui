@@ -17,7 +17,6 @@ pub mod control_client;
 pub mod control_codec;
 pub mod control_transport;
 pub mod delegated;
-pub mod formal_model;
 pub mod help;
 pub mod identity_adapter;
 pub mod landing;
