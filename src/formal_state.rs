@@ -106,6 +106,9 @@ impl FormalState {
     }
 
     fn apply_value(&mut self, event: Event) -> Result<(), Error> {
+        if self.route != "wizard" {
+            return Err(Error::NotDocumented("wizard_set_value".into()));
+        }
         let Event::SetWizardValue(value) = event else {
             unreachable!()
         };
@@ -161,6 +164,11 @@ mod tests {
         assert_eq!(
             state.apply(Event::WizardNext),
             Err(Error::NotDocumented("wizard_next".into()))
+        );
+        assert_eq!(state.route(), "landing");
+        assert_eq!(
+            state.apply(Event::SetWizardValue("secret".into())),
+            Err(Error::NotDocumented("wizard_set_value".into()))
         );
         assert_eq!(state.route(), "landing");
     }
