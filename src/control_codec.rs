@@ -477,6 +477,13 @@ pub struct MeasurementCatalog {
     pub measurements: Vec<MeasurementDefinition>,
 }
 
+#[derive(Serialize)]
+struct MeasurementCatalogAddress<'a> {
+    schema_version: u16,
+    groups: &'a [MeasurementGroup],
+    measurements: &'a [MeasurementDefinition],
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementCatalogPublication {
@@ -497,14 +504,20 @@ impl MeasurementCatalogPublication {
         }
         validate_digest(&self.catalog.catalog_sha256)?;
         let mut groups = BTreeSet::new();
+        let mut previous_group = None;
         for group in &self.catalog.groups {
             validate_catalog_text(&group.label, MAX_PUBLIC_STRING_BYTES)?;
             validate_catalog_text(&group.description, MAX_PUBLIC_STRING_BYTES)?;
             if !groups.insert(group.id) {
                 return Err(CodecError::InvalidValue("measurement_catalog.groups"));
             }
+            if previous_group.is_some_and(|previous| previous >= group.id) {
+                return Err(CodecError::InvalidValue("measurement_catalog.groups"));
+            }
+            previous_group = Some(group.id);
         }
         let mut ids = BTreeSet::new();
+        let mut previous_id = None;
         for definition in &self.catalog.measurements {
             validate_catalog_id(&definition.id)?;
             validate_catalog_text(&definition.name, MAX_PUBLIC_STRING_BYTES)?;
@@ -513,6 +526,10 @@ impl MeasurementCatalogPublication {
             if !groups.contains(&definition.group) || !ids.insert(definition.id.as_str()) {
                 return Err(CodecError::InvalidValue("measurement_catalog.measurements"));
             }
+            if previous_id.is_some_and(|previous: &str| previous >= definition.id.as_str()) {
+                return Err(CodecError::InvalidValue("measurement_catalog.measurements"));
+            }
+            previous_id = Some(definition.id.as_str());
             if definition.platforms.is_empty()
                 || definition.platforms.len() > 8
                 || definition.evidence_limits.len() > 4
@@ -521,11 +538,31 @@ impl MeasurementCatalogPublication {
                 return Err(CodecError::InvalidValue("measurement_catalog.measurements"));
             }
         }
+        let computed = self.catalog.computed_digest()?;
+        if computed != self.catalog.catalog_sha256 {
+            return Err(CodecError::InvalidValue("measurement_catalog.digest"));
+        }
         let encoded = serde_json::to_vec(self).map_err(|_| CodecError::Serialization)?;
         if encoded.len() > MAX_MEASUREMENT_CATALOG_WIRE_BYTES {
             return Err(CodecError::FrameTooLarge);
         }
         Ok(())
+    }
+}
+
+impl MeasurementCatalog {
+    /// Compute ASB's canonical catalog digest (domain plus exact serde field
+    /// order, excluding `catalog_sha256`).
+    pub fn computed_digest(&self) -> Result<String, CodecError> {
+        let address = serde_json::to_vec(&MeasurementCatalogAddress {
+            schema_version: self.schema_version,
+            groups: &self.groups,
+            measurements: &self.measurements,
+        })
+        .map_err(|_| CodecError::Serialization)?;
+        let mut input = b"asb-measurement-catalog-v1\0".to_vec();
+        input.extend_from_slice(&address);
+        Ok(crate::sha256::digest_hex(&input))
     }
 }
 
@@ -1032,7 +1069,7 @@ mod tests {
     }
 
     fn catalog() -> MeasurementCatalogPublication {
-        MeasurementCatalogPublication {
+        let mut publication = MeasurementCatalogPublication {
             version: CONTROL_MEASUREMENT_CATALOG_V1,
             freshness: MeasurementCatalogFreshness::ContentAddressed,
             source: MeasurementCatalogPublicationSource::BuiltInCollectors,
@@ -1075,7 +1112,9 @@ mod tests {
                     evidence_limits: vec![MeasurementEvidenceLimit::CollectorOverheadRecorded],
                 }],
             },
-        }
+        };
+        publication.catalog.catalog_sha256 = publication.catalog.computed_digest().unwrap();
+        publication
     }
 
     #[test]
@@ -1121,5 +1160,21 @@ mod tests {
             publication.validate(),
             Err(CodecError::InvalidValue("measurement_catalog.measurements"))
         );
+    }
+
+    #[test]
+    fn asb_catalog_vector_matches_canonical_digest_domain() {
+        // This is the first group and first definition from ASB's checked-in
+        // v1 catalog vector, reduced only to a bounded fixture.
+        let raw = r#"{"schema_version":1,"catalog_sha256":"dd196af95a66cc083a3d3d136adfe8522f7ac0abc653ccb0eceeda263bdeb2f0","groups":[{"id":"system_resources","label":"System resources","description":"CPU, memory, faults, and physical IO attributed to a process or cgroup."}],"measurements":[{"id":"cgroup.cpu.periods","name":"Cgroup CPU periods","description":"A direct bounded Linux kernel counter collected by ASB.","group":"system_resources","quantity":"count","unit":"{event}","aggregation":"counter","scope":"cgroup","provenance":{"source":"asb_metrics_cgroup_v2","qualification":"implemented"},"source_identity":"cgroup_v2_cpu_stat","resolution_ns":0,"overhead":{"class":"low","minimum_interval_ns":1000000,"requires_privilege":false},"live":{"status":"supported"},"replay":{"status":"supported"},"platforms":[{"operating_system":"linux","architectures":["x86_64","aarch64"],"required_features":["cgroup_v2"]}],"evidence_limits":["missing_is_unavailable","requires_comparable_experiment","collector_overhead_recorded"]}]}"#;
+        let catalog: MeasurementCatalog = serde_json::from_str(raw).unwrap();
+        assert_eq!(catalog.computed_digest().unwrap(), catalog.catalog_sha256);
+        let publication = MeasurementCatalogPublication {
+            version: CONTROL_MEASUREMENT_CATALOG_V1,
+            freshness: MeasurementCatalogFreshness::ContentAddressed,
+            source: MeasurementCatalogPublicationSource::BuiltInCollectors,
+            catalog,
+        };
+        publication.validate().unwrap();
     }
 }

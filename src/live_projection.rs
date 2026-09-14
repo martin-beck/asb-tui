@@ -244,14 +244,13 @@ mod tests {
 
     fn catalog() -> crate::control_codec::MeasurementCatalogPublication {
         use crate::control_codec::*;
-        MeasurementCatalogPublication {
+        let mut publication = MeasurementCatalogPublication {
             version: CONTROL_MEASUREMENT_CATALOG_V1,
             freshness: MeasurementCatalogFreshness::ContentAddressed,
             source: MeasurementCatalogPublicationSource::BuiltInCollectors,
             catalog: MeasurementCatalog {
                 schema_version: 1,
-                catalog_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .into(),
+                catalog_sha256: String::new(),
                 groups: vec![MeasurementGroup {
                     id: MeasurementGroupId::Latency,
                     label: "Latency".into(),
@@ -287,7 +286,9 @@ mod tests {
                     evidence_limits: vec![MeasurementEvidenceLimit::CollectorOverheadRecorded],
                 }],
             },
-        }
+        };
+        publication.catalog.catalog_sha256 = publication.catalog.computed_digest().unwrap();
+        publication
     }
 
     #[test]
