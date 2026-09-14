@@ -513,4 +513,69 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn labels_and_backend_gates_cover_every_action_variant() {
+        for action in UiAction::ALL {
+            assert!(!action.id().is_empty());
+            let descriptor = ActionRegistry::search(action.id())
+                .into_iter()
+                .find(|item| item.action == action)
+                .unwrap();
+            assert!(!descriptor.label.is_empty());
+            assert!(!descriptor.description.is_empty());
+        }
+        for chord in [
+            KeyChord::Char('?'),
+            KeyChord::Char('/'),
+            KeyChord::Char('b'),
+            KeyChord::Char('c'),
+            KeyChord::Char('h'),
+            KeyChord::Char('m'),
+            KeyChord::Char('r'),
+            KeyChord::Char('s'),
+            KeyChord::Char('q'),
+            KeyChord::Char('R'),
+            KeyChord::Char('a'),
+            KeyChord::Char('z'),
+            KeyChord::Ctrl('c'),
+            KeyChord::Ctrl('z'),
+            KeyChord::Escape,
+            KeyChord::Enter,
+            KeyChord::Space,
+        ] {
+            assert!(!chord.label().is_empty());
+        }
+        for reason in [
+            ActionDisabledReason::NotNegotiated,
+            ActionDisabledReason::Analysis,
+            ActionDisabledReason::Cancel,
+            ActionDisabledReason::Events,
+            ActionDisabledReason::History,
+            ActionDisabledReason::Launch,
+            ActionDisabledReason::Planning,
+            ActionDisabledReason::WrongContext,
+        ] {
+            assert!(!reason.label().is_empty());
+        }
+        let no_capabilities = Capabilities {
+            analysis: false,
+            artifacts: false,
+            cancel: false,
+            events: false,
+            history: false,
+            launch: false,
+            planning: false,
+            repeat: false,
+        };
+        for route in [
+            Route::RunControl,
+            Route::RecentRuns,
+            Route::Reports,
+            Route::Help,
+        ] {
+            let descriptors = ActionRegistry::for_context(route, Some(&no_capabilities));
+            assert!(descriptors.iter().any(|item| item.disabled.is_some()));
+        }
+    }
 }
