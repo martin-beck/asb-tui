@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 pub const MAX_ID_BYTES: usize = 128;
 pub const MAX_TEXT_BYTES: usize = 256;
 pub const MAX_QUERY_BYTES: usize = 256;
+pub const MAX_MEASUREMENTS: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SelectionError {
@@ -18,6 +19,7 @@ pub enum SelectionError {
     FieldTooLong(&'static str),
     NonPublicText(&'static str),
     DuplicateId,
+    TooManyMeasurements,
     UnknownMeasure,
     UnknownGroup,
 }
@@ -110,8 +112,15 @@ pub struct MeasurementSelection {
 }
 
 impl MeasurementSelection {
-    /// Construct canonical state. Measurements are sorted by group then ID.
-    pub fn new(mut measurements: Vec<Measurement>) -> Result<Self, SelectionError> {
+    /// Construct state from an already-authenticated canonical catalog.
+    ///
+    /// The catalog publication owns ordering; preserving it here is important
+    /// because filtering and serialized selections must not invent a second
+    /// ordering that can disagree with the control contract.
+    pub fn new(measurements: Vec<Measurement>) -> Result<Self, SelectionError> {
+        if measurements.len() > MAX_MEASUREMENTS {
+            return Err(SelectionError::TooManyMeasurements);
+        }
         let mut ids = BTreeSet::new();
         if measurements
             .iter()
@@ -119,11 +128,6 @@ impl MeasurementSelection {
         {
             return Err(SelectionError::DuplicateId);
         }
-        measurements.sort_by(|left, right| {
-            left.group
-                .cmp(&right.group)
-                .then_with(|| left.id.cmp(&right.id))
-        });
         Ok(Self {
             measurements,
             selected: BTreeSet::new(),
@@ -249,8 +253,9 @@ impl MeasurementSelection {
     pub fn visible_groups(&self) -> Vec<GroupSummary> {
         let mut summaries: Vec<GroupSummary> = Vec::new();
         for measurement in self.visible_measurements() {
-            if let Some(summary) = summaries.last_mut()
-                && summary.group == measurement.group
+            if let Some(summary) = summaries
+                .iter_mut()
+                .find(|summary| summary.group == measurement.group)
             {
                 summary.visible_count += 1;
                 summary.selected_count += usize::from(self.is_selected(&measurement.id));
