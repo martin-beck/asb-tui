@@ -138,6 +138,21 @@ pub fn poll_authenticated_workspace(
     Ok(())
 }
 
+/// Run the interactive loop after one authenticated control refresh. The
+/// mutable session is borrowed by the entry seam for the full loop lifetime;
+/// it is never replaced by a second connection and remains available to a
+/// future periodic refresh scheduler.
+pub fn run_interactive_with_control(
+    state: &mut AppState,
+    policy: RenderPolicy,
+    session: &mut AuthenticatedBrokerSession,
+) -> Result<(), RuntimeError> {
+    let mut projection = ControlProjection::default();
+    let mut workspace = ui::WorkspaceState::default();
+    poll_authenticated_workspace(session, &mut projection, &mut workspace)?;
+    run_interactive_loop(state, policy, workspace, Some(session))
+}
+
 trait LifecycleOps {
     fn enter(&mut self) -> io::Result<()>;
     fn restore(&mut self) -> io::Result<()>;
@@ -323,11 +338,19 @@ impl TerminalSession {
 
 /// Run the single-writer interactive draw loop until the operator quits.
 pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(), RuntimeError> {
+    run_interactive_loop(state, policy, ui::WorkspaceState::default(), None)
+}
+
+fn run_interactive_loop(
+    state: &mut AppState,
+    policy: RenderPolicy,
+    mut workspace: ui::WorkspaceState,
+    _control: Option<&mut AuthenticatedBrokerSession>,
+) -> Result<(), RuntimeError> {
     let mut signals = Signals::new([SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGCONT])?;
     let mut session = TerminalSession::enter(policy)?;
     let backend = BoundedBackend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
-    let mut workspace = ui::WorkspaceState::default();
     while !state.should_quit() {
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
         terminal.draw(|frame| ui::render(frame, &workspace, policy))?;
