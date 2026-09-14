@@ -20,7 +20,7 @@ UI_OWNERS = {
     # standalone UI surface. Backend protocol and lifecycle modules are
     # intentionally excluded to avoid requiring model churn for unrelated
     # implementation changes.
-    "src/actions.rs", "src/app.rs", "src/configuration.rs", "src/help.rs",
+    "src/actions.rs", "src/app.rs", "src/configuration.rs", "src/formal_state.rs", "src/help.rs",
     "src/landing.rs", "src/live_projection.rs", "src/renderer.rs",
     "src/reports.rs", "src/runtime.rs", "src/selection.rs", "src/shell.rs",
     "src/startup.rs", "src/terminal.rs", "src/ui.rs", "src/visual.rs", "src/wizard.rs",

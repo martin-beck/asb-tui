@@ -66,6 +66,7 @@ class UiStateModelTests(unittest.TestCase):
         self.assertEqual(MODULE.canonical(generated), MODULE.canonical(self.model))
 
     def test_change_ownership_requires_model_and_focused_tests(self):
+        self.assertTrue({"src/formal_state.rs", "src/startup.rs", "src/wizard.rs"}.issubset(MODULE.UI_OWNERS))
         for owner in MODULE.UI_OWNERS:
             errors = MODULE.validate_changes([owner])
             self.assertEqual(len(errors), 2, owner)
