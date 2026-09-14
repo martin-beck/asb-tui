@@ -12,6 +12,7 @@ pub mod compatibility;
 pub mod configuration;
 pub mod control_client;
 pub mod control_codec;
+pub mod control_transport;
 pub mod delegated;
 pub mod identity_adapter;
 pub mod landing;
