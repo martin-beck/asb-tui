@@ -11,6 +11,7 @@ pub mod compatibility;
 pub mod control_client;
 pub mod control_codec;
 pub mod delegated;
+pub mod identity_adapter;
 pub mod lifecycle;
 pub mod release_channel;
 pub mod renderer;
