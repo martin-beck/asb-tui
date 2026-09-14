@@ -56,10 +56,11 @@ class UiStateModelTests(unittest.TestCase):
         self.assertEqual(MODULE.canonical(generated), MODULE.canonical(self.model))
 
     def test_change_ownership_requires_model_and_focused_tests(self):
-        errors = MODULE.validate_changes(["src/ui.rs"])
-        self.assertEqual(len(errors), 2)
-        self.assertTrue(any("formal model update" in error for error in errors))
-        self.assertTrue(any("focused formal-model test" in error for error in errors))
+        for owner in MODULE.UI_OWNERS:
+            errors = MODULE.validate_changes([owner])
+            self.assertEqual(len(errors), 2, owner)
+            self.assertTrue(any("formal model update" in error for error in errors), owner)
+            self.assertTrue(any("focused formal-model test" in error for error in errors), owner)
         self.assertEqual(MODULE.validate_changes(["src/ui.rs", "docs/ui-state-model.json", "tests/ui.rs"]), [])
 
     def test_binding_and_parent_cycles_are_rejected(self):
