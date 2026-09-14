@@ -21,7 +21,7 @@ UI_OWNERS = {
     "src/actions.rs", "src/app.rs", "src/configuration.rs", "src/help.rs",
     "src/landing.rs", "src/live_projection.rs", "src/renderer.rs",
     "src/reports.rs", "src/runtime.rs", "src/selection.rs", "src/shell.rs",
-    "src/terminal.rs", "src/ui.rs", "src/visual.rs",
+    "src/terminal.rs", "src/ui.rs", "src/visual.rs", "src/wizard.rs",
 }
 MODEL_FILES = {"docs/ui-state-model.json", "docs/ui-state-model.generated.json", "tools/generate-ui-state-model.py", "tools/validate-ui-state-model.py", "tools/test-ui-state-model.py"}
 

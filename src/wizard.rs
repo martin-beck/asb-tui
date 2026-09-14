@@ -5,6 +5,127 @@
 //! This module validates local draft input and emits contextual events only;
 //! it performs no provider, credential, filesystem, or runner effects.
 
+use crate::terminal::RenderPolicy;
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StartupRoute {
+    Wizard,
+    Landing,
+}
+
+#[must_use]
+pub fn startup_route(asb_setup_ready: bool) -> StartupRoute {
+    if asb_setup_ready {
+        StartupRoute::Landing
+    } else {
+        StartupRoute::Wizard
+    }
+}
+
+#[must_use]
+pub const fn element_id(step: Step) -> &'static str {
+    match step {
+        Step::Agent => "wizard.agent",
+        Step::Provider => "wizard.provider",
+        Step::Model => "wizard.model",
+        Step::Configuration => "wizard.configuration",
+        Step::Authentication => "wizard.authentication",
+        Step::Recording => "wizard.recording",
+        Step::Replay => "wizard.replay",
+        Step::Review => "wizard.review",
+    }
+}
+
+#[must_use]
+pub fn plain_text(wizard: &Wizard) -> String {
+    format!(
+        "ASB setup wizard\nstep: {}\nfield: {}\ncontrols: Enter next | Esc back | q cancel\n",
+        step_title(wizard.step()),
+        element_id(wizard.step())
+    )
+}
+
+pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
+    let area = frame.area();
+    let title_style = Style::default().fg(if policy.unicode {
+        Color::Cyan
+    } else {
+        Color::White
+    });
+    if area.width < 30 || area.height < 8 {
+        frame.render_widget(Paragraph::new(plain_text(wizard)).style(title_style), area);
+        return;
+    }
+    let regions = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("ASB", title_style),
+            Span::raw(" setup wizard"),
+        ]))
+        .block(Block::default().borders(Borders::ALL).title(" Setup ")),
+        regions[0],
+    );
+    let body = vec![
+        Line::from(Span::styled(
+            format!("Step: {}", step_title(wizard.step())),
+            title_style,
+        )),
+        Line::from(step_prompt(wizard.step())),
+        Line::from(format!("Element: {}", element_id(wizard.step()))),
+    ];
+    frame.render_widget(
+        Paragraph::new(body).wrap(Wrap { trim: true }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Current step "),
+        ),
+        regions[1],
+    );
+    frame.render_widget(
+        Paragraph::new("Enter next | Esc back | ? help | q cancel").style(title_style),
+        regions[2],
+    );
+}
+
+const fn step_title(step: Step) -> &'static str {
+    match step {
+        Step::Agent => "Agent",
+        Step::Provider => "Provider",
+        Step::Model => "Model",
+        Step::Configuration => "Configuration",
+        Step::Authentication => "Authentication",
+        Step::Recording => "Recording",
+        Step::Replay => "Offline replay",
+        Step::Review => "Review",
+    }
+}
+const fn step_prompt(step: Step) -> &'static str {
+    match step {
+        Step::Agent => "Choose the agent used for this benchmark.",
+        Step::Provider => "Choose the model provider.",
+        Step::Model => "Choose the provider model.",
+        Step::Configuration => "Review benchmark configuration defaults.",
+        Step::Authentication => "Select an existing authentication reference.",
+        Step::Recording => "Choose whether to record benchmark activity.",
+        Step::Replay => "Choose the offline replay policy.",
+        Step::Review => "Review all choices before continuing.",
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Step {
     Agent,
