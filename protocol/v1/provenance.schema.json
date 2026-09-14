@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/martin-beck/asb-tui/protocol/v1/provenance.schema.json",
+  "title": "asb-tui release provenance v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release", "source_commit", "source_tree", "workflow", "artifacts"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "release": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "workflow": {
+      "type": "object", "additionalProperties": false, "required": ["name"],
+      "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}}
+    },
+    "artifacts": {
+      "type": "array", "minItems": 4, "maxItems": 4, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "size", "sha256"],
+        "properties": {
+          "name": {"type": "string", "enum": ["asb-tui", "source", "licenses", "sbom", "provenance"]},
+          "size": {"type": "integer", "minimum": 1, "maximum": 268435456},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

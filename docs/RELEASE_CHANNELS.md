@@ -47,6 +47,18 @@ The release page must keep the source archive, executable, license report, SPDX 
 statement, and signed manifest together at immutable versioned URLs. CI artifacts are temporary
 evidence and are never the release channel.
 
+### Release-candidate builder
+
+`tools/build-release.py` produces a deterministic, local release candidate for review. It builds
+the executable with `ASB_TUI_SOURCE_COMMIT` and `ASB_TUI_SOURCE_TREE`, and emits the five required
+artifact files (`asb-tui`, `source.tar.gz`, `licenses.json`, `sbom.spdx.json`, and
+`provenance.json`) plus `manifest.json`. Component identities and digests are mandatory inputs;
+the source archive has normalized ownership and timestamps. The command never edits
+`release/channel-status.json`, creates a tag, or publishes a release. A release signer may create
+the detached `asb-tui-bundle-v1` signature only as a separately reviewed step. Candidate output is
+not installable evidence until the hosted, trusted, independent-download, and clean-machine gates
+listed above have passed.
+
 ## Rollback and cleanup
 
 Promotion never overwrites a prior version. Installation is content-addressed and activation is an
