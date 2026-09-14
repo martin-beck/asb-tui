@@ -553,6 +553,7 @@ fn muted(policy: RenderPolicy) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control_codec::{AttemptId, PublicRunState, Revision, RunId, RunSummary};
     use crossterm::event::KeyEventKind;
     use ratatui::{Terminal, backend::TestBackend};
     fn key(code: KeyCode) -> KeyEvent {
@@ -611,5 +612,102 @@ mod tests {
             .collect::<String>();
         assert!(measures_text.contains("Space item"));
         assert!(measures_text.contains("g group"));
+    }
+
+    #[test]
+    fn renders_every_workspace_route_and_terminal_fallback() {
+        let snapshot = LiveSnapshot {
+            connection: Connection::Negotiated,
+            runner_instance_id: Some("runner-test".into()),
+            latest_revision: Some(Revision(7)),
+            capabilities: None,
+            measurement_catalog: None,
+            runs: vec![RunSummary {
+                run_id: RunId("run-7".into()),
+                attempt_id: AttemptId("attempt-7".into()),
+                state: PublicRunState::Completed,
+                created_revision: Revision(7),
+                revision: Revision(7),
+                plan_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .into(),
+            }],
+        };
+        let mut state = WorkspaceState::default();
+        state.apply_live_snapshot(snapshot);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        for screen in [
+            Screen::Landing,
+            Screen::Measures,
+            Screen::Configuration,
+            Screen::Reports,
+            Screen::Help,
+        ] {
+            state.screen = screen;
+            terminal
+                .draw(|frame| render(frame, &state, policy()))
+                .unwrap();
+        }
+        state.help = true;
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        state.help = false;
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    &state,
+                    RenderPolicy {
+                        tier: CapabilityTier::Plain,
+                        unicode: false,
+                        ..policy()
+                    },
+                )
+            })
+            .unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    &state,
+                    RenderPolicy {
+                        tier: CapabilityTier::Plain,
+                        ..policy()
+                    },
+                )
+            })
+            .unwrap();
+        state.screen = Screen::Configuration;
+        state.handle_key(key(KeyCode::Down));
+        state.screen = Screen::Reports;
+        state.handle_key(key(KeyCode::Down));
+        state.screen = Screen::Landing;
+        state.handle_key(key(KeyCode::Left));
+        assert_eq!(state.screen, Screen::Reports);
+    }
+
+    #[test]
+    fn key_handling_covers_help_navigation_and_search_edges() {
+        let mut state = WorkspaceState::default();
+        assert_eq!(state.handle_key(key(KeyCode::Char('h'))), UiAction::None);
+        assert!(state.help);
+        state.handle_key(key(KeyCode::Char('h')));
+        assert!(!state.help);
+        state.screen = Screen::Measures;
+        state.handle_key(key(KeyCode::Char('/')));
+        state.handle_key(key(KeyCode::Char('e')));
+        state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Char(' ')));
+        state.handle_key(key(KeyCode::Char('g')));
+        state.handle_key(key(KeyCode::Char('1')));
+        state.handle_key(key(KeyCode::Char('3')));
+        state.handle_key(key(KeyCode::Char('4')));
+        state.handle_key(key(KeyCode::Tab));
+        state.handle_key(key(KeyCode::BackTab));
+        assert_eq!(state.handle_key(key(KeyCode::Char('q'))), UiAction::Quit);
+        assert_eq!(
+            state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)),
+            UiAction::Quit
+        );
     }
 }

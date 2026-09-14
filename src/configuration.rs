@@ -582,3 +582,156 @@ pub fn decode_bounded<T: DeserializeOwned>(input: &str) -> Result<T, ConfigError
     }
     serde_json::from_str(input).map_err(|error| ConfigError::Invalid(error.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_dir() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("asb-tui-configuration-{nonce}"));
+        fs::create_dir(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn configuration_round_trip_and_validation_are_bounded() {
+        let config = Configuration::default();
+        let text = config.to_json().unwrap();
+        assert_eq!(Configuration::from_json(&text).unwrap(), config);
+        assert_eq!(decode_bounded::<Configuration>(&text).unwrap(), config);
+        let mut invalid = config.clone();
+        invalid.schema_version += 1;
+        assert_eq!(invalid.validate(), Err(ConfigError::UnsupportedSchema));
+        invalid = config.clone();
+        invalid.frontend.refresh_interval_ms = 1;
+        assert!(matches!(invalid.validate(), Err(ConfigError::Invalid(_))));
+        invalid = config.clone();
+        invalid.benchmark.repetitions = 0;
+        assert!(matches!(invalid.validate(), Err(ConfigError::Invalid(_))));
+        assert!(matches!(
+            Configuration::from_json("{\"token\":\"x\"}"),
+            Err(ConfigError::SecretInput)
+        ));
+        assert!(matches!(
+            Configuration::from_json(&"[".repeat(MAX_NESTING_DEPTH + 1)),
+            Err(ConfigError::Invalid(_))
+        ));
+        assert!(matches!(
+            decode_bounded::<Configuration>(&"x".repeat(MAX_FILE_BYTES + 1)),
+            Err(ConfigError::TooLarge)
+        ));
+    }
+
+    #[test]
+    fn draft_edits_reset_and_capability_availability_are_explicit() {
+        let mut draft = ConfigurationDraft::new(Configuration::default()).unwrap();
+        draft
+            .edit(|config| config.frontend.show_key_hints = false)
+            .unwrap();
+        assert!(draft.is_dirty());
+        draft.set_query("theme").unwrap();
+        assert_eq!(draft.visible_settings().len(), 1);
+        assert!(draft.set_query("\u{7f}").is_err());
+        draft.focus(Some("frontend.show_key_hints"));
+        draft.reset_focused().unwrap();
+        draft.reset_section("Appearance").unwrap();
+        draft.reset_section("Navigation").unwrap();
+        draft.reset_section("Behaviour").unwrap();
+        draft.reset_section("Benchmark").unwrap();
+        assert!(draft.reset_section("unknown").is_err());
+        assert!(draft.reset_all(false).is_err());
+        draft.reset_all(true).unwrap();
+        draft.cancel();
+        draft.apply().unwrap();
+        let history = SettingDescriptor {
+            capability: SettingCapability::History,
+            ..SETTING_DESCRIPTORS[0]
+        };
+        let events = SettingDescriptor {
+            capability: SettingCapability::Events,
+            ..SETTING_DESCRIPTORS[0]
+        };
+        for (setting, available) in [
+            (SETTING_DESCRIPTORS[0], true),
+            (history, false),
+            (events, false),
+        ] {
+            assert_eq!(
+                capability_availability(&setting, false, false, false).available,
+                available
+            );
+        }
+        assert!(capability_availability(&history, false, true, false).available);
+        assert!(capability_availability(&events, false, false, true).available);
+        for descriptor in SETTING_DESCRIPTORS {
+            draft.focus(Some(descriptor.id));
+            draft.reset_focused().unwrap();
+        }
+        draft.focus(None);
+        assert!(draft.reset_focused().is_err());
+    }
+
+    #[test]
+    fn store_uses_private_atomic_files_and_default_fallback() {
+        let directory = temp_dir();
+        let path = directory.join("config.json");
+        let store = ConfigurationStore::new(&path);
+        assert_eq!(store.path(), path.as_path());
+        assert_eq!(store.load_or_default().unwrap(), Configuration::default());
+        store.save(&Configuration::default()).unwrap();
+        assert_eq!(store.load().unwrap(), Configuration::default());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let bad = directory.join("directory");
+        fs::create_dir(&bad).unwrap();
+        assert!(matches!(
+            ConfigurationStore::new(&bad).load(),
+            Err(ConfigError::NotRegularFile)
+        ));
+        let malformed = directory.join("malformed.json");
+        fs::write(&malformed, "{}\n").unwrap();
+        assert!(matches!(
+            ConfigurationStore::new(&malformed).load(),
+            Err(ConfigError::Invalid(_))
+        ));
+        let missing_parent = directory.join("missing/config.json");
+        assert!(matches!(
+            ConfigurationStore::new(&missing_parent).save(&Configuration::default()),
+            Err(ConfigError::Io(_))
+        ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let link = directory.join("link.json");
+            symlink(&path, &link).unwrap();
+            assert!(matches!(
+                ConfigurationStore::new(&link).load(),
+                Err(ConfigError::SymlinkRefused)
+            ));
+            assert!(matches!(
+                ConfigurationStore::new(&link).save(&Configuration::default()),
+                Err(ConfigError::SymlinkRefused)
+            ));
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
