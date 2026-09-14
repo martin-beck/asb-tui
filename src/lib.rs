@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod broker_adoption;
 pub mod bundle;
 pub mod compatibility;
 pub mod control_client;
