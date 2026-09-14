@@ -9,9 +9,9 @@ pub mod app;
 pub mod broker_adoption;
 pub mod bundle;
 pub mod compatibility;
+pub mod configuration;
 pub mod control_client;
 pub mod control_codec;
-pub mod configuration;
 pub mod delegated;
 pub mod identity_adapter;
 pub mod landing;
@@ -20,13 +20,12 @@ pub mod release_channel;
 pub mod renderer;
 pub mod reports;
 pub mod runtime;
-pub mod shell;
 pub mod selection;
 pub mod shell;
 pub mod system_probe;
 pub mod terminal;
-pub mod visual;
 pub mod ui;
+pub mod visual;
 
 use serde::Deserialize;
 use std::{
