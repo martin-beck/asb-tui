@@ -4,6 +4,7 @@
 
 use asb_tui::{
     app::AppState,
+    broker_adoption::{receive_from_stdin, validate_channel_shape},
     compatibility::evaluate,
     delegated::execute_input,
     lifecycle::{local_self_test_response, run_self_test_supervisor},
@@ -28,6 +29,9 @@ fn main() -> ExitCode {
         } else {
             126
         });
+    }
+    if arguments == ["run", "--broker"] {
+        return launch_broker_entry();
     }
     if arguments.is_empty() || arguments == ["run"] {
         return launch();
@@ -99,7 +103,34 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: asb-tui [run] | (doctor|compatibility) --format json | doctor --terminal");
+    eprintln!(
+        "usage: asb-tui [run|run --broker] | (doctor|compatibility) --format json | doctor --terminal"
+    );
+    ExitCode::from(2)
+}
+
+/// Consume the broker's inherited fd-0 handoff without entering the UI.
+///
+/// The received channel is intentionally not treated as authenticated merely
+/// because it arrived over SCM_RIGHTS: the typed generation/identity
+/// negotiation still has to be implemented by the control client. Keeping
+/// this path fail-closed also ensures lifecycle JSON remains exclusively on
+/// `lifecycle --format json` and can never be confused with broker traffic.
+fn launch_broker_entry() -> ExitCode {
+    let received = match receive_from_stdin() {
+        Ok(received) => received,
+        Err(_) => {
+            eprintln!("broker channel adoption failed");
+            return ExitCode::from(2);
+        }
+    };
+    if validate_channel_shape(received.channel()).is_err() {
+        eprintln!("broker channel adoption failed");
+        return ExitCode::from(2);
+    }
+    // Do not render or consume protocol bytes until the authenticated
+    // generation-bound handshake is wired to the live projection seam.
+    eprintln!("broker control handshake unavailable");
     ExitCode::from(2)
 }
 
