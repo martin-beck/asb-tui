@@ -77,6 +77,22 @@ jobs:
           cargo deny --locked check
           cargo audit --deny warnings
           tools/run-coverage-clean.sh
+      - name: Capture terminal fixture environment on failure
+        if: failure()
+        shell: bash
+        run: |
+          set -u
+          echo "uid=$(id -u) gid=$(id -g)"
+          echo "tmux=$(/usr/bin/tmux -V 2>&1 || true)"
+          echo "screen=$(/usr/bin/screen --version 2>&1 | head -1 || true)"
+          stat -c '%n type=%F mode=%a uid=%u gid=%g' /dev/ptmx /dev/pts 2>&1 || true
+          scratch=$(mktemp -d)
+          socket="$scratch/socket"
+          /usr/bin/tmux -f /dev/null -S "$socket" new-session -P -F '#{window_id}' -d -s asb-fixture-diagnostic -- sleep 2
+          echo "tmux_create_rc=$? socket=$socket"
+          stat -c '%n type=%F mode=%a uid=%u gid=%g' "$socket" 2>&1 || true
+          /usr/bin/tmux -f /dev/null -S "$socket" list-sessions 2>&1 || true
+          pgrep -a tmux 2>&1 || true
       - name: Run schema, shell, workflow, provenance, and privacy gates
         shell: bash
         run: |
