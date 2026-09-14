@@ -8,6 +8,7 @@ pub mod app;
 pub mod bundle;
 pub mod compatibility;
 pub mod control_client;
+pub mod control_codec;
 pub mod delegated;
 pub mod lifecycle;
 pub mod release_channel;
