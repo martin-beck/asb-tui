@@ -9,7 +9,6 @@ import argparse
 import hashlib
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 ARTIFACTS = {
@@ -19,6 +18,8 @@ ARTIFACTS = {
     "sbom": "sbom.spdx.json",
     "provenance": "provenance.json",
 }
+MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_PROVENANCE_BYTES = 1024 * 1024
 
 
 def fail(message: str) -> "NoReturn":
@@ -34,10 +35,14 @@ def digest(path: Path) -> str:
 
 
 def verify(bundle: Path, allowed_signers: Path, identity: str, namespace: str) -> dict[str, object]:
+    if not bundle.is_dir() or not allowed_signers.is_file():
+        fail("bundle directory and allowed-signers file are required")
     manifest_path = bundle / "manifest.json"
     signature_path = bundle / "manifest.json.sig"
     if not manifest_path.is_file() or not signature_path.is_file():
         fail("manifest and detached signature are required")
+    if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
+        fail("manifest exceeds size limit")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -49,7 +54,9 @@ def verify(bundle: Path, allowed_signers: Path, identity: str, namespace: str) -
         fail("manifest is missing required fields")
     if not isinstance(manifest["artifacts"], list) or len(manifest["artifacts"]) != 5:
         fail("manifest must contain exactly five artifacts")
-    names = {entry.get("name") for entry in manifest["artifacts"] if isinstance(entry, dict)}
+    if any(not isinstance(entry, dict) for entry in manifest["artifacts"]):
+        fail("artifact entry is not an object")
+    names = {entry["name"] for entry in manifest["artifacts"] if isinstance(entry.get("name"), str)}
     if names != set(ARTIFACTS):
         fail("manifest artifact names are not the closed required set")
     try:
@@ -65,6 +72,8 @@ def verify(bundle: Path, allowed_signers: Path, identity: str, namespace: str) -
         if not isinstance(entry, dict):
             fail("artifact entry is not an object")
         name = entry.get("name")
+        if not isinstance(name, str) or name not in ARTIFACTS:
+            fail("artifact name is invalid")
         path = bundle / ARTIFACTS.get(name, "")
         if not path.is_file():
             fail(f"missing artifact: {name}")
@@ -73,10 +82,14 @@ def verify(bundle: Path, allowed_signers: Path, identity: str, namespace: str) -
         if entry.get("size") != actual_size or entry.get("sha256") != actual_digest:
             fail(f"artifact digest or size mismatch: {name}")
     provenance = bundle / ARTIFACTS["provenance"]
+    if provenance.stat().st_size > MAX_PROVENANCE_BYTES:
+        fail("provenance exceeds size limit")
     try:
         provenance_doc = json.loads(provenance.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         fail(f"invalid provenance: {error}")
+    if not isinstance(provenance_doc, dict):
+        fail("provenance is not an object")
     if provenance_doc.get("source_commit") != manifest["source_commit"] or provenance_doc.get("source_tree") != manifest["source_tree"]:
         fail("provenance identity does not match manifest")
     return manifest
