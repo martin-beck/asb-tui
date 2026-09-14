@@ -20,6 +20,7 @@ pub mod release_channel;
 pub mod renderer;
 pub mod reports;
 pub mod runtime;
+pub mod shell;
 pub mod selection;
 pub mod shell;
 pub mod system_probe;
