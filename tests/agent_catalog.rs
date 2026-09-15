@@ -10,7 +10,7 @@ fn valid() -> String {
     serde_json::json!({
         "jsonrpc":"2.0", "id":7,
         "result":{"kind":"operation","value":{"request_sha256":"f".repeat(64),"result":{"kind":"agent_catalog","value":{
-            "runner_instance_id":"runner-1", "generation":3, "catalog_sha256":"e".repeat(64),
+            "runner_instance_id":"runner-1", "generation":3, "catalog_sha256":"e24007b09d9f6b112269689a535ba00968300c9653d71e349f37835d0d8c5e92",
             "target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
             "agents":[{"agent_id":"agent-a","target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
               "package":{"package_id":"agent-package","version":"1.2.3","sha256":"a".repeat(64),"signature_sha256":"b".repeat(64)},
@@ -33,7 +33,10 @@ fn consumes_the_checked_in_asb_v14_fixture() {
         "fixtures/asb-v1.4-agent-catalog-response.json"
     ))
     .unwrap();
-    assert_eq!(catalog.catalog_sha256, "e".repeat(64));
+    assert_eq!(
+        catalog.catalog_sha256,
+        "e24007b09d9f6b112269689a535ba00968300c9653d71e349f37835d0d8c5e92"
+    );
     assert_eq!(catalog.target.libc, "glibc");
 }
 
@@ -53,7 +56,7 @@ fn rejects_unsorted_duplicate_incomplete_and_wrong_target_catalogs() {
     let duplicate = valid().replace("\"agent-a\"", "\"agent-b\",\"agent_id\":\"agent-a\"");
     assert!(parse_agent_catalog_response(&duplicate).is_err());
     let missing = valid().replace(
-        "\"catalog_sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",",
+        "\"catalog_sha256\":\"e24007b09d9f6b112269689a535ba00968300c9653d71e349f37835d0d8c5e92\",",
         "",
     );
     assert!(parse_agent_catalog_response(&missing).is_err());
@@ -137,6 +140,7 @@ fn catalog_validation_rejects_bounds_and_noncanonical_metadata() {
         agents: vec![entry("agent")],
         refreshed: true,
     };
+    catalog.catalog_sha256 = catalog.computed_digest().unwrap();
     // Direct validation exercises the public boundary independently of the
     // JSON decoder and keeps unavailable catalog entries representable.
     assert!(catalog.validate().is_ok());
@@ -165,6 +169,46 @@ fn catalog_decoder_rejects_envelope_digest_and_empty_catalog() {
     let mut empty: serde_json::Value = serde_json::from_str(&valid()).unwrap();
     empty["result"]["value"]["result"]["value"]["agents"] = serde_json::json!([]);
     assert!(parse_agent_catalog_response(&empty.to_string()).is_err());
+}
+
+#[test]
+fn catalog_digest_matches_asb_vector_and_rejects_content_tampering() {
+    let catalog = parse_agent_catalog_response(&valid()).unwrap();
+    assert_eq!(catalog.computed_digest().unwrap(), catalog.catalog_sha256);
+    assert_eq!(
+        catalog.catalog_sha256,
+        "e24007b09d9f6b112269689a535ba00968300c9653d71e349f37835d0d8c5e92"
+    );
+
+    let mut tampered: serde_json::Value = serde_json::from_str(&valid()).unwrap();
+    tampered["result"]["value"]["result"]["value"]["generation"] = serde_json::Value::from(4);
+    assert!(parse_agent_catalog_response(&tampered.to_string()).is_err());
+}
+
+#[test]
+fn catalog_digest_is_independent_of_object_member_order_but_not_arrays() {
+    let mut value: serde_json::Value = serde_json::from_str(&valid()).unwrap();
+    let catalog = parse_agent_catalog_response(&valid()).unwrap();
+    let reordered = serde_json::json!({
+        "target": value["result"]["value"]["result"]["value"]["target"].clone(),
+        "refreshed": false,
+        "agents": value["result"]["value"]["result"]["value"]["agents"].clone(),
+        "generation": 3,
+        "runner_instance_id": "runner-1",
+        "catalog_sha256": catalog.catalog_sha256,
+    });
+    value["result"]["value"]["result"]["value"] = reordered;
+    assert_eq!(
+        parse_agent_catalog_response(&value.to_string())
+            .unwrap()
+            .generation,
+        3
+    );
+
+    let agents = &mut value["result"]["value"]["result"]["value"]["agents"];
+    let entry = agents[0].clone();
+    agents[0] = serde_json::json!({"agent_id":"agent-b", "target":entry["target"].clone(), "package":entry["package"].clone(), "provenance":entry["provenance"].clone(), "capabilities":entry["capabilities"].clone(), "availability":entry["availability"].clone()});
+    assert!(parse_agent_catalog_response(&value.to_string()).is_err());
 }
 
 #[test]

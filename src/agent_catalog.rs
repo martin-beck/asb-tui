@@ -4,6 +4,7 @@
 //! Renderer-neutral adapter for ASB control protocol v1.4 agent catalogs.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 const MAX_CATALOG_AGENTS: usize = 32;
 const MAX_CAPABILITIES: usize = 32;
@@ -124,6 +125,48 @@ impl AgentCatalog {
     pub fn validate(&self) -> Result<(), String> {
         validate_catalog(self.clone()).map(|_| ())
     }
+
+    /// Return the canonical v1.4 bytes used for `catalog_sha256`.
+    ///
+    /// The digest field itself is excluded; every other value is retained,
+    /// arrays keep their protocol order, and object members are recursively
+    /// ordered by their UTF-8 key bytes.  Callers must validate the catalog
+    /// before using these bytes.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut value = serde_json::to_value(self).map_err(|_| "cannot serialize catalog")?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| "catalog is not an object".to_string())?;
+        object.remove("catalog_sha256");
+        let value = canonical_value(value)?;
+        serde_json::to_vec(&value).map_err(|_| "cannot serialize canonical catalog".into())
+    }
+
+    /// Compute the canonical content identity independently of ASB internals.
+    pub fn computed_digest(&self) -> Result<String, String> {
+        let bytes = self.canonical_bytes()?;
+        Ok(crate::sha256::digest_hex(&bytes))
+    }
+}
+
+fn canonical_value(value: Value) -> Result<Value, String> {
+    match value {
+        Value::Object(object) => {
+            let mut ordered = Map::new();
+            for (key, value) in object {
+                ordered.insert(key, canonical_value(value)?);
+            }
+            // serde_json::Map is sorted when its `preserve_order` feature is
+            // disabled, which is the pinned configuration of this crate.
+            Ok(Value::Object(ordered))
+        }
+        Value::Array(values) => values
+            .into_iter()
+            .map(canonical_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        scalar => Ok(scalar),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -211,6 +254,10 @@ fn validate_catalog(catalog: AgentCatalog) -> Result<AgentCatalog, String> {
                 return Err("duplicate agent capability".into());
             }
         }
+    }
+    let computed = catalog.computed_digest()?;
+    if computed != catalog.catalog_sha256 {
+        return Err("agent catalog digest does not match content".into());
     }
     Ok(catalog)
 }
