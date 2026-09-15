@@ -18,6 +18,7 @@
     {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace catalog projection, keyboard wizard editing, contextual help, and completion coordination"},
     {"path":"src/visual.rs","kind":"rendering"},
     {"path":"src/wizard.rs","kind":"state"}
+    ,{"path":"src/wizard_catalog.rs","kind":"state","responsibility":"Bounded renderer-neutral agent, provider, and model choices for the setup wizard"}
   ],
   "exemptions": [
     {"path":"src/agent_catalog.rs","reason":"Agent catalog protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},

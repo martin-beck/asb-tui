@@ -36,6 +36,7 @@ pub mod terminal;
 pub mod ui;
 pub mod visual;
 pub mod wizard;
+pub mod wizard_catalog;
 
 use serde::Deserialize;
 use std::{
