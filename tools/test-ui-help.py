@@ -83,6 +83,12 @@ class UiHelpValidationTests(unittest.TestCase):
         model_ids = {entry["help_id"] for entry in model["elements"]}
         self.assertEqual(model_ids - documented, set())
 
+    def test_formal_model_and_catalog_routes_stay_in_sync(self) -> None:
+        model = json.loads((ROOT / "docs" / "ui-state-model.json").read_text(encoding="utf-8"))
+        catalog_routes = {entry["id"]: entry["route"] for entry in self.document["elements"]}
+        for element in model["elements"]:
+            self.assertEqual(catalog_routes[element["help_id"]], element["route"])
+
     def test_action_registry_discovery_fails_closed(self) -> None:
         original = VALIDATOR.ACTION_SOURCE
         with tempfile.TemporaryDirectory() as directory:

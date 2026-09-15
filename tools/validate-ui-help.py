@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "docs" / "ui-help.json"
 ACTION_SOURCE = ROOT / "src" / "actions.rs"
-ROUTES = {"landing", "configuration", "measurement_selection", "run_control", "recent_runs", "reports", "help", "global"}
+ROUTES = {"landing", "wizard", "configuration", "measurement_selection", "run_control", "recent_runs", "reports", "help", "global"}
 KINDS = {"screen", "action", "widget", "dialog", "status", "editable", "selectable"}
 BAD_PHRASES = ("todo", "tbd", "lorem ipsum", "placeholder", "help text", "coming soon")
 TOP_LEVEL_KEYS = {"schema_version", "catalog", "description", "elements"}
