@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "catalog": "asb-tui.ui-help",
+  "description": "User-facing help for every registered action and screen-level focus target.",
+  "elements": [
+    {"id":"screen.landing","route":"landing","kind":"screen","label":"Landing","help":{"summary":"Choose a benchmark task or review prior results.","usage":"Use the navigation keys to open a screen, then press ? for the actions available there."}},
+    {"id":"screen.configuration","route":"configuration","kind":"screen","label":"Configuration","help":{"summary":"Review and edit the frontend connection and run defaults.","usage":"Move between settings with the arrow keys and confirm an edited value with Enter."}},
+    {"id":"screen.measurement-selection","route":"measurement_selection","kind":"screen","label":"Measurement selection","help":{"summary":"Choose benchmark groups and the individual measures to run.","usage":"Search or move through the catalog; Space toggles the focused measure and a toggles visible measures."}},
+    {"id":"screen.run-control","route":"run_control","kind":"screen","label":"Run control","help":{"summary":"Start a configured benchmark and monitor its progress.","usage":"Review the selected measures before pressing Enter; Ctrl-C requests cancellation of an active run."}},
+    {"id":"screen.recent-runs","route":"recent_runs","kind":"screen","label":"Recent runs","help":{"summary":"Inspect completed and active runs that can feed a report.","usage":"Refresh the list when new runs finish, then select a run to inspect or compare."}},
+    {"id":"screen.reports","route":"reports","kind":"screen","label":"Reports","help":{"summary":"Compare selected benchmark runs and inspect their measurements.","usage":"Select compatible runs in Recent runs, then choose Compare to review differences."}},
+    {"id":"screen.help","route":"help","kind":"screen","label":"Help","help":{"summary":"Find the action, key binding, or explanation for the current screen.","usage":"Type to filter the catalog, move through matching entries, and press Esc to return."}},
+    {"id":"action.quit","route":"global","kind":"action","label":"Quit","help":{"summary":"Close the ASB TUI while leaving the benchmark runner running.","usage":"Press q from any screen when you have finished using the frontend."}},
+    {"id":"action.go_back","route":"global","kind":"action","label":"Back","help":{"summary":"Return to the previous screen without changing the runner.","usage":"Press Esc when the current screen or overlay is no longer needed."}},
+    {"id":"action.open_landing","route":"global","kind":"action","label":"Home","help":{"summary":"Open the landing screen and choose another benchmark task.","usage":"Press h from any screen to return to the frontend starting point."}},
+    {"id":"action.open_configuration","route":"global","kind":"action","label":"Configuration","help":{"summary":"Open the settings used by the frontend before a run.","usage":"Press c to review connection and benchmark defaults."}},
+    {"id":"action.open_measurement_selection","route":"global","kind":"action","label":"Measures","help":{"summary":"Open the catalog for choosing benchmark groups and measures.","usage":"Press m before a run to change which measurements will be collected."}},
+    {"id":"action.open_run_control","route":"global","kind":"action","label":"Run","help":{"summary":"Open the screen for starting or stopping a benchmark run.","usage":"Press s after configuration and measure selection are ready."}},
+    {"id":"action.open_recent_runs","route":"global","kind":"action","label":"Recent runs","help":{"summary":"Open the list of recent runs used for inspection and reports.","usage":"Press r to review available run history."}},
+    {"id":"action.open_reports","route":"global","kind":"action","label":"Reports","help":{"summary":"Open report analysis for comparing selected benchmark runs.","usage":"Press p after selecting report inputs."}},
+    {"id":"action.open_help","route":"global","kind":"action","label":"Help","help":{"summary":"Open searchable help for actions and key bindings.","usage":"Press ? whenever you need guidance for the visible context."}},
+    {"id":"action.reconnect","route":"global","kind":"action","label":"Reconnect","help":{"summary":"Reconnect the frontend to the negotiated ASB control endpoint.","usage":"Use reconnect after a temporary connection loss, then verify the capability state."}},
+    {"id":"action.focus_search","route":"help","kind":"action","label":"Search","help":{"summary":"Focus the search field for filtering the current help catalog.","usage":"Press / and type a word such as report or measure to narrow the entries."}},
+    {"id":"action.toggle_all_measures","route":"measurement_selection","kind":"action","label":"Toggle all","help":{"summary":"Select or deselect every measure currently visible in the catalog.","usage":"Press a after filtering or grouping the catalog to change the whole visible set."}},
+    {"id":"action.toggle_measure","route":"measurement_selection","kind":"action","label":"Toggle measure","help":{"summary":"Select or deselect the measure currently under the cursor.","usage":"Move to a measure and press Space; the selection marker shows the resulting state."}},
+    {"id":"action.start_run","route":"run_control","kind":"action","label":"Start run","help":{"summary":"Start the configured benchmark with the selected measures.","usage":"Press Enter only after checking the runner, configuration, and measure summary."}},
+    {"id":"action.cancel_run","route":"run_control","kind":"action","label":"Cancel run","help":{"summary":"Ask ASB to stop the benchmark that is currently running.","usage":"Press Ctrl-C once and wait for the runner to report its terminal state."}},
+    {"id":"action.refresh_runs","route":"recent_runs","kind":"action","label":"Refresh","help":{"summary":"Fetch the latest recent-run projections from the ASB endpoint.","usage":"Press f when a run may have completed or the list appears stale."}},
+    {"id":"action.compare_runs","route":"reports","kind":"action","label":"Compare","help":{"summary":"Compare the selected report runs using matching measurements.","usage":"Press v after choosing the runs and confirm that their measure sets are compatible."}}
+  ]
+}

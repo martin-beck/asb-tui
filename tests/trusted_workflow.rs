@@ -44,6 +44,8 @@ fn trusted_runner_workflow_is_main_only_and_exact_revision_bound() {
     assert!(!hosted.contains("asb-development-v1-x86_64-ubuntu2404"));
     for workflow in [&workflow, &hosted] {
         assert!(workflow.contains("python3 tools/validate-compatibility-schemas.py"));
+        assert!(workflow.contains("python3 tools/validate-ui-help.py"));
+        assert!(workflow.contains("python3 tools/test-ui-help.py"));
     }
 }
 
