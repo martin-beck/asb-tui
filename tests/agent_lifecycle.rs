@@ -8,7 +8,7 @@ fn catalog(generation: u64) -> asb_tui::agent_catalog::AgentCatalog {
         "jsonrpc":"2.0", "id":7, "result":{"kind":"operation","value":{"request_sha256":"f".repeat(64),"result":{"kind":"agent_catalog","value":{
         "runner_instance_id":"runner-1", "generation":generation, "catalog_sha256":"a".repeat(64),
         "target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
-        "agents":[{"agent_id":"local.echo","target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
+        "agents":[{"agent_id":"local-echo","target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
           "package":{"package_id":"pkg","version":"1.0.0","sha256":"b".repeat(64),"signature_sha256":"c".repeat(64)},
           "provenance":{"source_revision":"d".repeat(40),"manifest_sha256":"e".repeat(64)},
           "capabilities":["benchmark"],"availability":{"status":"available"}}],"refreshed":false
@@ -27,7 +27,7 @@ fn ready() -> LifecycleState {
 fn install_requires_available_catalog_and_verified_completion() {
     let state = ready()
         .apply(LifecycleEvent::InstallRequested {
-            agent_id: "local.echo".into(),
+            agent_id: "local-echo".into(),
             total: 2,
         })
         .unwrap();
@@ -57,7 +57,7 @@ fn install_requires_available_catalog_and_verified_completion() {
 fn cancellation_and_failure_are_generation_fenced() {
     let installing = ready()
         .apply(LifecycleEvent::InstallRequested {
-            agent_id: "local.echo".into(),
+            agent_id: "local-echo".into(),
             total: 1,
         })
         .unwrap();
@@ -89,7 +89,7 @@ fn cancellation_and_failure_are_generation_fenced() {
 fn success_remove_reconnect_and_stale_refresh_are_explicit() {
     let installed = ready()
         .apply(LifecycleEvent::InstallRequested {
-            agent_id: "local.echo".into(),
+            agent_id: "local-echo".into(),
             total: 1,
         })
         .unwrap()

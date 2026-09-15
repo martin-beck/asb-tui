@@ -16,6 +16,10 @@ pub const V1_2: ControlVersion = ControlVersion { major: 1, minor: 2 };
 pub const V1_3: ControlVersion = ControlVersion { major: 1, minor: 3 };
 pub const V1_4: ControlVersion = ControlVersion { major: 1, minor: 4 };
 pub const V1_5: ControlVersion = ControlVersion { major: 1, minor: 5 };
+/// Minimum negotiated version that exposes the authenticated agent catalog.
+pub const CONTROL_AGENT_CATALOG_V1: ControlVersion = V1_4;
+/// Minimum negotiated version that exposes verified local-agent lifecycle calls.
+pub const CONTROL_AGENT_LIFECYCLE_V1: ControlVersion = V1_5;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_PUBLIC_STRING_BYTES: usize = 4096;
 pub const MAX_ID_BYTES: usize = 128;

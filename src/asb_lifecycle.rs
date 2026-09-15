@@ -216,13 +216,26 @@ fn validate_mutation(
 }
 
 fn validate_binding(binding: &AgentLifecycleBinding) -> Result<(), String> {
-    if !valid_identity(&binding.agent_id)
+    if validate_agent_id(&binding.agent_id).is_err()
         || !valid_identity(&binding.runner_instance_id)
         || !valid_digest(&binding.catalog_sha256)
     {
         return Err("invalid lifecycle binding".into());
     }
     Ok(())
+}
+
+fn validate_agent_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        Err("invalid agent id".into())
+    } else {
+        Ok(())
+    }
 }
 
 fn valid_identity(value: &str) -> bool {
@@ -301,7 +314,7 @@ pub fn parse_lifecycle_response(input: &str) -> Result<AgentLifecycleResponse, S
 }
 
 fn validate(value: &AgentLifecycleResponse) -> Result<(), String> {
-    validate_identity(&value.binding.agent_id)?;
+    validate_agent_id(&value.binding.agent_id)?;
     validate_identity(&value.binding.runner_instance_id)?;
     validate_digest(&value.binding.catalog_sha256)?;
     validate_identity(&value.operation_id)?;

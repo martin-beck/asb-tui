@@ -622,6 +622,8 @@ mod tests {
             latest_revision: Some(Revision(7)),
             capabilities: None,
             measurement_catalog: None,
+            agent_catalog: None,
+            agent_lifecycle: None,
             runs: vec![RunSummary {
                 run_id: RunId("run-7".into()),
                 attempt_id: AttemptId("attempt-7".into()),

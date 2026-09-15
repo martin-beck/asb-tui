@@ -59,6 +59,17 @@ fn rejects_unsorted_duplicate_incomplete_and_wrong_target_catalogs() {
         serde_json::Value::String("aarch64".into());
     let wrong_target = wrong_target.to_string();
     assert!(parse_agent_catalog_response(&wrong_target).is_err());
-    let unsorted = valid().replace("\"agent-a\"", "\"agent-b\"");
-    assert!(parse_agent_catalog_response(&unsorted).is_ok());
+    let mut unsorted: serde_json::Value = serde_json::from_str(&valid()).unwrap();
+    let entry = unsorted["result"]["value"]["result"]["value"]["agents"][0].clone();
+    let mut second = entry.clone();
+    second["agent_id"] = serde_json::Value::String("agent-b".into());
+    unsorted["result"]["value"]["result"]["value"]["agents"] =
+        serde_json::Value::Array(vec![second, entry]);
+    assert!(parse_agent_catalog_response(&unsorted.to_string()).is_err());
+}
+
+#[test]
+fn rejects_agent_identifiers_outside_asb_lowercase_slug_form() {
+    let invalid = valid().replace("\"agent-a\"", "\"Agent_A\"");
+    assert!(parse_agent_catalog_response(&invalid).is_err());
 }

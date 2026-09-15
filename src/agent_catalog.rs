@@ -179,7 +179,7 @@ fn validate_catalog(catalog: AgentCatalog) -> Result<AgentCatalog, String> {
     }
     let mut prior = None;
     for entry in &catalog.agents {
-        validate_token(&entry.agent_id, "agent id")?;
+        validate_agent_id(&entry.agent_id, "agent id")?;
         if prior.is_some_and(|id: &str| id >= entry.agent_id.as_str()) {
             return Err("agent catalog is not canonically sorted".into());
         }
@@ -253,4 +253,17 @@ fn valid_token(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
+}
+
+fn validate_agent_id(value: &str, field: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > MAX_STRING_BYTES
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        Err(format!("invalid {field}"))
+    } else {
+        Ok(())
+    }
 }
