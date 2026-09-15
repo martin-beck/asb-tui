@@ -468,6 +468,15 @@
       ]
     },
     {
+      "event": "startup_auto_open_wizard",
+      "from": "landing",
+      "to": "wizard",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
       "event": "wizard_next",
       "from": "wizard",
       "to": "wizard",

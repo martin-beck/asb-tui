@@ -76,6 +76,15 @@ fn formal_wizard_flow_checks_documented_route_and_step_effects() {
 }
 
 #[test]
+fn automatic_startup_open_is_a_formal_transition() {
+    let mut state = WizardFormalState::new().unwrap();
+    state.apply(FormalEvent::AutoOpenWizard).unwrap();
+    assert_eq!(state.route(), StartupRoute::Wizard);
+    assert_eq!(state.step(), Step::Agent);
+    assert!(state.apply(FormalEvent::AutoOpenWizard).is_err());
+}
+
+#[test]
 fn back_and_cancel_are_formal_wizard_transitions() {
     let mut state = WizardFormalState::new().unwrap();
     state.apply(FormalEvent::OpenWizard).unwrap();
