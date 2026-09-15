@@ -40,6 +40,71 @@ pub struct StartupDecision {
     route: StartupRoute,
 }
 
+/// The result of observing one authoritative readiness snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StartupObservation {
+    decision: StartupDecision,
+    auto_open_wizard: bool,
+}
+
+impl StartupObservation {
+    #[must_use]
+    pub const fn decision(self) -> StartupDecision {
+        self.decision
+    }
+
+    /// Whether this observation should open the first-run wizard.
+    ///
+    /// This is distinct from the route in [`StartupDecision`]: repeated
+    /// observations of an unconfigured runner remain a configuration route,
+    /// but must not reopen a wizard that the user already dismissed or
+    /// completed during this controller lifetime.
+    #[must_use]
+    pub const fn auto_open_wizard(self) -> bool {
+        self.auto_open_wizard
+    }
+}
+
+/// Stateful, renderer-neutral startup observation controller.
+///
+/// The controller deliberately consumes only the already-normalized facts in
+/// [`StartupInput`]. It does not contact ASB, persist credentials, or perform
+/// navigation. A fresh controller represents a fresh process; persisted ASB
+/// configuration remains the authority for the next process' observation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StartupController {
+    wizard_opened: bool,
+}
+
+impl StartupController {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            wizard_opened: false,
+        }
+    }
+
+    /// Classify a readiness observation and consume the one-shot wizard gate.
+    #[must_use]
+    pub fn observe(&mut self, input: StartupInput) -> StartupObservation {
+        let decision = classify(input);
+        let auto_open_wizard = decision.auto_opens_wizard() && !self.wizard_opened;
+        if auto_open_wizard {
+            self.wizard_opened = true;
+        }
+        StartupObservation {
+            decision,
+            auto_open_wizard,
+        }
+    }
+
+    /// Whether this controller has already issued its automatic wizard route.
+    #[must_use]
+    pub const fn wizard_opened(self) -> bool {
+        self.wizard_opened
+    }
+}
+
 impl StartupDecision {
     #[must_use]
     pub const fn readiness(self) -> Readiness {
@@ -337,5 +402,79 @@ mod tests {
             assert!(!decision.auto_opens_wizard());
             assert_ne!(decision.route(), StartupRoute::Configuration);
         }
+    }
+
+    #[test]
+    fn controller_opens_unconfigured_wizard_once_and_preserves_route_decision() {
+        let mut controller = StartupController::new();
+        let input = StartupInput {
+            configuration_present: false,
+            ..READY
+        };
+
+        let first = controller.observe(input);
+        assert!(first.auto_open_wizard());
+        assert_eq!(first.decision().route(), StartupRoute::Configuration);
+        assert!(controller.wizard_opened());
+
+        let repeated = controller.observe(input);
+        assert!(!repeated.auto_open_wizard());
+        assert_eq!(repeated.decision(), first.decision());
+    }
+
+    #[test]
+    fn controller_never_auto_opens_unsafe_or_configured_readiness() {
+        let mut controller = StartupController::new();
+        for input in [
+            READY,
+            StartupInput {
+                endpoint_available: false,
+                ..READY
+            },
+            StartupInput {
+                configuration_malformed: true,
+                ..READY
+            },
+            StartupInput {
+                configuration_stale: true,
+                ..READY
+            },
+            StartupInput {
+                authorized: false,
+                ..READY
+            },
+        ] {
+            assert!(!controller.observe(input).auto_open_wizard());
+        }
+        assert!(!controller.wizard_opened());
+    }
+
+    #[test]
+    fn controller_recovers_from_unavailable_before_one_shot_unconfigured_route() {
+        let mut controller = StartupController::new();
+        assert!(
+            !controller
+                .observe(StartupInput {
+                    endpoint_available: false,
+                    ..READY
+                })
+                .auto_open_wizard()
+        );
+        assert!(
+            controller
+                .observe(StartupInput {
+                    configuration_complete: false,
+                    ..READY
+                })
+                .auto_open_wizard()
+        );
+        assert!(
+            !controller
+                .observe(StartupInput {
+                    configuration_complete: false,
+                    ..READY
+                })
+                .auto_open_wizard()
+        );
     }
 }
