@@ -36,7 +36,7 @@ def _action_ids() -> set[str]:
     source = ACTION_SOURCE.read_text(encoding="utf-8")
     match = re.search(r"pub const ALL: \[Self; \d+\] = \[(.*?)\];", source, re.S)
     if not match:
-        return set()
+        raise ValueError("cannot locate UiAction::ALL registry")
     variants = re.findall(r"Self::([A-Za-z][A-Za-z0-9_]*)", match.group(1))
     # Rust's action id conversion is intentionally mirrored here and checked
     # against the manifest.  A changed registry must update its documentation.
@@ -125,7 +125,12 @@ def main() -> int:
     except (OSError, json.JSONDecodeError) as error:
         print(f"catalog: cannot read valid JSON: {error}", file=sys.stderr)
         return 1
-    errors = validate_document(document, _action_ids())
+    try:
+        action_ids = _action_ids()
+    except (OSError, ValueError) as error:
+        print(f"action registry: cannot discover registered actions: {error}", file=sys.stderr)
+        return 1
+    errors = validate_document(document, action_ids)
     if errors:
         print("UI help catalog validation failed:", file=sys.stderr)
         print("\n".join(f"- {error}" for error in errors), file=sys.stderr)
