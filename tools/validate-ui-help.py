@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "docs" / "ui-help.json"
 ACTION_SOURCE = ROOT / "src" / "actions.rs"
 ROUTES = {"landing", "configuration", "measurement_selection", "run_control", "recent_runs", "reports", "help", "global"}
-KINDS = {"screen", "action", "widget", "dialog", "status"}
+KINDS = {"screen", "action", "widget", "dialog", "status", "editable", "selectable"}
 BAD_PHRASES = ("todo", "tbd", "lorem ipsum", "placeholder", "help text", "coming soon")
 TOP_LEVEL_KEYS = {"schema_version", "catalog", "description", "elements"}
 # Help is public documentation.  Reject values that would leak a host path or
@@ -84,7 +84,7 @@ def validate_document(document: object, action_ids: set[str]) -> list[str]:
             errors.append(f"{prefix}: entry must be an object")
             continue
         element_id = element.get("id")
-        if not isinstance(element_id, str) or not ID_RE.fullmatch(element_id):
+        if not isinstance(element_id, str) or not (element_id == "navigation" or ID_RE.fullmatch(element_id)):
             errors.append(f"{prefix}: id must match dotted stable-id syntax")
             continue
         if element_id in seen:
