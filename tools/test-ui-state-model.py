@@ -62,6 +62,8 @@ class UiStateModelTests(unittest.TestCase):
         self.assertIn(("save_configuration", "configuration", "configuration"), transitions)
         save = next(item for item in self.model["transitions"] if item["event"] == "save_configuration")
         self.assertEqual(save["effects"], ["configuration_persisted", "focus_reset"])
+        entry_help = next(item["text"] for item in self.model["help"] if item["id"] == "configuration.entry")
+        self.assertIn("local configuration store", entry_help)
 
     def test_wizard_catalog_state_is_formally_declared(self):
         self.assertIn("wizard_catalog", self.model["state_fields"])

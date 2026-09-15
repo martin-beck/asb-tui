@@ -710,7 +710,7 @@
     },
     {
       "id": "configuration.entry",
-      "text": "Edit this setting and press Ctrl-S to apply the validated local draft."
+      "text": "Edit this setting and press Ctrl-S to apply the validated local draft through the local configuration store."
     },
     {
       "id": "configuration.search",
