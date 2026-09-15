@@ -14,7 +14,8 @@
     "query",
     "selection",
     "connection",
-    "capabilities"
+    "capabilities",
+    "startup_wizard_opened"
   ],
   "bindings": [
     {
