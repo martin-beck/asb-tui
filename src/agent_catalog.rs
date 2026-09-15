@@ -24,6 +24,32 @@ pub struct AgentCatalogRequest {
     pub known_generation: Option<u64>,
 }
 
+impl AgentCatalogRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        if !valid_token(&self.runner_instance_id) {
+            return Err("invalid runner instance".into());
+        }
+        Ok(())
+    }
+}
+
+/// Serialize the exact JSON-RPC v1.4 catalog call without performing a refresh locally.
+pub fn encode_agent_catalog_request(
+    request_id: u64,
+    timeout_ms: u64,
+    request: &AgentCatalogRequest,
+) -> Result<String, String> {
+    request.validate()?;
+    if timeout_ms == 0 || timeout_ms > 300_000 {
+        return Err("invalid catalog timeout".into());
+    }
+    serde_json::to_string(&serde_json::json!({
+        "jsonrpc": "2.0", "id": request_id, "timeout_ms": timeout_ms,
+        "method": "agent_catalog", "params": request
+    }))
+    .map_err(|error| format!("cannot encode catalog request: {error}"))
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentUnavailableReason {
@@ -92,6 +118,12 @@ pub struct AgentCatalog {
     pub target: AgentTarget,
     pub agents: Vec<AgentCatalogEntry>,
     pub refreshed: bool,
+}
+
+impl AgentCatalog {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_catalog(self.clone()).map(|_| ())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -213,4 +245,12 @@ fn validate_token(value: &str, field: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn valid_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_STRING_BYTES
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
 }

@@ -32,10 +32,12 @@ pub struct ControlVersion {
 pub const V1_0: ControlVersion = ControlVersion { major: 1, minor: 0 };
 pub const V1_2: ControlVersion = ControlVersion { major: 1, minor: 2 };
 pub const V1_3: ControlVersion = ControlVersion { major: 1, minor: 3 };
+pub const V1_4: ControlVersion = ControlVersion { major: 1, minor: 4 };
+pub const V1_5: ControlVersion = ControlVersion { major: 1, minor: 5 };
 
 #[must_use]
 pub fn supported_versions() -> BTreeSet<ControlVersion> {
-    [V1_0, V1_2, V1_3].into_iter().collect()
+    [V1_0, V1_2, V1_3, V1_4, V1_5].into_iter().collect()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -131,7 +133,7 @@ pub fn select_version(
     {
         return Err(ClientError::UnsupportedVersion);
     }
-    [V1_3, V1_2, V1_0]
+    [V1_5, V1_4, V1_3, V1_2, V1_0]
         .into_iter()
         .find(|v| offered.contains(v) && peer.contains(v))
         .ok_or(ClientError::IncompatibleVersion)
@@ -661,9 +663,9 @@ mod tests {
     }
 
     #[test]
-    fn offers_exact_versions_and_prefers_v13() {
+    fn offers_exact_versions_and_prefers_newest_exact_version() {
         let offered = supported_versions();
-        assert_eq!(select_version(&offered, &offered).unwrap(), V1_3);
+        assert_eq!(select_version(&offered, &offered).unwrap(), V1_5);
         assert_eq!(
             select_version(&offered, &[V1_2].into_iter().collect()).unwrap(),
             V1_2
@@ -679,7 +681,7 @@ mod tests {
                     .collect(),
                 &offered
             ),
-            Err(ClientError::UnsupportedVersion)
+            Ok(V1_4)
         );
     }
 

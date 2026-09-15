@@ -14,6 +14,8 @@ pub const JSONRPC_VERSION: &str = "2.0";
 pub const V1_0: ControlVersion = ControlVersion { major: 1, minor: 0 };
 pub const V1_2: ControlVersion = ControlVersion { major: 1, minor: 2 };
 pub const V1_3: ControlVersion = ControlVersion { major: 1, minor: 3 };
+pub const V1_4: ControlVersion = ControlVersion { major: 1, minor: 4 };
+pub const V1_5: ControlVersion = ControlVersion { major: 1, minor: 5 };
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_PUBLIC_STRING_BYTES: usize = 4096;
 pub const MAX_ID_BYTES: usize = 128;
@@ -112,6 +114,12 @@ pub enum ControlCall {
     Negotiate(NegotiateParams),
     Capabilities,
     MeasurementCatalog,
+    AgentCatalog(crate::agent_catalog::AgentCatalogRequest),
+    AgentInstall(crate::asb_lifecycle::AgentInstallRequest),
+    AgentStatus(crate::asb_lifecycle::AgentStatusRequest),
+    AgentCancel(crate::asb_lifecycle::AgentCancelRequest),
+    AgentRetry(crate::asb_lifecycle::AgentRetryRequest),
+    AgentRemove(crate::asb_lifecycle::AgentRemoveRequest),
     ValidateSettings { settings: Value },
     CreatePlan(MutationParams),
     Launch(LaunchParams),
@@ -654,6 +662,8 @@ pub struct Page<T> {
 pub enum ControlResult {
     Capabilities(Capabilities),
     MeasurementCatalog(MeasurementCatalogPublication),
+    AgentCatalog(crate::agent_catalog::AgentCatalog),
+    AgentLifecycle(crate::asb_lifecycle::AgentLifecycleResponse),
     SettingsValidation(SettingsValidation),
     Plan(PlanReference),
     Launch(RunSummary),
@@ -761,7 +771,10 @@ pub fn decode<T: for<'de> Deserialize<'de>>(
 fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
     match call {
         ControlCall::Negotiate(v) => {
-            if v.versions.is_empty() || v.versions.iter().any(|v| !matches!(*v, V1_0 | V1_2 | V1_3))
+            if v.versions.is_empty()
+                || v.versions
+                    .iter()
+                    .any(|v| !matches!(*v, V1_0 | V1_2 | V1_3 | V1_4 | V1_5))
             {
                 return Err(CodecError::UnsupportedVersion);
             }
@@ -808,13 +821,33 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
         }
         ControlCall::Capabilities => {}
         ControlCall::MeasurementCatalog => {}
+        ControlCall::AgentCatalog(v) => v
+            .validate()
+            .map_err(|_| CodecError::InvalidValue("agent_catalog"))?,
+        ControlCall::AgentInstall(v) => v
+            .validate()
+            .map_err(|_| CodecError::InvalidValue("agent_install"))?,
+        ControlCall::AgentStatus(v) => v
+            .validate()
+            .map_err(|_| CodecError::InvalidValue("agent_status"))?,
+        ControlCall::AgentCancel(v) => v
+            .validate()
+            .map_err(|_| CodecError::InvalidValue("agent_cancel"))?,
+        ControlCall::AgentRetry(v) => v
+            .validate()
+            .map_err(|_| CodecError::InvalidValue("agent_retry"))?,
+        ControlCall::AgentRemove(v) => v
+            .validate()
+            .map_err(|_| CodecError::InvalidValue("agent_remove"))?,
     }
     Ok(())
 }
 fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(), CodecError> {
     match success {
         ControlSuccess::Negotiated(v) => {
-            if !matches!(v.version, V1_0 | V1_2 | V1_3) || v.oldest_revision > v.latest_revision {
+            if !matches!(v.version, V1_0 | V1_2 | V1_3 | V1_4 | V1_5)
+                || v.oldest_revision > v.latest_revision
+            {
                 return Err(CodecError::InvalidVersion);
             }
             v.limits.validate()?;
@@ -831,6 +864,12 @@ fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), 
     match result {
         ControlResult::Capabilities(_) => {}
         ControlResult::MeasurementCatalog(v) => v.validate()?,
+        ControlResult::AgentCatalog(v) => v
+            .validate()
+            .map_err(|_| CodecError::InvalidValue("agent_catalog"))?,
+        ControlResult::AgentLifecycle(v) => v
+            .validate()
+            .map_err(|_| CodecError::InvalidValue("agent_lifecycle"))?,
         ControlResult::SettingsValidation(v) => {
             if v.issues.len() > limits.max_page_items as usize
                 || v.valid != v.issues.is_empty()
@@ -953,6 +992,12 @@ impl ControlResult {
             (call, self),
             (ControlCall::Capabilities, Self::Capabilities(_))
                 | (ControlCall::MeasurementCatalog, Self::MeasurementCatalog(_))
+                | (ControlCall::AgentCatalog(_), Self::AgentCatalog(_))
+                | (ControlCall::AgentInstall(_), Self::AgentLifecycle(_))
+                | (ControlCall::AgentStatus(_), Self::AgentLifecycle(_))
+                | (ControlCall::AgentCancel(_), Self::AgentLifecycle(_))
+                | (ControlCall::AgentRetry(_), Self::AgentLifecycle(_))
+                | (ControlCall::AgentRemove(_), Self::AgentLifecycle(_))
                 | (
                     ControlCall::ValidateSettings { .. },
                     Self::SettingsValidation(_)
