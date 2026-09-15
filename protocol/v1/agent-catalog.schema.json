@@ -1,34 +1,56 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/martin-beck/asb-tui/blob/main/protocol/v1/agent-catalog.schema.json",
-  "title": "Authenticated ASB agent catalog projection",
+  "title": "ASB control v1.4 agent catalog response",
   "type": "object",
   "additionalProperties": false,
-  "required": ["protocol", "protocol_version", "runner_generation", "catalog_digest", "authentication", "agents"],
+  "required": ["jsonrpc", "id", "result"],
   "properties": {
-    "protocol": {"const": "asb-agent-catalog"},
-    "protocol_version": {"const": 1},
-    "runner_generation": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"},
-    "catalog_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "authentication": {
+    "jsonrpc": {"const": "2.0"},
+    "id": {"type": "integer", "minimum": 0},
+    "result": {
       "type": "object", "additionalProperties": false,
-      "required": ["status", "authorization"],
-      "properties": {"status": {"const": "verified"}, "authorization": {"const": "agent-catalog-read"}}
-    },
-    "agents": {
-      "type": "array", "minItems": 1, "maxItems": 256,
-      "items": {
-        "type": "object", "additionalProperties": false,
-        "required": ["id", "name", "version", "targets", "package", "capabilities", "availability"],
-        "properties": {
-          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
-          "name": {"type": "string", "minLength": 1, "maxLength": 128},
-          "version": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"},
-          "targets": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["operating_system", "architecture"], "properties": {"operating_system": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}, "architecture": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}}}},
-          "package": {"type": "object", "additionalProperties": false, "required": ["format", "digest", "signature", "provenance"], "properties": {"format": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}, "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "signature": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}, "provenance": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}}},
-          "capabilities": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}},
-          "availability": {"type": "object", "additionalProperties": false, "required": ["state", "reason"], "properties": {"state": {"enum": ["available", "unavailable"]}, "reason": {"type": ["string", "null"], "maxLength": 64, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}}}
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"const": "operation"},
+        "value": {
+          "type": "object", "additionalProperties": false,
+          "required": ["request_sha256", "result"],
+          "properties": {
+            "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "result": {
+              "type": "object", "additionalProperties": false,
+              "required": ["kind", "value"],
+              "properties": {
+                "kind": {"const": "agent_catalog"},
+                "value": {"$ref": "#/$defs/catalog"}
+              }
+            }
+          }
         }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "token": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._+:-]+$"},
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operating_system", "architecture", "libc", "libc_version"],
+      "properties": {"operating_system": {"$ref": "#/$defs/token"}, "architecture": {"$ref": "#/$defs/token"}, "libc": {"$ref": "#/$defs/token"}, "libc_version": {"$ref": "#/$defs/token"}}
+    },
+    "catalog": {
+      "type": "object", "additionalProperties": false,
+      "required": ["runner_instance_id", "generation", "catalog_sha256", "target", "agents", "refreshed"],
+      "properties": {
+        "runner_instance_id": {"$ref": "#/$defs/token"}, "generation": {"type": "integer", "minimum": 0}, "catalog_sha256": {"$ref": "#/$defs/digest"}, "target": {"$ref": "#/$defs/target"}, "refreshed": {"type": "boolean"},
+        "agents": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/entry"}}
+      }
+    },
+    "entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["agent_id", "target", "package", "provenance", "capabilities", "availability"],
+      "properties": {
+        "agent_id": {"$ref": "#/$defs/token"}, "target": {"$ref": "#/$defs/target"}, "package": {"type": "object", "additionalProperties": false, "required": ["package_id", "version", "sha256", "signature_sha256"], "properties": {"package_id": {"$ref": "#/$defs/token"}, "version": {"$ref": "#/$defs/token"}, "sha256": {"$ref": "#/$defs/digest"}, "signature_sha256": {"$ref": "#/$defs/digest"}}}, "provenance": {"type": "object", "additionalProperties": false, "required": ["source_revision", "manifest_sha256"], "properties": {"source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "manifest_sha256": {"$ref": "#/$defs/digest"}}}, "capabilities": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/token"}}, "availability": {"oneOf": [{"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"const": "available"}}}, {"type": "object", "additionalProperties": false, "required": ["status", "reason"], "properties": {"status": {"const": "unavailable"}, "reason": {"enum": ["incompatible_target", "incomplete_provenance", "unverified_artifact", "missing_capability", "stale_catalog", "policy_denied"]}}}]}
       }
     }
   }

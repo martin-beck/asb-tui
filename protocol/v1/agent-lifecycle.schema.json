@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ASB control v1.5 agent lifecycle response",
+  "type": "object", "additionalProperties": false,
+  "required": ["jsonrpc", "id", "result"],
+  "properties": {
+    "jsonrpc": {"const": "2.0"}, "id": {"type": "integer", "minimum": 0},
+    "result": {"type": "object", "additionalProperties": false, "required": ["kind", "value"], "properties": {"kind": {"const": "operation"}, "value": {"type": "object", "additionalProperties": false, "required": ["request_sha256", "result"], "properties": {"request_sha256": {"$ref": "#/$defs/digest"}, "result": {"type": "object", "additionalProperties": false, "required": ["kind", "value"], "properties": {"kind": {"const": "agent_lifecycle"}, "value": {"$ref": "#/$defs/response"}}}}}}}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "identity": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$"},
+    "binding": {"type": "object", "additionalProperties": false, "required": ["agent_id", "runner_instance_id", "catalog_sha256"], "properties": {"agent_id": {"$ref": "#/$defs/identity"}, "runner_instance_id": {"$ref": "#/$defs/identity"}, "catalog_sha256": {"$ref": "#/$defs/digest"}}},
+    "response": {"type": "object", "additionalProperties": false, "required": ["binding", "operation_id", "state", "generation", "progress_percent", "failure"], "properties": {"binding": {"$ref": "#/$defs/binding"}, "operation_id": {"$ref": "#/$defs/identity"}, "state": {"enum": ["pending", "staging", "active", "cancelled", "failed", "removed"]}, "generation": {"type": "integer", "minimum": 0}, "progress_percent": {"type": "integer", "minimum": 0, "maximum": 100}, "failure": {"type": ["string", "null"], "enum": ["stale_catalog", "unauthenticated_catalog", "verification_failed", "incompatible_target", "self_test_failed", "busy", "needs_reconciliation", null]}}}
+  }
+}

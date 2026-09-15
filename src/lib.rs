@@ -8,6 +8,7 @@ pub mod actions;
 pub mod agent_catalog;
 pub mod agent_lifecycle;
 pub mod app;
+pub mod asb_lifecycle;
 pub mod broker_adoption;
 pub mod bundle;
 pub mod compatibility;

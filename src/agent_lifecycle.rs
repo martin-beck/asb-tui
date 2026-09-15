@@ -6,7 +6,7 @@
 //! Effects are represented as events for the authenticated ASB control client.
 //! This module never installs, removes, launches, or renders anything.
 
-use crate::agent_catalog::{AgentCatalog, AgentDescriptor};
+use crate::agent_catalog::{AgentAvailability, AgentCatalog, AgentCatalogEntry};
 
 pub const MAX_REASON_BYTES: usize = 128;
 pub const MAX_PROGRESS_UNITS: u64 = 1_000_000;
@@ -18,34 +18,34 @@ pub enum LifecycleState {
         catalog: AgentCatalog,
     },
     Refreshing {
-        generation: String,
+        generation: u64,
     },
     Installing {
         agent_id: String,
-        generation: String,
+        generation: u64,
         completed: u64,
         total: u64,
     },
     Installed {
         agent_id: String,
-        generation: String,
+        generation: u64,
     },
     Cancelling {
         agent_id: String,
-        generation: String,
+        generation: u64,
     },
     Removing {
         agent_id: String,
-        generation: String,
+        generation: u64,
     },
     Reconnecting {
-        generation: String,
+        generation: u64,
     },
     Stale {
-        generation: String,
+        generation: u64,
     },
     Failed {
-        generation: String,
+        generation: u64,
         reason: String,
     },
 }
@@ -59,24 +59,24 @@ pub enum LifecycleEvent {
         total: u64,
     },
     Progress {
-        generation: String,
+        generation: u64,
         completed: u64,
         total: u64,
     },
     InstallSucceeded {
-        generation: String,
+        generation: u64,
     },
     InstallFailed {
-        generation: String,
+        generation: u64,
         reason: String,
     },
     CancelRequested,
     Cancelled {
-        generation: String,
+        generation: u64,
     },
     RemoveRequested,
     RemoveSucceeded {
-        generation: String,
+        generation: u64,
     },
     ReconnectRequested,
     Reconnected(AgentCatalog),
@@ -90,25 +90,25 @@ impl LifecycleState {
 
     pub fn apply(self, event: LifecycleEvent) -> Result<Self, String> {
         match (self, event) {
-            (Self::Disconnected, LifecycleEvent::RefreshRequested) => Ok(Self::Refreshing {
-                generation: String::new(),
-            }),
+            (Self::Disconnected, LifecycleEvent::RefreshRequested) => {
+                Ok(Self::Refreshing { generation: 0 })
+            }
             (Self::Refreshing { generation }, LifecycleEvent::CatalogAccepted(catalog))
-                if generation.is_empty() || generation == catalog.runner_generation =>
+                if generation == 0 || generation == catalog.generation =>
             {
                 Ok(Self::Ready { catalog })
             }
             (Self::Refreshing { .. }, LifecycleEvent::CatalogAccepted(catalog)) => {
                 Ok(Self::Stale {
-                    generation: catalog.runner_generation,
+                    generation: catalog.generation,
                 })
             }
             (Self::Ready { catalog }, LifecycleEvent::InstallRequested { agent_id, total }) => {
                 let agent = find_available(&catalog, &agent_id)?;
                 validate_total(total)?;
                 Ok(Self::Installing {
-                    agent_id: agent.id.clone(),
-                    generation: catalog.runner_generation.clone(),
+                    agent_id: agent.agent_id.clone(),
+                    generation: catalog.generation,
                     completed: 0,
                     total,
                 })
@@ -201,23 +201,23 @@ impl LifecycleState {
                 },
             ) if generation == event_generation => Ok(Self::Reconnecting { generation }),
             (Self::Reconnecting { generation }, LifecycleEvent::Reconnected(catalog))
-                if catalog.runner_generation == generation =>
+                if catalog.generation == generation =>
             {
                 Ok(Self::Ready { catalog })
             }
             (Self::Reconnecting { .. }, LifecycleEvent::Reconnected(catalog)) => Ok(Self::Stale {
-                generation: catalog.runner_generation,
+                generation: catalog.generation,
             }),
             (Self::Ready { catalog }, LifecycleEvent::ReconnectRequested) => {
                 Ok(Self::Reconnecting {
-                    generation: catalog.runner_generation,
+                    generation: catalog.generation,
                 })
             }
             (Self::Installed { generation, .. }, LifecycleEvent::ReconnectRequested) => {
                 Ok(Self::Reconnecting { generation })
             }
             (Self::Ready { catalog }, LifecycleEvent::RefreshRequested) => Ok(Self::Refreshing {
-                generation: catalog.runner_generation,
+                generation: catalog.generation,
             }),
             (Self::Installed { generation, .. }, LifecycleEvent::RefreshRequested) => {
                 Ok(Self::Refreshing { generation })
@@ -229,14 +229,17 @@ impl LifecycleState {
     }
 }
 
-fn find_available<'a>(catalog: &'a AgentCatalog, id: &str) -> Result<&'a AgentDescriptor, String> {
+fn find_available<'a>(
+    catalog: &'a AgentCatalog,
+    id: &str,
+) -> Result<&'a AgentCatalogEntry, String> {
     catalog
         .agents
         .iter()
-        .find(|agent| agent.id == id)
+        .find(|agent| agent.agent_id == id)
         .ok_or_else(|| "unknown agent id".into())
         .and_then(|agent| {
-            if agent.availability.state == "available" {
+            if matches!(agent.availability, AgentAvailability::Available) {
                 Ok(agent)
             } else {
                 Err("agent is unavailable".into())

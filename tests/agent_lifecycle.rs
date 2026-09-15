@@ -1,25 +1,25 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-use asb_tui::{agent_catalog::parse_agent_catalog, agent_lifecycle::*};
+use asb_tui::{agent_catalog::parse_agent_catalog_response, agent_lifecycle::*};
 
-fn catalog(generation: &str) -> asb_tui::agent_catalog::AgentCatalog {
-    parse_agent_catalog(&serde_json::json!({
-        "protocol":"asb-agent-catalog", "protocol_version":1,
-        "runner_generation":generation, "catalog_digest":"a".repeat(64),
-        "authentication":{"status":"verified","authorization":"agent-catalog-read"},
-        "agents":[{"id":"local.echo","name":"Echo","version":"1.0.0",
-          "targets":[{"operating_system":"linux","architecture":"x86_64"}],
-          "package":{"format":"oci","digest":"b".repeat(64),"signature":"sig","provenance":"prov"},
-          "capabilities":["benchmark"],"availability":{"state":"available","reason":null}}]
-    }).to_string()).unwrap()
+fn catalog(generation: u64) -> asb_tui::agent_catalog::AgentCatalog {
+    parse_agent_catalog_response(&serde_json::json!({
+        "jsonrpc":"2.0", "id":7, "result":{"kind":"operation","value":{"request_sha256":"f".repeat(64),"result":{"kind":"agent_catalog","value":{
+        "runner_instance_id":"runner-1", "generation":generation, "catalog_sha256":"a".repeat(64),
+        "target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
+        "agents":[{"agent_id":"local.echo","target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
+          "package":{"package_id":"pkg","version":"1.0.0","sha256":"b".repeat(64),"signature_sha256":"c".repeat(64)},
+          "provenance":{"source_revision":"d".repeat(40),"manifest_sha256":"e".repeat(64)},
+          "capabilities":["benchmark"],"availability":{"status":"available"}}],"refreshed":false
+        }}}}}).to_string()).unwrap()
 }
 
 fn ready() -> LifecycleState {
     LifecycleState::disconnected()
         .apply(LifecycleEvent::RefreshRequested)
         .unwrap()
-        .apply(LifecycleEvent::CatalogAccepted(catalog("g1")))
+        .apply(LifecycleEvent::CatalogAccepted(catalog(1)))
         .unwrap()
 }
 
@@ -33,23 +33,21 @@ fn install_requires_available_catalog_and_verified_completion() {
         .unwrap();
     let state = state
         .apply(LifecycleEvent::Progress {
-            generation: "g1".into(),
+            generation: 1,
             completed: 1,
             total: 2,
         })
         .unwrap();
     let state = state
         .apply(LifecycleEvent::Progress {
-            generation: "g1".into(),
+            generation: 1,
             completed: 2,
             total: 2,
         })
         .unwrap();
     assert!(matches!(
         state
-            .apply(LifecycleEvent::InstallSucceeded {
-                generation: "g1".into()
-            })
+            .apply(LifecycleEvent::InstallSucceeded { generation: 1 })
             .unwrap(),
         LifecycleState::Installed { .. }
     ));
@@ -67,7 +65,7 @@ fn cancellation_and_failure_are_generation_fenced() {
         installing
             .clone()
             .apply(LifecycleEvent::InstallFailed {
-                generation: "old".into(),
+                generation: 99,
                 reason: "network".into()
             })
             .is_err()
@@ -76,16 +74,12 @@ fn cancellation_and_failure_are_generation_fenced() {
     assert!(
         cancelling
             .clone()
-            .apply(LifecycleEvent::Cancelled {
-                generation: "old".into()
-            })
+            .apply(LifecycleEvent::Cancelled { generation: 99 })
             .is_err()
     );
     assert_eq!(
         cancelling
-            .apply(LifecycleEvent::Cancelled {
-                generation: "g1".into()
-            })
+            .apply(LifecycleEvent::Cancelled { generation: 1 })
             .unwrap(),
         LifecycleState::Disconnected
     );
@@ -100,31 +94,22 @@ fn success_remove_reconnect_and_stale_refresh_are_explicit() {
         })
         .unwrap()
         .apply(LifecycleEvent::Progress {
-            generation: "g1".into(),
+            generation: 1,
             completed: 1,
             total: 1,
         })
         .unwrap()
-        .apply(LifecycleEvent::InstallSucceeded {
-            generation: "g1".into(),
-        })
+        .apply(LifecycleEvent::InstallSucceeded { generation: 1 })
         .unwrap();
     let removing = installed.apply(LifecycleEvent::RemoveRequested).unwrap();
     let reconnecting = removing
-        .apply(LifecycleEvent::RemoveSucceeded {
-            generation: "g1".into(),
-        })
+        .apply(LifecycleEvent::RemoveSucceeded { generation: 1 })
         .unwrap();
     assert!(matches!(reconnecting, LifecycleState::Reconnecting { .. }));
     let stale = reconnecting
-        .apply(LifecycleEvent::Reconnected(catalog("g2")))
+        .apply(LifecycleEvent::Reconnected(catalog(2)))
         .unwrap();
-    assert_eq!(
-        stale,
-        LifecycleState::Stale {
-            generation: "g2".into()
-        }
-    );
+    assert_eq!(stale, LifecycleState::Stale { generation: 2 });
 }
 
 #[test]
@@ -141,7 +126,7 @@ fn invalid_events_do_not_mutate_state() {
     assert_eq!(state, ready());
     assert!(
         LifecycleState::Disconnected
-            .apply(LifecycleEvent::CatalogAccepted(catalog("g1")))
+            .apply(LifecycleEvent::CatalogAccepted(catalog(1)))
             .is_err()
     );
 }
@@ -150,12 +135,7 @@ fn invalid_events_do_not_mutate_state() {
 fn refresh_keeps_generation_fence_and_marks_replayed_catalog_stale() {
     let refreshing = ready().apply(LifecycleEvent::RefreshRequested).unwrap();
     let stale = refreshing
-        .apply(LifecycleEvent::CatalogAccepted(catalog("old")))
+        .apply(LifecycleEvent::CatalogAccepted(catalog(99)))
         .unwrap();
-    assert_eq!(
-        stale,
-        LifecycleState::Stale {
-            generation: "old".into()
-        }
-    );
+    assert_eq!(stale, LifecycleState::Stale { generation: 99 });
 }
