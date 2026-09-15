@@ -65,6 +65,12 @@ fn import_rejects_unknown_secret_oversize_and_control_text() {
     let mut value = Configuration::default();
     value.benchmark.resource_preset = "bad\nvalue".into();
     assert!(value.validate().is_err());
+    let mut unknown = serde_json::to_value(Configuration::default()).unwrap();
+    unknown["future_setting"] = serde_json::json!(true);
+    assert!(matches!(
+        Configuration::from_json(&serde_json::to_string(&unknown).unwrap()),
+        Err(ConfigError::Invalid(_))
+    ));
     let nested = "[".repeat(MAX_NESTING_DEPTH + 1);
     assert!(matches!(
         Configuration::from_json(&nested),
@@ -103,6 +109,55 @@ fn store_round_trip_is_atomic_and_symlinks_are_refused() {
         ConfigurationStore::new(&link).load(),
         Err(ConfigError::SymlinkRefused)
     );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn load_or_default_only_falls_back_for_a_missing_file() {
+    let dir = temp_dir();
+    let missing = dir.join("new.json");
+    assert_eq!(
+        ConfigurationStore::new(&missing).load_or_default().unwrap(),
+        Configuration::default()
+    );
+
+    let missing_parent = dir.join("missing-parent/config.json");
+    assert!(matches!(
+        ConfigurationStore::new(&missing_parent).load_or_default(),
+        Err(ConfigError::Io(_))
+    ));
+
+    let malformed = dir.join("malformed.json");
+    fs::write(&malformed, b"not-json").unwrap();
+    assert!(matches!(
+        ConfigurationStore::new(&malformed).load_or_default(),
+        Err(ConfigError::Invalid(_))
+    ));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_save_preserves_previous_configuration_and_rejects_public_directory() {
+    let dir = temp_dir();
+    let path = dir.join("config.json");
+    let store = ConfigurationStore::new(&path);
+    store.save(&Configuration::default()).unwrap();
+
+    let mut invalid = Configuration::default();
+    invalid.benchmark.repetitions = 0;
+    assert!(store.save(&invalid).is_err());
+    assert_eq!(store.load().unwrap(), Configuration::default());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(
+            store.save(&Configuration::default()),
+            Err(ConfigError::Invalid(_))
+        ));
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
     fs::remove_dir_all(dir).unwrap();
 }
 

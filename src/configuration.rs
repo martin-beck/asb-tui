@@ -517,7 +517,19 @@ impl ConfigurationStore {
     pub fn load_or_default(&self) -> Result<Configuration, ConfigError> {
         match self.load() {
             Ok(config) => Ok(config),
-            Err(ConfigError::Io(_)) => Ok(Configuration::default()),
+            Err(ConfigError::Io(kind))
+                if kind == io::ErrorKind::NotFound.to_string()
+                    && self
+                        .path
+                        .parent()
+                        .and_then(|parent| fs::symlink_metadata(parent).ok())
+                        .is_some_and(|metadata| metadata.is_dir()) =>
+            {
+                // A missing file in an existing directory is the first-run
+                // case.  Missing parents and all other I/O failures must not
+                // silently replace a user's configuration with defaults.
+                Ok(Configuration::default())
+            }
             Err(error) => Err(error),
         }
     }
@@ -567,6 +579,11 @@ impl ConfigurationStore {
             file.write_all(text.as_bytes())?;
             file.sync_all()?;
             fs::rename(&temp, &self.path)?;
+            // Persist the directory entry as well as the file contents so an
+            // interrupted rename cannot report success while losing the new
+            // configuration after a crash.
+            #[cfg(unix)]
+            fs::File::open(parent)?.sync_all()?;
             Ok::<(), io::Error>(())
         })();
         if result.is_err() {
