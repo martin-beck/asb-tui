@@ -19,6 +19,16 @@ fn accepts_exact_asb_v15_lifecycle_fixture_shape() {
 }
 
 #[test]
+fn consumes_the_checked_in_asb_v15_fixture() {
+    let value = parse_lifecycle_response(include_str!(
+        "fixtures/asb-v1.5-agent-install-response.json"
+    ))
+    .unwrap();
+    assert_eq!(value.binding.agent_id, "codex");
+    assert_eq!(value.progress_percent, 100);
+}
+
+#[test]
 fn encodes_asb_v15_install_binding_and_idempotency() {
     let request = AgentInstallRequest {
         binding: AgentLifecycleBinding {

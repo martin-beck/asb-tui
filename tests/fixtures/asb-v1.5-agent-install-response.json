@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0", "id": 8,
+  "result": {"kind": "operation", "value": {
+    "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "result": {"kind": "agent_lifecycle", "value": {
+      "binding": {"agent_id": "codex", "runner_instance_id": "runner-1", "catalog_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "operation_id": "operation-1", "state": "active", "generation": 3, "progress_percent": 100, "failure": null
+    }}
+  }}
+}

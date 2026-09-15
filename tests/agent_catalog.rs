@@ -25,6 +25,16 @@ fn accepts_exact_asb_v14_response() {
 }
 
 #[test]
+fn consumes_the_checked_in_asb_v14_fixture() {
+    let catalog = parse_agent_catalog_response(include_str!(
+        "fixtures/asb-v1.4-agent-catalog-response.json"
+    ))
+    .unwrap();
+    assert_eq!(catalog.catalog_sha256, "e".repeat(64));
+    assert_eq!(catalog.target.libc, "glibc");
+}
+
+#[test]
 fn rejects_old_provisional_envelope_and_unknown_fields() {
     let old = valid().replace(
         "\"jsonrpc\":\"2.0\"",
