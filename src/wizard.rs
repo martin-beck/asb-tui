@@ -228,6 +228,10 @@ impl Wizard {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FormalEvent {
     OpenWizard,
+    /// Open the wizard because authoritative startup classified the setup as
+    /// absent or incomplete.  This remains distinct from manual reconfigure
+    /// so the formal model can check the first-run route explicitly.
+    AutoOpenWizard,
     Next,
     Back,
     Complete,
@@ -265,6 +269,7 @@ impl WizardFormalState {
         let model: Model = serde_json::from_str(MODEL).map_err(|_| WizardError::InvalidModel)?;
         let (event_id, expected_to) = match &event {
             FormalEvent::OpenWizard => ("open_wizard", "wizard"),
+            FormalEvent::AutoOpenWizard => ("startup_auto_open_wizard", "wizard"),
             FormalEvent::Next => ("wizard_next", "wizard"),
             FormalEvent::Back => ("wizard_back", "wizard"),
             FormalEvent::Complete => ("complete_wizard", "landing"),
@@ -309,7 +314,9 @@ impl WizardFormalState {
             return Err(WizardError::InvalidModel);
         }
         match event {
-            FormalEvent::OpenWizard if next.route == StartupRoute::Landing => {
+            FormalEvent::OpenWizard | FormalEvent::AutoOpenWizard
+                if next.route == StartupRoute::Landing =>
+            {
                 next.route = StartupRoute::Wizard
             }
             FormalEvent::SetValue(value) if next.route == StartupRoute::Wizard => {

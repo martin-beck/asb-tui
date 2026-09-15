@@ -310,7 +310,18 @@ impl WorkspaceState {
         let mut state = Self::default();
         let decision = startup::classify(input);
         if decision.auto_opens_wizard() {
-            state.screen = Screen::Wizard;
+            // Keep automatic first-run routing in the same checked transition
+            // interpreter as manual wizard navigation.  The readiness facts
+            // have already been normalized by the injected boundary above;
+            // this call performs no I/O or persistence.
+            if state
+                .wizard_formal
+                .apply(FormalEvent::AutoOpenWizard)
+                .is_ok()
+            {
+                state.wizard = state.wizard_formal.wizard().clone();
+                state.screen = Screen::Wizard;
+            }
         }
         state
     }
