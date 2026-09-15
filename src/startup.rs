@@ -57,6 +57,49 @@ impl StartupDecision {
     pub const fn manual_reconfigure(self) -> StartupRoute {
         StartupRoute::Configuration
     }
+
+    /// Whether startup should enter the first-run wizard automatically.
+    ///
+    /// Only an authoritative response that explicitly says configuration is
+    /// absent or incomplete may open the wizard.  Every other readiness state
+    /// remains recoverable without presenting an editor for unverified data.
+    #[must_use]
+    pub const fn auto_opens_wizard(self) -> bool {
+        matches!(
+            self.readiness,
+            Readiness::Unconfigured | Readiness::Incomplete
+        )
+    }
+
+    /// Stable, renderer-neutral explanation for the startup route.
+    ///
+    /// These messages are intentionally short and actionable.  They contain
+    /// no endpoint, credential, or provider content and can therefore be
+    /// rendered by any frontend without leaking sensitive state.
+    #[must_use]
+    pub const fn explanation(self) -> &'static str {
+        match self.readiness {
+            Readiness::Configured => "ASB is configured; opening the landing screen.",
+            Readiness::Unconfigured => {
+                "ASB has no usable configuration; open the setup wizard to continue."
+            }
+            Readiness::Incomplete => {
+                "ASB configuration is incomplete; open the setup wizard to finish it."
+            }
+            Readiness::Unavailable => {
+                "ASB readiness is unavailable; retry the connection before configuring."
+            }
+            Readiness::Malformed => {
+                "ASB returned malformed readiness data; review the connection and retry."
+            }
+            Readiness::Stale => {
+                "ASB readiness is stale; refresh the connection before configuring."
+            }
+            Readiness::Unauthorized => {
+                "ASB rejected authorization; resolve access and retry the connection."
+            }
+        }
+    }
 }
 
 #[must_use]
@@ -173,5 +216,126 @@ mod tests {
             .manual_reconfigure(),
             StartupRoute::Configuration
         );
+    }
+
+    #[test]
+    fn only_explicitly_unconfigured_or_incomplete_readiness_opens_wizard() {
+        let cases = [
+            (READY, false),
+            (
+                StartupInput {
+                    configuration_present: false,
+                    ..READY
+                },
+                true,
+            ),
+            (
+                StartupInput {
+                    configuration_complete: false,
+                    ..READY
+                },
+                true,
+            ),
+            (
+                StartupInput {
+                    endpoint_available: false,
+                    ..READY
+                },
+                false,
+            ),
+            (
+                StartupInput {
+                    configuration_malformed: true,
+                    ..READY
+                },
+                false,
+            ),
+            (
+                StartupInput {
+                    configuration_stale: true,
+                    ..READY
+                },
+                false,
+            ),
+            (
+                StartupInput {
+                    authorized: false,
+                    ..READY
+                },
+                false,
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(classify(input).auto_opens_wizard(), expected);
+        }
+    }
+
+    #[test]
+    fn startup_decision_is_deterministic_and_idempotent() {
+        let inputs = [
+            READY,
+            StartupInput {
+                configuration_present: false,
+                ..READY
+            },
+            StartupInput {
+                configuration_complete: false,
+                ..READY
+            },
+            StartupInput {
+                endpoint_available: false,
+                ..READY
+            },
+            StartupInput {
+                configuration_malformed: true,
+                ..READY
+            },
+            StartupInput {
+                configuration_stale: true,
+                ..READY
+            },
+            StartupInput {
+                authorized: false,
+                ..READY
+            },
+        ];
+
+        for input in inputs {
+            let first = classify(input);
+            let second = classify(input);
+            assert_eq!(first, second);
+            assert!(!first.explanation().is_empty());
+            assert!(!first.explanation().contains("credential"));
+        }
+    }
+
+    #[test]
+    fn unsafe_readiness_never_claims_configured_or_opens_wizard() {
+        let unsafe_inputs = [
+            StartupInput {
+                endpoint_available: false,
+                ..READY
+            },
+            StartupInput {
+                configuration_malformed: true,
+                ..READY
+            },
+            StartupInput {
+                configuration_stale: true,
+                ..READY
+            },
+            StartupInput {
+                authorized: false,
+                ..READY
+            },
+        ];
+
+        for input in unsafe_inputs {
+            let decision = classify(input);
+            assert_ne!(decision.readiness(), Readiness::Configured);
+            assert!(!decision.auto_opens_wizard());
+            assert_ne!(decision.route(), StartupRoute::Configuration);
+        }
     }
 }
