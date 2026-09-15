@@ -77,6 +77,12 @@ class UiHelpValidationTests(unittest.TestCase):
             "action.cancel_run: help.usage contains private or secret material", errors
         )
 
+    def test_formal_model_elements_have_authoritative_catalog_entries(self) -> None:
+        model = json.loads((ROOT / "docs" / "ui-state-model.json").read_text(encoding="utf-8"))
+        documented = {entry["id"] for entry in self.document["elements"]}
+        model_ids = {entry["help_id"] for entry in model["elements"]}
+        self.assertEqual(model_ids - documented, set())
+
     def test_action_registry_discovery_fails_closed(self) -> None:
         original = VALIDATOR.ACTION_SOURCE
         with tempfile.TemporaryDirectory() as directory:
