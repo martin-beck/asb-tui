@@ -174,3 +174,18 @@ fn capability_gate_is_fail_closed() {
             .is_some()
     );
 }
+
+#[test]
+fn scalar_setting_edits_are_bounded_and_transactional() {
+    let mut draft = ConfigurationDraft::new(Configuration::default()).unwrap();
+    assert_eq!(draft.value("frontend.contrast").as_deref(), Some("false"));
+    draft.set_value("frontend.contrast", "true").unwrap();
+    assert!(draft.current().frontend.contrast);
+    assert!(
+        draft
+            .set_value("frontend.refresh_interval_ms", "not-a-number")
+            .is_err()
+    );
+    assert_eq!(draft.current().frontend.refresh_interval_ms, 1_000);
+    assert!(draft.set_value("benchmark", "anything").is_err());
+}

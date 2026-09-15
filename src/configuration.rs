@@ -406,6 +406,94 @@ impl ConfigurationDraft {
     pub fn focused(&self) -> Option<&'static str> {
         self.focused
     }
+    /// Return a bounded, human-readable value for a setting. Secrets are not
+    /// represented by this configuration schema and unsupported composite
+    /// values are deliberately not editable as free-form text.
+    pub fn value(&self, id: &str) -> Option<String> {
+        match id {
+            "frontend.theme" => {
+                Some(format!("{:?}", self.current.frontend.theme).to_ascii_lowercase())
+            }
+            "frontend.contrast" => Some(self.current.frontend.contrast.to_string()),
+            "frontend.motion" => {
+                Some(format!("{:?}", self.current.frontend.motion).to_ascii_lowercase())
+            }
+            "frontend.refresh_interval_ms" => {
+                Some(self.current.frontend.refresh_interval_ms.to_string())
+            }
+            "frontend.show_key_hints" => Some(self.current.frontend.show_key_hints.to_string()),
+            "frontend.landing" => {
+                Some(format!("{:?}", self.current.frontend.landing).to_ascii_lowercase())
+            }
+            "benchmark" => Some("managed benchmark defaults".into()),
+            _ => None,
+        }
+    }
+    /// Parse and apply one scalar setting edit transactionally. Invalid text
+    /// never changes the draft, which lets a UI show a truthful validation
+    /// error while the operator is still typing.
+    pub fn set_value(&mut self, id: &str, value: &str) -> Result<(), ConfigError> {
+        if value.chars().count() > MAX_STRING_SCALARS || value.chars().any(char::is_control) {
+            return Err(ConfigError::Invalid(
+                "configuration value is invalid or too long".into(),
+            ));
+        }
+        let value = value.to_ascii_lowercase();
+        enum Parsed {
+            Theme(ThemePreference),
+            Bool(bool),
+            Motion(MotionPreference),
+            Number(u64),
+            Landing(LandingDestination),
+        }
+        let parsed = match id {
+            "frontend.theme" => match value.as_str() {
+                "dark" => Parsed::Theme(ThemePreference::Dark),
+                "light" => Parsed::Theme(ThemePreference::Light),
+                "highcontrast" | "high_contrast" => Parsed::Theme(ThemePreference::HighContrast),
+                "nocolor" | "no_color" => Parsed::Theme(ThemePreference::NoColor),
+                _ => return Err(ConfigError::Invalid("invalid theme".into())),
+            },
+            "frontend.contrast" | "frontend.show_key_hints" => match value.as_str() {
+                "true" => Parsed::Bool(true),
+                "false" => Parsed::Bool(false),
+                _ => return Err(ConfigError::Invalid("expected true or false".into())),
+            },
+            "frontend.motion" => match value.as_str() {
+                "full" => Parsed::Motion(MotionPreference::Full),
+                "reduced" => Parsed::Motion(MotionPreference::Reduced),
+                "none" => Parsed::Motion(MotionPreference::None),
+                _ => return Err(ConfigError::Invalid("invalid motion preference".into())),
+            },
+            "frontend.refresh_interval_ms" => Parsed::Number(
+                value
+                    .parse()
+                    .map_err(|_| ConfigError::Invalid("refresh cadence must be a number".into()))?,
+            ),
+            "frontend.landing" => match value.as_str() {
+                "home" => Parsed::Landing(LandingDestination::Home),
+                "runs" => Parsed::Landing(LandingDestination::Runs),
+                "measures" => Parsed::Landing(LandingDestination::Measures),
+                "reports" => Parsed::Landing(LandingDestination::Reports),
+                "configuration" => Parsed::Landing(LandingDestination::Configuration),
+                _ => return Err(ConfigError::Invalid("invalid landing destination".into())),
+            },
+            "benchmark" => {
+                return Err(ConfigError::Invalid(
+                    "benchmark defaults use the catalog screen".into(),
+                ));
+            }
+            _ => return Err(ConfigError::Invalid("unknown configuration setting".into())),
+        };
+        self.edit(|configuration| match parsed {
+            Parsed::Theme(v) => configuration.frontend.theme = v,
+            Parsed::Bool(v) if id == "frontend.contrast" => configuration.frontend.contrast = v,
+            Parsed::Bool(v) => configuration.frontend.show_key_hints = v,
+            Parsed::Motion(v) => configuration.frontend.motion = v,
+            Parsed::Number(v) => configuration.frontend.refresh_interval_ms = v,
+            Parsed::Landing(v) => configuration.frontend.landing = v,
+        })
+    }
     pub fn cancel(&mut self) {
         self.current = self.original.clone();
     }

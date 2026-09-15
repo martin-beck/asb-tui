@@ -109,6 +109,21 @@
       "action": "save_configuration",
       "element": "configuration.entry",
       "key": "Ctrl-S"
+    },
+    {
+      "action": "edit_configuration",
+      "element": "configuration.entry",
+      "key": "Character"
+    },
+    {
+      "action": "backspace_configuration",
+      "element": "configuration.entry",
+      "key": "Backspace"
+    },
+    {
+      "action": "commit_configuration_edit",
+      "element": "configuration.entry",
+      "key": "Enter"
     }
   ],
   "routes": [
@@ -651,6 +666,31 @@
       "to": "configuration",
       "effects": [
         "configuration_persisted",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "edit_configuration",
+      "from": "configuration",
+      "to": "configuration",
+      "effects": [
+        "configuration_draft_changed"
+      ]
+    },
+    {
+      "event": "backspace_configuration",
+      "from": "configuration",
+      "to": "configuration",
+      "effects": [
+        "configuration_draft_changed"
+      ]
+    },
+    {
+      "event": "commit_configuration_edit",
+      "from": "configuration",
+      "to": "configuration",
+      "effects": [
+        "configuration_draft_changed",
         "focus_reset"
       ]
     }
