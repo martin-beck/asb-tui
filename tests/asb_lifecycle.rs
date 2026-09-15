@@ -22,12 +22,19 @@ fn accepts_exact_asb_v15_lifecycle_fixture_shape() {
 
 #[test]
 fn consumes_the_checked_in_asb_v15_fixture() {
-    let value = parse_lifecycle_response(include_str!(
-        "fixtures/asb-v1.5-agent-install-response.json"
-    ))
-    .unwrap();
+    let raw = include_str!("fixtures/asb-v1.5-agent-install-response.json");
+    let value = parse_lifecycle_response(raw).unwrap();
     assert_eq!(value.binding.agent_id, "codex");
     assert_eq!(value.progress_percent, 100);
+
+    // This digest is emitted by ASB's canonical v1.5 fixture at the pinned
+    // lifecycle revision. Keep the response wrapper synchronized as well as
+    // the nested lifecycle value.
+    let envelope: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        envelope["result"]["value"]["request_sha256"],
+        "51d58f15dd232726dbaa1b687110c0f889ecff4a1f5ced49e7d3306110d56d0f"
+    );
 }
 
 #[test]
