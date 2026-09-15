@@ -15,7 +15,8 @@
     "selection",
     "connection",
     "capabilities",
-    "startup_wizard_opened"
+    "startup_wizard_opened",
+    "responsive_layout"
   ],
   "bindings": [
     {
