@@ -3,7 +3,7 @@
   "ui_modules": [
     {"path":"src/actions.rs","kind":"interaction"},
     {"path":"src/app.rs","kind":"state"},
-    {"path":"src/configuration.rs","kind":"state"},
+    {"path":"src/configuration.rs","kind":"state","responsibility":"Configuration persistence and fail-closed startup state"},
     {"path":"src/formal_state.rs","kind":"state"},
     {"path":"src/help.rs","kind":"interaction"},
     {"path":"src/landing.rs","kind":"projection"},
