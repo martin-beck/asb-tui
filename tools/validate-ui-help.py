@@ -20,6 +20,15 @@ ACTION_SOURCE = ROOT / "src" / "actions.rs"
 ROUTES = {"landing", "configuration", "measurement_selection", "run_control", "recent_runs", "reports", "help", "global"}
 KINDS = {"screen", "action", "widget", "dialog", "status"}
 BAD_PHRASES = ("todo", "tbd", "lorem ipsum", "placeholder", "help text", "coming soon")
+TOP_LEVEL_KEYS = {"schema_version", "catalog", "description", "elements"}
+# Help is public documentation.  Reject values that would leak a host path or
+# look like a credential even when they happen to satisfy the prose checks.
+PRIVATE_MATERIAL = re.compile(
+    r"(?:^|[\s=(])/(?:home|srv|tmp|run|etc|root)(?:[/\s)]|$)"
+    r"|(?:gh[pousr]_|github_pat_|BEGIN (?:OPENSSH|RSA|EC) PRIVATE KEY)"
+    r"|(?:api[_ -]?key|access[_ -]?token|secret)\s*[:=]",
+    re.IGNORECASE,
+)
 ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$")
 
 
@@ -48,12 +57,19 @@ def _meaningful(value: object, label: str, field: str, errors: list[str], elemen
     lowered = text.casefold()
     if any(phrase in lowered for phrase in BAD_PHRASES):
         errors.append(f"{element_id}: help.{field} contains placeholder language")
+    if PRIVATE_MATERIAL.search(text):
+        errors.append(f"{element_id}: help.{field} contains private or secret material")
 
 
 def validate_document(document: object, action_ids: set[str]) -> list[str]:
     errors: list[str] = []
     if not isinstance(document, dict):
         return ["catalog: top level must be an object"]
+    unknown_keys = set(document) - TOP_LEVEL_KEYS
+    if unknown_keys:
+        errors.append(
+            "catalog: unknown top-level fields: " + ",".join(sorted(unknown_keys))
+        )
     if document.get("schema_version") != 1:
         errors.append("catalog: schema_version must be 1")
     if document.get("catalog") != "asb-tui.ui-help":
@@ -79,6 +95,8 @@ def validate_document(document: object, action_ids: set[str]) -> list[str]:
             errors.append(f"{element_id}: route must be one of {','.join(sorted(ROUTES))}")
         if kind not in KINDS:
             errors.append(f"{element_id}: kind must be one of {','.join(sorted(KINDS))}")
+        if element_id.startswith("action.") and kind != "action":
+            errors.append(f"{element_id}: action ids must use kind action")
         if not isinstance(label, str) or not (1 <= len(label) <= 80) or not label.strip():
             errors.append(f"{element_id}: label must be a non-empty string of at most 80 characters")
         help_value = element.get("help")
@@ -93,6 +111,11 @@ def validate_document(document: object, action_ids: set[str]) -> list[str]:
         documented = {item.get("id") for item in elements if isinstance(item, dict)}
         for action_id in sorted(action_ids - documented):
             errors.append(f"{action_id}: registered action has no help entry")
+        for action_id in sorted(
+            item for item in documented if isinstance(item, str) and item.startswith("action.")
+            and item not in action_ids
+        ):
+            errors.append(f"{action_id}: help entry does not match a registered action")
     return sorted(errors)
 
 
