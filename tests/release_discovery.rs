@@ -26,7 +26,7 @@ impl ReleaseProbe for Probe {
         }
         Ok(match dependency {
             "agent-workflow-coordinator" => "9e862e9e7af328e489b6e2fe958e5df1ddd702c1",
-            _ => "79c699258111cc3ae4585d46c6ce4999784001b3",
+            _ => "d6b82279556871e2f9f3c3d691b8d3f50e1487ac",
         }
         .into())
     }
@@ -36,14 +36,14 @@ impl ReleaseProbe for Probe {
         }
         Ok(match dependency {
             "agent-workflow-coordinator" => "510817b93feb80dde13e5a6c61d657954fae2346",
-            _ => "8a9f056b7fc7926b9465a0f7a09225d4da1c572a",
+            _ => "f1c40859e9d10cacbc79100ed136c38bce48cd39",
         }
         .into())
     }
     fn tree(&self, dependency: &str, _: &str) -> Result<String, String> {
         Ok(match dependency {
             "agent-workflow-coordinator" => "41d08ed42333cb47b07c2c401a9167b56c7cfb81",
-            _ => "ca77db478f0737142690d37683d826710cd953b0",
+            _ => "d3e6109919fa857f20476d4faec181868b9d4050",
         }
         .into())
     }
@@ -190,8 +190,8 @@ fn malformed_and_incomplete_release_locks_fail_closed() {
         ),
         contents.replace("\"archive_size\": 124386", "\"archive_size\": 0"),
         contents.replace(
-            "\"manifest_sha256\": \"05bbb0d4",
-            "\"archive_sha256\": \"05bbb0d4",
+            "\"manifest_sha256\": \"9430730c",
+            "\"archive_sha256\": \"9430730c",
         ),
         contents.replace("agent-workflow-quality", "unexpected-quality-tool"),
         contents.replacen("agent-workflow-quality", "agent-workflow-coordinator", 1),
@@ -226,9 +226,9 @@ case "$operation:$value:$repo" in
   rev-parse:refs/tags/v0.3.5\^\{tag\}:*agent-workflow-coordinator) echo 9e862e9e7af328e489b6e2fe958e5df1ddd702c1 ;;
   rev-parse:9e862e9e7af328e489b6e2fe958e5df1ddd702c1\^\{commit\}:*) echo 510817b93feb80dde13e5a6c61d657954fae2346 ;;
   rev-parse:510817b93feb80dde13e5a6c61d657954fae2346\^\{tree\}:*) echo 41d08ed42333cb47b07c2c401a9167b56c7cfb81 ;;
-  rev-parse:refs/tags/v0.23.0\^\{tag\}:*agent-workflow-quality) echo 79c699258111cc3ae4585d46c6ce4999784001b3 ;;
-  rev-parse:79c699258111cc3ae4585d46c6ce4999784001b3\^\{commit\}:*) echo 8a9f056b7fc7926b9465a0f7a09225d4da1c572a ;;
-  rev-parse:8a9f056b7fc7926b9465a0f7a09225d4da1c572a\^\{tree\}:*) echo ca77db478f0737142690d37683d826710cd953b0 ;;
+  rev-parse:refs/tags/v0.32.0\^\{tag\}:*agent-workflow-quality) echo d6b82279556871e2f9f3c3d691b8d3f50e1487ac ;;
+  rev-parse:d6b82279556871e2f9f3c3d691b8d3f50e1487ac\^\{commit\}:*) echo f1c40859e9d10cacbc79100ed136c38bce48cd39 ;;
+  rev-parse:f1c40859e9d10cacbc79100ed136c38bce48cd39\^\{tree\}:*) echo d3e6109919fa857f20476d4faec181868b9d4050 ;;
   *) exit 1 ;;
 esac
 "#).unwrap();

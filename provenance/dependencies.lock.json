@@ -14,19 +14,19 @@
       "tree": "41d08ed42333cb47b07c2c401a9167b56c7cfb81"
     },
     {
-      "commit": "8a9f056b7fc7926b9465a0f7a09225d4da1c572a",
+      "commit": "f1c40859e9d10cacbc79100ed136c38bce48cd39",
       "license": "MIT",
       "license_sha256": "20647d25b17a19a582bc1d48340c8b61d5c39f11c738d8d3910a384e8d747201",
-      "manifest_sha256": "05bbb0d40a64e8a309af7d56b76760fb95ba1eee580dff1487e8102bd0b9e29d",
+      "manifest_sha256": "9430730c581af22d4d639413014fd46162f12fb06df957cca05d445c5fbb3ed9",
       "name": "agent-workflow-quality",
-      "provenance_sha256": "a2ba5f30d8d4065fef2e7f30121b7f8e48ac288423ea5dd83349e7b78e3c15f5",
+      "provenance_sha256": "ce7e6e0cf02eeafac0a86201ae196e022180c0806b4cca61bb835d7fc2da4440",
       "repository": "https://github.com/martin-beck/agent-workflow-quality",
-      "sbom_sha256": "840e85a1ba681a42895e8e8cb4134ed5e6a40d3403c4d769e735b0d9201013f5",
-      "sdist_sha256": "69b1c9c4aa715ea87699d9898f3f25c07fac3f3ff575ccdeba0f8118cad0aba3",
-      "tag": "v0.23.0",
-      "tag_object": "79c699258111cc3ae4585d46c6ce4999784001b3",
-      "tree": "ca77db478f0737142690d37683d826710cd953b0",
-      "wheel_sha256": "9d480cabe955a5faf88f6f1c8dfd2bfe63045445173c86f93d200a00c97fff89"
+      "sbom_sha256": "563059aab91cba5501ab9007b1cb9d68937fb625d027ba677848ea661eea42b5",
+      "sdist_sha256": "d22cebd3cdd58f2dc3df74618186a292ed9a270d0cc1551897b35420e0954e9b",
+      "tag": "v0.32.0",
+      "tag_object": "d6b82279556871e2f9f3c3d691b8d3f50e1487ac",
+      "tree": "d3e6109919fa857f20476d4faec181868b9d4050",
+      "wheel_sha256": "bf610d925de51dfd643e47c467bd82fcad128dc43793bae1a0aeebd5b5ea4848"
     }
   ],
   "rendering": {
