@@ -21,7 +21,7 @@
     ,{"path":"src/wizard_catalog.rs","kind":"state","responsibility":"Bounded renderer-neutral agent, provider, and model choices for the setup wizard"}
   ],
   "exemptions": [
-    {"path":"src/agent_catalog.rs","reason":"Agent catalog protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/agent_catalog.rs","reason":"Agent catalog protocol adapter and canonical digest verification only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/agent_lifecycle.rs","reason":"Agent lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/asb_lifecycle.rs","reason":"ASB lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/broker_adoption.rs","reason":"Transport handoff only; it has no UI state or projection ownership.","expires":"2027-12-31"},
