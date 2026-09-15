@@ -171,3 +171,208 @@ fn lifecycle_encoders_fail_closed_on_bad_binding_or_timeout() {
     };
     assert!(encode_install_request(1, 300_001, &request).is_err());
 }
+
+#[test]
+fn request_validation_covers_optional_status_and_mutation_identities() {
+    let binding = AgentLifecycleBinding {
+        agent_id: "codex".into(),
+        runner_instance_id: "runner-1".into(),
+        catalog_sha256: "a".repeat(64),
+    };
+    assert!(
+        AgentInstallRequest {
+            binding: binding.clone(),
+            catalog_generation: 4,
+            idempotency_key: "key-1".into(),
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        AgentInstallRequest {
+            binding: binding.clone(),
+            catalog_generation: 4,
+            idempotency_key: "bad key".into(),
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        AgentStatusRequest {
+            binding: binding.clone(),
+            operation_id: None,
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        AgentStatusRequest {
+            binding: binding.clone(),
+            operation_id: Some("bad key".into()),
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        AgentCancelRequest {
+            binding: binding.clone(),
+            operation_id: "op-1".into(),
+            idempotency_key: "cancel-1".into(),
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        AgentRetryRequest {
+            binding: binding.clone(),
+            operation_id: "".into(),
+            idempotency_key: "retry-1".into(),
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        AgentRemoveRequest {
+            binding,
+            idempotency_key: "".into(),
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        AgentRemoveRequest {
+            binding: AgentLifecycleBinding {
+                agent_id: "codex".into(),
+                runner_instance_id: "runner-1".into(),
+                catalog_sha256: "a".repeat(64),
+            },
+            idempotency_key: "remove-1".into(),
+        }
+        .validate()
+        .is_ok()
+    );
+}
+
+#[test]
+fn all_lifecycle_response_states_have_exact_terminal_rules() {
+    for (state, progress, failure) in [
+        ("pending", 0, serde_json::Value::Null),
+        ("staging", 25, serde_json::Value::Null),
+        ("cancelled", 100, serde_json::Value::Null),
+        ("removed", 100, serde_json::Value::Null),
+        ("failed", 0, serde_json::json!("busy")),
+    ] {
+        let raw = valid()
+            .replace("\"state\":\"active\"", &format!("\"state\":\"{state}\""))
+            .replace(
+                "\"progress_percent\":100",
+                &format!("\"progress_percent\":{progress}"),
+            )
+            .replace("\"failure\":null", &format!("\"failure\":{failure}"));
+        assert!(parse_lifecycle_response(&raw).is_ok(), "state {state}");
+    }
+    assert!(
+        parse_lifecycle_response(
+            &valid().replace("\"progress_percent\":100", "\"progress_percent\":101")
+        )
+        .is_err()
+    );
+    let failed_without_reason = valid().replace("\"state\":\"active\"", "\"state\":\"failed\"");
+    assert!(parse_lifecycle_response(&failed_without_reason).is_err());
+    let malformed_digest = valid().replace(
+        "\"request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+        "\"request_sha256\":\"bad\"",
+    );
+    assert!(parse_lifecycle_response(&malformed_digest).is_err());
+}
+
+#[test]
+fn lifecycle_encoders_reject_each_mutation_and_binding_boundary() {
+    let bad_binding = AgentLifecycleBinding {
+        agent_id: "Bad".into(),
+        runner_instance_id: "runner-1".into(),
+        catalog_sha256: "a".repeat(64),
+    };
+    let status = AgentStatusRequest {
+        binding: bad_binding.clone(),
+        operation_id: None,
+    };
+    assert!(encode_status_request(1, 1000, &status).is_err());
+    let binding = AgentLifecycleBinding {
+        agent_id: "codex".into(),
+        runner_instance_id: "runner 1".into(),
+        catalog_sha256: "a".repeat(64),
+    };
+    let remove = AgentRemoveRequest {
+        binding: binding.clone(),
+        idempotency_key: "remove-1".into(),
+    };
+    assert!(encode_remove_request(1, 1000, &remove).is_err());
+    let binding = AgentLifecycleBinding {
+        agent_id: "codex".into(),
+        runner_instance_id: "runner-1".into(),
+        catalog_sha256: "a".repeat(64),
+    };
+    let cancel = AgentCancelRequest {
+        binding: binding.clone(),
+        operation_id: "op bad".into(),
+        idempotency_key: "cancel-1".into(),
+    };
+    assert!(encode_cancel_request(1, 1000, &cancel).is_err());
+    let retry = AgentRetryRequest {
+        binding,
+        operation_id: "op-1".into(),
+        idempotency_key: "retry bad".into(),
+    };
+    assert!(encode_retry_request(1, 1000, &retry).is_err());
+    let valid_status = AgentStatusRequest {
+        binding: AgentLifecycleBinding {
+            agent_id: "codex".into(),
+            runner_instance_id: "runner-1".into(),
+            catalog_sha256: "a".repeat(64),
+        },
+        operation_id: None,
+    };
+    assert!(encode_status_request(1, 0, &valid_status).is_err());
+}
+
+#[test]
+fn lifecycle_decoder_rejects_wrong_envelope_and_binding_identities() {
+    let wrong_kind = valid().replace("\"kind\":\"agent_lifecycle\"", "\"kind\":\"other\"");
+    assert!(parse_lifecycle_response(&wrong_kind).is_err());
+    let bad_runner = valid().replace(
+        "\"runner_instance_id\":\"runner-1\"",
+        "\"runner_instance_id\":\"runner instance\"",
+    );
+    assert!(parse_lifecycle_response(&bad_runner).is_err());
+    let bad_digest = valid().replace(
+        "\"catalog_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+        "\"catalog_sha256\":\"bad\"",
+    );
+    assert!(parse_lifecycle_response(&bad_digest).is_err());
+}
+
+#[test]
+fn lifecycle_public_boundaries_reject_invalid_ids_at_each_entrypoint() {
+    let valid_binding = AgentLifecycleBinding {
+        agent_id: "codex".into(),
+        runner_instance_id: "runner-1".into(),
+        catalog_sha256: "a".repeat(64),
+    };
+    let bad_install = AgentInstallRequest {
+        binding: valid_binding.clone(),
+        catalog_generation: 1,
+        idempotency_key: "bad key".into(),
+    };
+    assert!(encode_install_request(1, 1000, &bad_install).is_err());
+    let bad_status = AgentStatusRequest {
+        binding: valid_binding.clone(),
+        operation_id: Some("bad operation".into()),
+    };
+    assert!(encode_status_request(1, 1000, &bad_status).is_err());
+    let bad_remove = AgentRemoveRequest {
+        binding: valid_binding,
+        idempotency_key: "bad key".into(),
+    };
+    assert!(encode_remove_request(1, 1000, &bad_remove).is_err());
+}
