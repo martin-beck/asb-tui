@@ -54,6 +54,13 @@ class UiStateModelTests(unittest.TestCase):
     def test_configuration_persistence_state_is_formally_declared(self):
         self.assertIn("configuration_persistence", self.model["state_fields"])
 
+    def test_wizard_editing_help_and_completion_bindings_are_formally_declared(self):
+        bindings = {(item["action"], item["element"], item["key"]) for item in self.model["bindings"]}
+        self.assertIn(("wizard_edit", "wizard.agent", "Character"), bindings)
+        self.assertIn(("wizard_backspace", "wizard.agent", "Backspace"), bindings)
+        self.assertIn(("wizard_help", "wizard.agent", "?"), bindings)
+        self.assertIn(("complete_wizard", "wizard.review", "Enter"), bindings)
+
     def test_workspace_wizard_route_and_bindings_are_formally_declared(self):
         routes = {route["id"]: route for route in self.model["routes"]}
         self.assertIn("wizard", routes)
