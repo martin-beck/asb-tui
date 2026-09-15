@@ -81,6 +81,14 @@ jobs:
           cargo deny --locked check
           cargo audit --deny warnings
           tools/run-coverage-clean.sh
+      - name: Enforce formal UI model and exact-tree ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/generate-ui-state-model.py
+          git diff --exit-code -- docs/ui-state-model.generated.json
+          python3 tools/test-ui-state-model.py
+          python3 tools/validate-ui-state-model.py
       - name: Capture terminal fixture environment on failure
         if: failure()
         shell: bash
