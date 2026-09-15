@@ -19,7 +19,8 @@
     "responsive_layout",
     "contextual_help",
     "wizard_step",
-    "wizard_draft"
+    "wizard_draft",
+    "configuration_persistence"
   ],
   "bindings": [
     {
