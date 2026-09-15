@@ -16,7 +16,8 @@
     "connection",
     "capabilities",
     "startup_wizard_opened",
-    "responsive_layout"
+    "responsive_layout",
+    "contextual_help"
   ],
   "bindings": [
     {
