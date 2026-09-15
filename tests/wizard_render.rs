@@ -3,11 +3,14 @@
 
 use asb_tui::{
     terminal::RenderPolicy,
+    ui::{Screen, WorkspaceState},
     wizard::{
         FormalEvent, StartupRoute, Step, Wizard, WizardFormalState, element_id, plain_text, render,
         startup_route,
     },
+    wizard_catalog::{OptionKind, WizardCatalog, WizardOption},
 };
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 
 fn policy(unicode: bool) -> RenderPolicy {
@@ -194,4 +197,86 @@ fn formal_wizard_rejects_events_on_the_wrong_route_atomically() {
         Err(WizardError::InvalidModel)
     );
     assert_eq!(state.step(), Step::Agent);
+}
+
+#[test]
+fn wizard_uses_catalog_for_agent_provider_and_model_steps() {
+    let catalog = WizardCatalog::new(
+        vec![WizardOption::new("agent-a", "Agent A", true).unwrap()],
+        vec![
+            WizardOption::new("provider-a", "Provider A", true)
+                .unwrap()
+                .compatible_with(vec!["agent-a".into()])
+                .unwrap(),
+        ],
+        vec![
+            WizardOption::new("model-a", "Model A", true)
+                .unwrap()
+                .compatible_with(vec!["provider-a".into()])
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut state = WorkspaceState::default().with_wizard_catalog(catalog);
+    state.open_wizard();
+    assert_eq!(state.screen, Screen::Wizard);
+    for (step, selected) in [
+        (asb_tui::wizard::Step::Agent, "agent-a"),
+        (asb_tui::wizard::Step::Provider, "provider-a"),
+        (asb_tui::wizard::Step::Model, "model-a"),
+    ] {
+        assert_eq!(state.wizard.step(), step);
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let kind = match step {
+            asb_tui::wizard::Step::Agent => OptionKind::Agent,
+            asb_tui::wizard::Step::Provider => OptionKind::Provider,
+            asb_tui::wizard::Step::Model => OptionKind::Model,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            state.wizard.catalog().unwrap().selected(kind),
+            Some(selected)
+        );
+    }
+    assert_eq!(state.wizard.step(), asb_tui::wizard::Step::Configuration);
+    // Catalog state retains each independent selection after step changes.
+    let catalog = state.wizard.catalog().unwrap();
+    assert_eq!(catalog.selected(OptionKind::Agent), Some("agent-a"));
+    assert_eq!(catalog.selected(OptionKind::Provider), Some("provider-a"));
+    assert_eq!(catalog.selected(OptionKind::Model), Some("model-a"));
+}
+
+#[test]
+fn wizard_catalog_filters_moves_and_projects_selection_into_the_draft() {
+    let catalog = WizardCatalog::new(
+        vec![
+            WizardOption::new("agent-a", "Agent A", true).unwrap(),
+            WizardOption::new("agent-b", "Agent B", true).unwrap(),
+        ],
+        vec![
+            WizardOption::new("provider-a", "Provider A", true)
+                .unwrap()
+                .compatible_with(vec!["agent-b".into()])
+                .unwrap(),
+        ],
+        vec![
+            WizardOption::new("model-a", "Model A", true)
+                .unwrap()
+                .compatible_with(vec!["provider-a".into()])
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut state = WorkspaceState::default().with_wizard_catalog(catalog);
+    state.open_wizard();
+    state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(state.wizard.current_value(), "agent-b");
+    state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    state.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert_eq!(state.wizard.catalog().unwrap().query(), "a");
+    assert_eq!(state.wizard.catalog().unwrap().cursor(), 0);
+    state.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(state.wizard.catalog().unwrap().query(), "");
 }

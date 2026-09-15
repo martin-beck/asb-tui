@@ -278,6 +278,18 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["wizard_step_changed", "focus_reset"].as_slice()
         } else if transition.event == "wizard_set_value" {
             ["wizard_draft_changed", "focus_reset"].as_slice()
+        } else if matches!(
+            transition.event.as_str(),
+            "wizard_catalog_query" | "wizard_catalog_move"
+        ) {
+            ["wizard_catalog_changed", "focus_reset"].as_slice()
+        } else if transition.event == "wizard_catalog_select" {
+            [
+                "wizard_catalog_changed",
+                "wizard_draft_changed",
+                "focus_reset",
+            ]
+            .as_slice()
         } else if transition.event == "go_back" {
             ["route_restored", "focus_reset"].as_slice()
         } else if transition.event == "open_help" {
