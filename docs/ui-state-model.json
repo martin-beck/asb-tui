@@ -22,6 +22,9 @@
     {"action":"toggle_group","element":"measures.group_toggle","key":"g"}
     ,{"action":"focus_configuration","element":"configuration.entry","key":"Enter"}
     ,{"action":"save_configuration","element":"configuration.entry","key":"Ctrl-S"}
+    ,{"action":"edit_configuration","element":"configuration.entry","key":"Character"}
+    ,{"action":"backspace_configuration","element":"configuration.entry","key":"Backspace"}
+    ,{"action":"commit_configuration_edit","element":"configuration.entry","key":"Enter"}
   ],
   "routes": [
     {"id":"landing","elements":["landing.primary","navigation","status.connection"]},
@@ -87,6 +90,9 @@
     {"event":"open_help","from":"reports","to":"help","effects":["return_route_saved","route_changed","focus_reset"]},
     {"event":"go_back","from":"help","to":"landing","effects":["route_restored","focus_reset"]}
     ,{"event":"save_configuration","from":"configuration","to":"configuration","effects":["configuration_persisted","focus_reset"]}
+    ,{"event":"edit_configuration","from":"configuration","to":"configuration","effects":["configuration_draft_changed"]}
+    ,{"event":"backspace_configuration","from":"configuration","to":"configuration","effects":["configuration_draft_changed"]}
+    ,{"event":"commit_configuration_edit","from":"configuration","to":"configuration","effects":["configuration_draft_changed","focus_reset"]}
   ],
   "help": [
     {"id":"screen.landing","text":"Choose a benchmark task or open another screen."},

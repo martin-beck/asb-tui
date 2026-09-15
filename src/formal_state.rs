@@ -267,6 +267,13 @@ fn validate_document(model: &Document) -> Result<(), String> {
         }
         let expected = if transition.event == "save_configuration" {
             ["configuration_persisted", "focus_reset"].as_slice()
+        } else if matches!(
+            transition.event.as_str(),
+            "edit_configuration" | "backspace_configuration"
+        ) {
+            ["configuration_draft_changed"].as_slice()
+        } else if transition.event == "commit_configuration_edit" {
+            ["configuration_draft_changed", "focus_reset"].as_slice()
         } else if matches!(transition.event.as_str(), "wizard_next" | "wizard_back") {
             ["wizard_step_changed", "focus_reset"].as_slice()
         } else if transition.event == "wizard_set_value" {

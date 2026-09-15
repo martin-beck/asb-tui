@@ -15,7 +15,7 @@
     {"path":"src/shell.rs","kind":"state"},
     {"path":"src/startup.rs","kind":"startup"},
     {"path":"src/terminal.rs","kind":"terminal"},
-    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, wizard editing, contextual help, completion, and formally checked local configuration save"},
+    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, wizard editing, contextual help, completion, and formally checked local configuration editing and save"},
     {"path":"src/visual.rs","kind":"rendering"},
     {"path":"src/wizard.rs","kind":"state"}
     ,{"path":"src/wizard_catalog.rs","kind":"state","responsibility":"Bounded renderer-neutral agent, provider, and model choices for the setup wizard"}

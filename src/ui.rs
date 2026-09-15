@@ -51,6 +51,7 @@ pub enum ConfigurationSaveState {
     Saved,
     Unavailable,
     Failed,
+    Invalid,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,6 +66,9 @@ pub struct WorkspaceState {
     configuration_draft: crate::configuration::ConfigurationDraft,
     configuration_path: Option<PathBuf>,
     configuration_save_state: ConfigurationSaveState,
+    configuration_editing: bool,
+    configuration_edit_buffer: String,
+    configuration_edit_error: Option<String>,
     /// Last validated snapshot supplied by the authenticated control seam.
     pub live: Option<LiveSnapshot>,
     selection: Option<MeasurementSelection>,
@@ -135,6 +139,9 @@ impl Default for WorkspaceState {
             .expect("default configuration is valid"),
             configuration_path: None,
             configuration_save_state: ConfigurationSaveState::Unavailable,
+            configuration_editing: false,
+            configuration_edit_buffer: String::new(),
+            configuration_edit_error: None,
             live: None,
             selection: None,
             layout: ResponsiveLayout::from_dimensions(None, None),
@@ -227,6 +234,46 @@ impl WorkspaceState {
     #[must_use]
     pub const fn configuration_save_state(&self) -> ConfigurationSaveState {
         self.configuration_save_state
+    }
+
+    /// The bounded text currently visible in the focused configuration editor.
+    pub fn configuration_edit_value(&self) -> Option<&str> {
+        self.configuration_editing
+            .then_some(self.configuration_edit_buffer.as_str())
+    }
+
+    fn apply_configuration_edit_buffer(&mut self) {
+        let Some(id) = self.configuration_draft.focused() else {
+            return;
+        };
+        match self
+            .configuration_draft
+            .set_value(id, &self.configuration_edit_buffer)
+        {
+            Ok(()) => {
+                self.configuration_edit_error = None;
+                self.configuration_save_state = if self.configuration_path.is_some() {
+                    ConfigurationSaveState::Dirty
+                } else {
+                    ConfigurationSaveState::Unavailable
+                };
+            }
+            Err(_error) => {
+                self.configuration_edit_error =
+                    Some("value rejected by configuration validation".into());
+                self.configuration_save_state = ConfigurationSaveState::Invalid;
+            }
+        }
+    }
+
+    fn commit_configuration_edit(&mut self) -> Result<(), ()> {
+        self.apply_configuration_edit_buffer();
+        if self.configuration_edit_error.is_some() {
+            return Err(());
+        }
+        self.configuration_editing = false;
+        self.configuration_draft.focus(None);
+        Ok(())
     }
 
     /// Create workspace state from an already-authoritative readiness result.
@@ -380,6 +427,9 @@ impl WorkspaceState {
             && key.code == KeyCode::Char('s')
             && key.modifiers.contains(KeyModifiers::CONTROL)
         {
+            if self.configuration_editing && self.commit_configuration_edit().is_err() {
+                return UiAction::None;
+            }
             let _ = self.save_configuration();
             return UiAction::None;
         }
@@ -426,12 +476,41 @@ impl WorkspaceState {
                 UiAction::None
             }
             KeyCode::Enter if self.screen == Screen::Configuration => {
+                if self.configuration_editing {
+                    let _ = self.commit_configuration_edit();
+                    return UiAction::None;
+                }
                 let setting = self
                     .configuration_draft
                     .visible_settings()
                     .get(self.config_cursor)
                     .map(|descriptor| descriptor.id);
                 self.configuration_draft.focus(setting);
+                self.configuration_editing = setting.is_some();
+                self.configuration_edit_buffer = setting
+                    .and_then(|id| self.configuration_draft.value(id))
+                    .unwrap_or_default();
+                self.configuration_edit_error = None;
+                UiAction::None
+            }
+            KeyCode::Backspace
+                if self.screen == Screen::Configuration && self.configuration_editing =>
+            {
+                self.configuration_edit_buffer.pop();
+                self.apply_configuration_edit_buffer();
+                UiAction::None
+            }
+            KeyCode::Char(c)
+                if self.screen == Screen::Configuration
+                    && self.configuration_editing
+                    && !c.is_control() =>
+            {
+                if self.configuration_edit_buffer.chars().count()
+                    < crate::configuration::MAX_STRING_SCALARS
+                {
+                    self.configuration_edit_buffer.push(c);
+                    self.apply_configuration_edit_buffer();
+                }
                 UiAction::None
             }
             KeyCode::Char(' ') if self.screen == Screen::Measures => {
@@ -804,7 +883,22 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
     let entries = state.configuration_draft.visible_settings();
     let items: Vec<ListItem> = entries
         .iter()
-        .map(|setting| ListItem::new(format!("{} [{}]", setting.label, setting.category)))
+        .map(|setting| {
+            let value = if state.configuration_editing
+                && state.configuration_draft.focused() == Some(setting.id)
+            {
+                state.configuration_edit_buffer.clone()
+            } else {
+                state
+                    .configuration_draft
+                    .value(setting.id)
+                    .unwrap_or_default()
+            };
+            ListItem::new(format!(
+                "{} = {} [{}]",
+                setting.label, value, setting.category
+            ))
+        })
         .collect();
     let mut ls = ListState::default();
     ls.select((state.config_cursor < items.len()).then_some(state.config_cursor));
@@ -821,6 +915,7 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
         ConfigurationSaveState::Saved => "Applied to local configuration",
         ConfigurationSaveState::Unavailable => "Save unavailable: no local store",
         ConfigurationSaveState::Failed => "Save failed: draft retained",
+        ConfigurationSaveState::Invalid => "Invalid value: correct it before applying",
     };
     let footer = Rect {
         x: area.x,
@@ -828,7 +923,11 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
         width: area.width,
         height: 2.min(area.height),
     };
-    frame.render_widget(Paragraph::new(status).style(muted(policy)), footer);
+    let detail = state.configuration_edit_error.as_deref().unwrap_or("");
+    frame.render_widget(
+        Paragraph::new(format!("{status}  {detail}")).style(muted(policy)),
+        footer,
+    );
 }
 
 fn reports(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
@@ -1060,6 +1159,30 @@ mod tests {
         );
         assert!(!state.configuration_draft().is_dirty());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn configuration_value_editing_shows_draft_and_rejects_invalid_text() {
+        let mut state = WorkspaceState {
+            screen: Screen::Configuration,
+            ..WorkspaceState::default()
+        };
+        state.handle_key(key(KeyCode::Enter));
+        assert_eq!(state.configuration_edit_value(), Some("dark"));
+        state.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(
+            state.configuration_save_state(),
+            ConfigurationSaveState::Invalid
+        );
+        assert_eq!(state.configuration_edit_value(), Some("darkx"));
+        state.handle_key(key(KeyCode::Backspace));
+        assert_eq!(
+            state.configuration_save_state(),
+            ConfigurationSaveState::Unavailable
+        );
+        assert_eq!(state.configuration_edit_value(), Some("dark"));
+        state.handle_key(key(KeyCode::Enter));
+        assert_eq!(state.configuration_edit_value(), None);
     }
 
     #[test]
