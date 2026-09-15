@@ -1,7 +1,10 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-use asb_tui::agent_catalog::parse_agent_catalog_response;
+use asb_tui::agent_catalog::{
+    AgentAvailability, AgentCatalog, AgentCatalogEntry, AgentCatalogRequest, AgentPackage,
+    AgentProvenance, AgentTarget, encode_agent_catalog_request, parse_agent_catalog_response,
+};
 
 fn valid() -> String {
     serde_json::json!({
@@ -72,4 +75,123 @@ fn rejects_unsorted_duplicate_incomplete_and_wrong_target_catalogs() {
 fn rejects_agent_identifiers_outside_asb_lowercase_slug_form() {
     let invalid = valid().replace("\"agent-a\"", "\"Agent_A\"");
     assert!(parse_agent_catalog_response(&invalid).is_err());
+}
+
+#[test]
+fn request_encoding_validates_identity_and_timeout() {
+    let request = AgentCatalogRequest {
+        action: asb_tui::agent_catalog::AgentCatalogAction::Refresh,
+        runner_instance_id: "runner-1".into(),
+        known_generation: Some(3),
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&encode_agent_catalog_request(12, 1000, &request).unwrap()).unwrap();
+    assert_eq!(value["method"], "agent_catalog");
+    assert_eq!(value["params"]["known_generation"], 3);
+    assert!(encode_agent_catalog_request(12, 0, &request).is_err());
+    assert!(encode_agent_catalog_request(12, 300_001, &request).is_err());
+    assert!(
+        encode_agent_catalog_request(
+            12,
+            1000,
+            &AgentCatalogRequest {
+                runner_instance_id: "bad value".into(),
+                ..request
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn catalog_validation_rejects_bounds_and_noncanonical_metadata() {
+    let target = AgentTarget {
+        operating_system: "linux".into(),
+        architecture: "x86_64".into(),
+        libc: "glibc".into(),
+        libc_version: "2.35".into(),
+    };
+    let entry = |id: &str| AgentCatalogEntry {
+        agent_id: id.into(),
+        target: target.clone(),
+        package: AgentPackage {
+            package_id: "pkg".into(),
+            version: "1.0".into(),
+            sha256: "a".repeat(64),
+            signature_sha256: "b".repeat(64),
+        },
+        provenance: AgentProvenance {
+            source_revision: "c".repeat(40),
+            manifest_sha256: "d".repeat(64),
+        },
+        capabilities: vec!["bench".into()],
+        availability: AgentAvailability::Unavailable(
+            asb_tui::agent_catalog::AgentUnavailableReason::PolicyDenied,
+        ),
+    };
+    let mut catalog = AgentCatalog {
+        runner_instance_id: "runner".into(),
+        generation: 1,
+        catalog_sha256: "e".repeat(64),
+        target: target.clone(),
+        agents: vec![entry("agent")],
+        refreshed: true,
+    };
+    // Direct validation exercises the public boundary independently of the
+    // JSON decoder and keeps unavailable catalog entries representable.
+    assert!(catalog.validate().is_ok());
+    catalog.target.libc_version = "bad value".into();
+    assert!(catalog.validate().is_err());
+    catalog.target = target;
+    catalog.agents[0].capabilities = vec!["bench".into(), "bench".into()];
+    assert!(catalog.validate().is_err());
+    catalog.agents[0].capabilities = vec!["bad value".into()];
+    assert!(catalog.validate().is_err());
+    catalog.agents[0].capabilities = vec![];
+    assert!(catalog.validate().is_err());
+    catalog.agents[0].provenance.source_revision = "C".repeat(40);
+    assert!(catalog.validate().is_err());
+}
+
+#[test]
+fn catalog_decoder_rejects_envelope_digest_and_empty_catalog() {
+    let wrong_kind = valid().replace("\"kind\":\"agent_catalog\"", "\"kind\":\"other\"");
+    assert!(parse_agent_catalog_response(&wrong_kind).is_err());
+    let bad_digest = valid().replace(
+        "\"request_sha256\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"",
+        "\"request_sha256\":\"not-a-digest\"",
+    );
+    assert!(parse_agent_catalog_response(&bad_digest).is_err());
+    let mut empty: serde_json::Value = serde_json::from_str(&valid()).unwrap();
+    empty["result"]["value"]["result"]["value"]["agents"] = serde_json::json!([]);
+    assert!(parse_agent_catalog_response(&empty.to_string()).is_err());
+}
+
+#[test]
+fn catalog_validation_rejects_each_authenticated_identity_field() {
+    let raw: serde_json::Value = serde_json::from_str(&valid()).unwrap();
+    for (field, bad) in [
+        ("runner_instance_id", "bad value"),
+        ("catalog_sha256", "bad"),
+        ("package_id", "bad value"),
+        ("version", "bad value"),
+        ("sha256", "bad"),
+        ("signature_sha256", "bad"),
+        ("manifest_sha256", "bad"),
+    ] {
+        let mut candidate = raw.clone();
+        let target = &mut candidate["result"]["value"]["result"]["value"];
+        if field == "runner_instance_id" || field == "catalog_sha256" {
+            target[field] = serde_json::Value::String(bad.into());
+        } else {
+            target["agents"][0]["package"][field] = serde_json::Value::String(bad.into());
+        }
+        assert!(parse_agent_catalog_response(&candidate.to_string()).is_err());
+    }
+    // Keep the base JSON value live so this test remains tied to the complete
+    // nested ASB envelope rather than a hand-written fragment.
+    assert_eq!(
+        raw["result"]["value"]["result"]["value"]["runner_instance_id"],
+        "runner-1"
+    );
 }
