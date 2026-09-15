@@ -183,7 +183,8 @@ impl WorkspaceState {
         Ok(())
     }
 
-    /// Persist and commit the draft atomically through [`ConfigurationStore`].
+    /// Persist and commit the draft atomically through the local
+    /// [`crate::configuration::ConfigurationStore`].
     pub fn save_configuration(&mut self) -> Result<(), crate::configuration::ConfigError> {
         // Validate the documented route/action transition before touching the
         // local store.  This keeps the keyboard action fail-closed if the
