@@ -5,6 +5,7 @@
 
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -44,6 +45,16 @@ class UiHelpValidationTests(unittest.TestCase):
         entry["help"]["extra"] = "not permitted"
         errors = VALIDATOR.validate_document(self.document, set())
         self.assertEqual(errors, ["screen.landing: help must contain exactly summary and usage"])
+
+    def test_action_registry_discovery_fails_closed(self) -> None:
+        original = VALIDATOR.ACTION_SOURCE
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "actions.rs"
+            path.write_text("pub enum UiAction {}", encoding="utf-8")
+            VALIDATOR.ACTION_SOURCE = path
+            with self.assertRaisesRegex(ValueError, "cannot locate UiAction::ALL registry"):
+                VALIDATOR._action_ids()
+        VALIDATOR.ACTION_SOURCE = original
 
 
 if __name__ == "__main__":
