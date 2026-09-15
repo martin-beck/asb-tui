@@ -20,6 +20,15 @@ class UiStateModelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.model = json.loads(MODULE.MODEL.read_text(encoding="utf-8"))
+        cls.inventory = json.loads(MODULE.INVENTORY.read_text(encoding="utf-8"))
+
+    def inventory_paths(self, inventory=None):
+        inventory = self.inventory if inventory is None else inventory
+        return [entry["path"] for entry in inventory["ui_modules"] + inventory["exemptions"]]
+
+    def actual_source_paths(self):
+        root = Path(MODULE.ROOT)
+        return sorted(path.relative_to(root).as_posix() for path in (root / "src").glob("*.rs"))
 
     def test_current_model_is_valid(self):
         self.assertEqual(MODULE.validate(self.model), [])
@@ -136,6 +145,28 @@ class UiStateModelTests(unittest.TestCase):
         errors = MODULE.validate(model)
         self.assertTrue(any("duplicate binding" in error for error in errors))
         self.assertTrue(any("parent relationship contains a cycle" in error for error in errors))
+
+    def test_module_inventory_matches_every_source_and_owner(self):
+        self.assertEqual(MODULE.validate_module_inventory(self.inventory, self.actual_source_paths()), [])
+
+    def test_module_inventory_rejects_drift_and_weak_exemptions(self):
+        actual = self.actual_source_paths()
+        missing = actual.copy()
+        missing.remove("src/wizard.rs")
+        errors = MODULE.validate_module_inventory(self.inventory, missing)
+        self.assertTrue(any("stale classification" in error for error in errors))
+        errors = MODULE.validate_module_inventory(self.inventory, actual + ["src/new_screen.rs"])
+        self.assertIn("module inventory: unclassified source module src/new_screen.rs", errors)
+        weak = copy.deepcopy(self.inventory)
+        weak["exemptions"][0]["reason"] = "no"
+        errors = MODULE.validate_module_inventory(weak, self.inventory_paths(weak))
+        self.assertTrue(any("meaningful reason" in error for error in errors))
+
+    def test_module_inventory_must_match_ui_owners(self):
+        owners = set(MODULE.UI_OWNERS)
+        owners.remove("src/wizard.rs")
+        errors = MODULE.validate_module_inventory(self.inventory, self.inventory_paths(), owners)
+        self.assertIn("module inventory: UI modules and UI_OWNERS differ", errors)
 
 
 if __name__ == "__main__":
