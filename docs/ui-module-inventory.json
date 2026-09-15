@@ -15,7 +15,7 @@
     {"path":"src/shell.rs","kind":"state"},
     {"path":"src/startup.rs","kind":"startup"},
     {"path":"src/terminal.rs","kind":"terminal"},
-    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace catalog projection and keyboard selection coordination"},
+    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace catalog projection, keyboard selection, and wizard completion coordination"},
     {"path":"src/visual.rs","kind":"rendering"},
     {"path":"src/wizard.rs","kind":"state"}
   ],

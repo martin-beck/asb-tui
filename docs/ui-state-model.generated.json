@@ -50,6 +50,11 @@
       "key": "Enter"
     },
     {
+      "action": "complete_wizard",
+      "element": "wizard.review",
+      "key": "Enter"
+    },
+    {
       "action": "wizard_back",
       "element": "navigation",
       "key": "Esc"

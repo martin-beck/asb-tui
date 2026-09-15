@@ -67,6 +67,7 @@ class UiStateModelTests(unittest.TestCase):
             {
                 ("open_wizard", "w"),
                 ("wizard_next", "Enter"),
+                ("complete_wizard", "Enter"),
                 ("wizard_back", "Esc"),
                 ("cancel_wizard", "q"),
             }.issubset(bindings)
@@ -81,6 +82,7 @@ class UiStateModelTests(unittest.TestCase):
                 ("wizard_next", "wizard", "wizard"),
                 ("wizard_back", "wizard", "wizard"),
                 ("cancel_wizard", "wizard", "landing"),
+                ("complete_wizard", "wizard", "landing"),
             }.issubset(transitions)
         )
 
