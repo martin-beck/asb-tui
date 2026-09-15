@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "ui_modules": [
+    {"path":"src/actions.rs","kind":"interaction"},
+    {"path":"src/app.rs","kind":"state"},
+    {"path":"src/configuration.rs","kind":"state"},
+    {"path":"src/formal_state.rs","kind":"state"},
+    {"path":"src/help.rs","kind":"interaction"},
+    {"path":"src/landing.rs","kind":"projection"},
+    {"path":"src/live_projection.rs","kind":"projection"},
+    {"path":"src/renderer.rs","kind":"rendering"},
+    {"path":"src/reports.rs","kind":"projection"},
+    {"path":"src/runtime.rs","kind":"terminal"},
+    {"path":"src/selection.rs","kind":"state"},
+    {"path":"src/shell.rs","kind":"state"},
+    {"path":"src/startup.rs","kind":"startup"},
+    {"path":"src/terminal.rs","kind":"terminal"},
+    {"path":"src/ui.rs","kind":"rendering"},
+    {"path":"src/visual.rs","kind":"rendering"},
+    {"path":"src/wizard.rs","kind":"state"}
+  ],
+  "exemptions": [
+    {"path":"src/agent_catalog.rs","reason":"Agent catalog protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/agent_lifecycle.rs","reason":"Agent lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/asb_lifecycle.rs","reason":"ASB lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/broker_adoption.rs","reason":"Transport handoff only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/bundle.rs","reason":"Bundle verification only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/compatibility.rs","reason":"Compatibility probing only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/control_client.rs","reason":"Control transport client only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/control_codec.rs","reason":"Wire codec only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/control_transport.rs","reason":"Authenticated transport only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/delegated.rs","reason":"Lifecycle delegation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/identity_adapter.rs","reason":"Identity validation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/lib.rs","reason":"Module exports only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/lifecycle.rs","reason":"Install lifecycle only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/main.rs","reason":"CLI bootstrap only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/release_channel.rs","reason":"Release policy only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/sha256.rs","reason":"Digest primitive only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/system_probe.rs","reason":"Host probing only; it has no UI state or projection ownership.","expires":"2027-12-31"}
+  ]
+}
