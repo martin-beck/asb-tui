@@ -86,7 +86,8 @@ class UiStateModelTests(unittest.TestCase):
         model = copy.deepcopy(self.model)
         model["bindings"].append({"action": "quit", "element": "navigation", "key": "x"})
         model["elements"][0]["parent"] = "navigation"
-        model["elements"][10]["parent"] = "landing.primary"
+        next_element = next(item for item in model["elements"] if item["id"] == "navigation")
+        next_element["parent"] = "landing.primary"
         errors = MODULE.validate(model)
         self.assertTrue(any("duplicate binding" in error for error in errors))
         self.assertTrue(any("parent relationship contains a cycle" in error for error in errors))

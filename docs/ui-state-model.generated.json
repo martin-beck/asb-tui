@@ -23,7 +23,7 @@
       "key": "q"
     },
     {
-      "action": "open_measures",
+      "action": "open_measurement_selection",
       "element": "landing.primary",
       "key": "2"
     },
@@ -31,11 +31,6 @@
       "action": "open_configuration",
       "element": "landing.primary",
       "key": "3"
-    },
-    {
-      "action": "open_reports",
-      "element": "landing.primary",
-      "key": "4"
     },
     {
       "action": "open_help",
@@ -81,6 +76,23 @@
       "elements": [
         "configuration.entry",
         "configuration.search",
+        "navigation"
+      ]
+    },
+    {
+      "id": "run_control",
+      "elements": [
+        "run.status",
+        "run.start",
+        "run.cancel",
+        "navigation"
+      ]
+    },
+    {
+      "id": "recent_runs",
+      "elements": [
+        "runs.row",
+        "runs.refresh",
         "navigation"
       ]
     },
@@ -157,6 +169,51 @@
       "parent": null
     },
     {
+      "id": "run.status",
+      "route": "run_control",
+      "role": "status",
+      "help_id": "run.status",
+      "focusable": false,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "run.start",
+      "route": "run_control",
+      "role": "action",
+      "help_id": "run.start",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "run.cancel",
+      "route": "run_control",
+      "role": "action",
+      "help_id": "run.cancel",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "runs.row",
+      "route": "recent_runs",
+      "role": "selectable",
+      "help_id": "runs.row",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "runs.refresh",
+      "route": "recent_runs",
+      "role": "action",
+      "help_id": "runs.refresh",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
       "id": "reports.row",
       "route": "reports",
       "role": "selectable",
@@ -213,44 +270,172 @@
   ],
   "transitions": [
     {
-      "event": "open_measures",
+      "event": "open_measurement_selection",
       "from": "landing",
-      "to": "measurement_selection"
+      "to": "measurement_selection",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
       "event": "open_configuration",
       "from": "landing",
-      "to": "configuration"
-    },
-    {
-      "event": "open_reports",
-      "from": "landing",
-      "to": "reports"
+      "to": "configuration",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
       "event": "open_help",
       "from": "landing",
-      "to": "help"
+      "to": "help",
+      "effects": [
+        "return_route_saved",
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
-      "event": "navigate_home",
+      "event": "open_landing",
       "from": "measurement_selection",
-      "to": "landing"
+      "to": "landing",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
-      "event": "navigate_home",
+      "event": "open_run_control",
+      "from": "measurement_selection",
+      "to": "run_control",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_help",
+      "from": "measurement_selection",
+      "to": "help",
+      "effects": [
+        "return_route_saved",
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_landing",
       "from": "configuration",
-      "to": "landing"
+      "to": "landing",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
-      "event": "navigate_home",
+      "event": "open_measurement_selection",
+      "from": "configuration",
+      "to": "measurement_selection",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_help",
+      "from": "configuration",
+      "to": "help",
+      "effects": [
+        "return_route_saved",
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_landing",
+      "from": "run_control",
+      "to": "landing",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_recent_runs",
+      "from": "run_control",
+      "to": "recent_runs",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_help",
+      "from": "run_control",
+      "to": "help",
+      "effects": [
+        "return_route_saved",
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_landing",
+      "from": "recent_runs",
+      "to": "landing",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_reports",
+      "from": "recent_runs",
+      "to": "reports",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_help",
+      "from": "recent_runs",
+      "to": "help",
+      "effects": [
+        "return_route_saved",
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_landing",
       "from": "reports",
-      "to": "landing"
+      "to": "landing",
+      "effects": [
+        "route_changed",
+        "focus_reset"
+      ]
     },
     {
-      "event": "navigate_home",
+      "event": "open_help",
+      "from": "reports",
+      "to": "help",
+      "effects": [
+        "return_route_saved",
+        "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "go_back",
       "from": "help",
-      "to": "landing"
+      "to": "landing",
+      "effects": [
+        "route_restored",
+        "focus_reset"
+      ]
     }
   ],
   "help": [
@@ -277,6 +462,26 @@
     {
       "id": "configuration.search",
       "text": "Type to find a configuration setting by name or description."
+    },
+    {
+      "id": "run.status",
+      "text": "Shows whether the benchmark is idle, running, complete, or failed."
+    },
+    {
+      "id": "run.start",
+      "text": "Start a benchmark using the current configuration and measures."
+    },
+    {
+      "id": "run.cancel",
+      "text": "Stop the active benchmark while preserving its partial record."
+    },
+    {
+      "id": "runs.row",
+      "text": "Choose a completed run to inspect its report."
+    },
+    {
+      "id": "runs.refresh",
+      "text": "Reload the latest run history from ASB."
     },
     {
       "id": "reports.row",

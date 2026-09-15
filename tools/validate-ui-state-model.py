@@ -155,6 +155,10 @@ def validate(model):
             continue
         if source not in graph or target not in graph:
             errors.append(f"transition: unknown route {source!r}->{target!r}")
+        if not isinstance(transition.get("event"), str) or not transition["event"]:
+            errors.append("transition: missing event")
+        if not isinstance(transition.get("effects"), list) or not transition["effects"]:
+            errors.append(f"transition: {transition.get('event')!r} must declare effects")
         else:
             graph[source].add(target)
             reverse[target].add(source)
