@@ -11,7 +11,7 @@ use crate::{
     selection::{MAX_QUERY_BYTES, Measurement, MeasurementSelection},
     startup::{self, StartupInput},
     terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
-    wizard::{self, Wizard},
+    wizard::{self, FormalEvent, Wizard, WizardFormalState},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -54,6 +54,7 @@ pub struct WorkspaceState {
     /// Local setup draft and its one-shot startup gate. This has no persistence
     /// or ASB side effects; those remain downstream integration seams.
     pub wizard: Wizard,
+    wizard_formal: WizardFormalState,
     /// Last validated dimensions received from the terminal event stream.
     /// Rendering still uses the frame's authoritative area, so a missed
     /// event cannot make the renderer allocate from stale dimensions.
@@ -73,6 +74,7 @@ impl Default for WorkspaceState {
         Self {
             screen: Screen::Landing,
             wizard: Wizard::default(),
+            wizard_formal: WizardFormalState::new().expect("authored wizard model must be valid"),
             help: false,
             search: String::new(),
             measure_cursor: 0,
@@ -128,7 +130,7 @@ impl WorkspaceState {
             wizard::startup_route(asb_setup_ready),
             wizard::StartupRoute::Wizard
         ) {
-            state.screen = Screen::Wizard;
+            state.open_wizard();
         }
         state
     }
@@ -148,7 +150,9 @@ impl WorkspaceState {
 
     /// Open the wizard for a later manual reconfiguration.
     pub fn open_wizard(&mut self) {
-        self.screen = Screen::Wizard;
+        if self.wizard_formal.apply(FormalEvent::OpenWizard).is_ok() {
+            self.screen = Screen::Wizard;
+        }
     }
 
     /// Apply a live terminal resize without disturbing the current route,
@@ -204,22 +208,42 @@ impl WorkspaceState {
         if self.screen == Screen::Wizard {
             return match key.code {
                 KeyCode::Enter => {
-                    let _ = self.wizard.advance();
+                    let event = if self.wizard.step() == wizard::Step::Review {
+                        FormalEvent::Complete
+                    } else {
+                        FormalEvent::Next
+                    };
+                    if self.wizard_formal.apply(event).is_ok() {
+                        self.wizard = self.wizard_formal.wizard().clone();
+                        if self.wizard_formal.route() == wizard::StartupRoute::Landing {
+                            self.screen = Screen::Landing;
+                        }
+                    }
                     UiAction::None
                 }
                 KeyCode::Esc => {
-                    if self.wizard.back().is_err() {
+                    if self.wizard_formal.apply(FormalEvent::Back).is_err() {
                         self.screen = Screen::Landing;
+                    } else {
+                        self.wizard = self.wizard_formal.wizard().clone();
                     }
                     UiAction::None
                 }
                 KeyCode::Char('q') => {
-                    self.wizard.cancel();
-                    self.screen = Screen::Landing;
+                    if self.wizard_formal.apply(FormalEvent::Cancel).is_ok() {
+                        self.wizard = self.wizard_formal.wizard().clone();
+                        self.screen = Screen::Landing;
+                    }
                     UiAction::None
                 }
                 KeyCode::Char(c) if !c.is_control() => {
-                    let _ = self.wizard.set_value(c.to_string());
+                    if self
+                        .wizard_formal
+                        .apply(FormalEvent::SetValue(c.to_string()))
+                        .is_ok()
+                    {
+                        self.wizard = self.wizard_formal.wizard().clone();
+                    }
                     UiAction::None
                 }
                 KeyCode::Backspace => UiAction::None,
@@ -898,6 +922,30 @@ mod tests {
             .screen,
             Screen::Landing
         );
+    }
+
+    #[test]
+    fn review_enter_applies_formal_completion_and_returns_to_landing() {
+        let mut state = WorkspaceState::for_startup(false);
+        for _ in 0..7 {
+            state.handle_key(key(KeyCode::Char('x')));
+            state.handle_key(key(KeyCode::Enter));
+        }
+        assert_eq!(state.wizard.step(), crate::wizard::Step::Review);
+        state.handle_key(key(KeyCode::Enter));
+        assert_eq!(state.screen, Screen::Landing);
+        assert_eq!(state.wizard.step(), crate::wizard::Step::Review);
+    }
+
+    #[test]
+    fn failed_formal_completion_does_not_change_wizard_route() {
+        let mut state = WorkspaceState {
+            screen: Screen::Wizard,
+            ..WorkspaceState::default()
+        };
+        state.handle_key(key(KeyCode::Enter));
+        assert_eq!(state.screen, Screen::Wizard);
+        assert_eq!(state.wizard.step(), crate::wizard::Step::Agent);
     }
 
     #[test]
