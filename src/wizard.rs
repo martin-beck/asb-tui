@@ -96,6 +96,14 @@ impl Wizard {
         self.cancelled
     }
 
+    /// Return the bounded draft value for the active editable step.
+    #[must_use]
+    pub fn current_value(&self) -> &str {
+        self.values
+            .get(self.step as usize)
+            .map_or("", String::as_str)
+    }
+
     pub fn set_value(&mut self, value: impl Into<String>) -> Result<(), WizardError> {
         if self.step == Step::Review {
             return Err(WizardError::InvalidValue);
@@ -329,6 +337,7 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
                 accent,
             )),
             Line::from(step_prompt(wizard.step)),
+            Line::from(format!("Value: {}", wizard.current_value())),
             Line::from(format!("Element: {}", element_id(wizard.step))),
         ])
         .wrap(Wrap { trim: true })

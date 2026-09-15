@@ -7,6 +7,7 @@
 
 use crate::{
     control_codec::MeasurementCatalog,
+    help::document_help_text,
     live_projection::{Connection, LiveSnapshot},
     selection::{MAX_QUERY_BYTES, Measurement, MeasurementSelection},
     startup::{self, StartupInput},
@@ -236,17 +237,34 @@ impl WorkspaceState {
                     }
                     UiAction::None
                 }
+                KeyCode::Char('?') | KeyCode::Char('h') => {
+                    self.help = true;
+                    UiAction::None
+                }
                 KeyCode::Char(c) if !c.is_control() => {
+                    let mut value = self.wizard.current_value().to_owned();
+                    value.push(c);
                     if self
                         .wizard_formal
-                        .apply(FormalEvent::SetValue(c.to_string()))
+                        .apply(FormalEvent::SetValue(value))
                         .is_ok()
                     {
                         self.wizard = self.wizard_formal.wizard().clone();
                     }
                     UiAction::None
                 }
-                KeyCode::Backspace => UiAction::None,
+                KeyCode::Backspace => {
+                    let mut value = self.wizard.current_value().to_owned();
+                    value.pop();
+                    if self
+                        .wizard_formal
+                        .apply(FormalEvent::SetValue(value))
+                        .is_ok()
+                    {
+                        self.wizard = self.wizard_formal.wizard().clone();
+                    }
+                    UiAction::None
+                }
                 _ => UiAction::None,
             };
         }
@@ -494,7 +512,11 @@ fn previous_screen(screen: Screen) -> Screen {
 pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolicy) {
     let area = frame.area();
     if state.screen == Screen::Wizard {
-        return wizard::render(frame, &state.wizard, policy);
+        wizard::render(frame, &state.wizard, policy);
+        if state.help {
+            wizard_help_overlay(frame, area, policy, wizard::element_id(state.wizard.step()));
+        }
+        return;
     }
     if area.width < 38 || area.height < 8 {
         render_compact(frame, area, policy);
@@ -751,6 +773,25 @@ fn help_overlay(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
         popup,
     );
 }
+
+fn wizard_help_overlay(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy, element: &str) {
+    let popup = centered(area, 70, 65);
+    frame.render_widget(Clear, popup);
+    let context = document_help_text(element)
+        .unwrap_or("Edit the active wizard value and use Enter to continue.");
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled("Wizard help", accent(policy))),
+            Line::from(context),
+            Line::from("Type to append | Backspace to correct"),
+            Line::from("Enter next or complete | Esc back | q cancel"),
+            Line::from("? / h / Esc close this window"),
+        ])
+        .block(panel(" Contextual help ", policy))
+        .wrap(Wrap { trim: true }),
+        popup,
+    );
+}
 fn render_compact(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
     frame.render_widget(
         Paragraph::new("ASB | 1 Home 2 Measures 3 Config 4 Reports\n? help | q quit")
@@ -935,6 +976,33 @@ mod tests {
         state.handle_key(key(KeyCode::Enter));
         assert_eq!(state.screen, Screen::Landing);
         assert_eq!(state.wizard.step(), crate::wizard::Step::Review);
+    }
+
+    #[test]
+    fn wizard_editing_appends_backspaces_and_opens_contextual_help() {
+        let mut state = WorkspaceState::for_startup(false);
+        state.handle_key(key(KeyCode::Char('a')));
+        state.handle_key(key(KeyCode::Char('b')));
+        assert_eq!(state.wizard.current_value(), "ab");
+        state.handle_key(key(KeyCode::Backspace));
+        assert_eq!(state.wizard.current_value(), "a");
+        state.handle_key(key(KeyCode::Char('?')));
+        assert!(state.help);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Wizard help"));
+        assert!(text.contains("Choose which supported agent"));
+        state.handle_key(key(KeyCode::Esc));
+        assert!(!state.help);
     }
 
     #[test]
