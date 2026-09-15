@@ -4,9 +4,13 @@
 import copy
 import importlib.util
 import json
+from pathlib import Path
 import unittest
 
-SPEC = importlib.util.spec_from_file_location("validator", "tools/validate-ui-state-model.py")
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location(
+    "validator", ROOT / "tools" / "validate-ui-state-model.py"
+)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
@@ -33,6 +37,24 @@ class UiStateModelTests(unittest.TestCase):
         model = copy.deepcopy(self.model)
         model["elements"].append(copy.deepcopy(model["elements"][0]))
         self.assertTrue(any("duplicate id" in error for error in MODULE.validate(model)))
+
+    def test_malformed_route_id_is_rejected_without_crashing(self):
+        model = copy.deepcopy(self.model)
+        model["routes"].append({"id": {"not": "hashable"}, "elements": []})
+        errors = MODULE.validate(model)
+        self.assertTrue(any("invalid route id" in error for error in errors))
+
+    def test_malformed_transition_ids_are_rejected_without_crashing(self):
+        model = copy.deepcopy(self.model)
+        model["transitions"].append({"from": {"bad": "id"}, "to": "landing"})
+        errors = MODULE.validate(model)
+        self.assertTrue(any("route ids must be strings" in error for error in errors))
+
+    def test_non_array_route_elements_are_rejected(self):
+        model = copy.deepcopy(self.model)
+        model["routes"][0]["elements"] = {"not": "an array"}
+        errors = MODULE.validate(model)
+        self.assertTrue(any("elements must be an array" in error for error in errors))
 
 
 if __name__ == "__main__":

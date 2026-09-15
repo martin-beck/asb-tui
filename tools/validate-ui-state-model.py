@@ -22,9 +22,19 @@ def validate(model):
     transitions = model.get("transitions")
     if not all(isinstance(value, list) and value for value in (routes, elements, transitions)):
         return errors + ["model: routes, elements, and transitions must be non-empty arrays"]
-    route_ids = [item.get("id") for item in routes if isinstance(item, dict)]
-    if len(route_ids) != len(set(route_ids)):
-        errors.append("routes: duplicate route id")
+    route_ids = []
+    for item in routes:
+        if not isinstance(item, dict):
+            errors.append("routes: entry must be an object")
+            continue
+        ident = item.get("id")
+        if not isinstance(ident, str) or not ident:
+            errors.append(f"routes: invalid route id {ident!r}")
+            continue
+        if ident in route_ids:
+            errors.append(f"routes: duplicate route id {ident!r}")
+            continue
+        route_ids.append(ident)
     element_map = {}
     for item in elements:
         if not isinstance(item, dict):
@@ -43,7 +53,14 @@ def validate(model):
         if not isinstance(route, dict) or route.get("id") not in route_ids:
             errors.append("routes: malformed route")
             continue
-        for ident in route.get("elements", []):
+        route_elements = route.get("elements")
+        if not isinstance(route_elements, list):
+            errors.append(f"{route['id']}: elements must be an array")
+            continue
+        for ident in route_elements:
+            if not isinstance(ident, str):
+                errors.append(f"{route['id']}: element id must be a string")
+                continue
             if ident not in element_map:
                 errors.append(f"{route['id']}: unknown element {ident}")
             elif element_map[ident].get("route") not in (route["id"], "global"):
@@ -54,6 +71,9 @@ def validate(model):
             errors.append("transitions: entry must be an object")
             continue
         source, target = transition.get("from"), transition.get("to")
+        if not isinstance(source, str) or not isinstance(target, str):
+            errors.append(f"transition: route ids must be strings {source!r}->{target!r}")
+            continue
         if source not in graph or target not in graph:
             errors.append(f"transition: unknown route {source!r}->{target!r}")
         else:
