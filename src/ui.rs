@@ -6,7 +6,9 @@
 //! the external ASB control plane.
 
 use crate::{
+    control_codec::MeasurementCatalog,
     live_projection::{Connection, LiveSnapshot},
+    selection::{MAX_QUERY_BYTES, Measurement, MeasurementSelection},
     startup::{self, StartupInput},
     terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
     wizard::{self, Wizard},
@@ -48,6 +50,7 @@ pub struct WorkspaceState {
     pub report_cursor: usize,
     /// Last validated snapshot supplied by the authenticated control seam.
     pub live: Option<LiveSnapshot>,
+    selection: Option<MeasurementSelection>,
     /// Local setup draft and its one-shot startup gate. This has no persistence
     /// or ASB side effects; those remain downstream integration seams.
     pub wizard: Wizard,
@@ -59,8 +62,9 @@ pub struct WorkspaceState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MeasureRow {
-    pub group: &'static str,
-    pub name: &'static str,
+    pub id: String,
+    pub group: String,
+    pub name: String,
     pub selected: bool,
 }
 
@@ -74,34 +78,40 @@ impl Default for WorkspaceState {
             measure_cursor: 0,
             measures: vec![
                 MeasureRow {
-                    group: "Quality",
-                    name: "Correctness",
+                    id: "quality.correctness".into(),
+                    group: "Quality".into(),
+                    name: "Correctness".into(),
                     selected: true,
                 },
                 MeasureRow {
-                    group: "Quality",
-                    name: "Consistency",
+                    id: "quality.consistency".into(),
+                    group: "Quality".into(),
+                    name: "Consistency".into(),
                     selected: true,
                 },
                 MeasureRow {
-                    group: "Efficiency",
-                    name: "Latency",
+                    id: "efficiency.latency".into(),
+                    group: "Efficiency".into(),
+                    name: "Latency".into(),
                     selected: true,
                 },
                 MeasureRow {
-                    group: "Efficiency",
-                    name: "Token usage",
+                    id: "efficiency.token_usage".into(),
+                    group: "Efficiency".into(),
+                    name: "Token usage".into(),
                     selected: false,
                 },
                 MeasureRow {
-                    group: "Safety",
-                    name: "Policy adherence",
+                    id: "safety.policy_adherence".into(),
+                    group: "Safety".into(),
+                    name: "Policy adherence".into(),
                     selected: false,
                 },
             ],
             config_cursor: 0,
             report_cursor: 0,
             live: None,
+            selection: None,
             layout: ResponsiveLayout::from_dimensions(None, None),
         }
     }
@@ -167,8 +177,15 @@ impl WorkspaceState {
     /// Replace presentation data only after it has passed the typed control
     /// projection. No renderer input can mutate ASB state through this method.
     pub fn apply_live_snapshot(&mut self, snapshot: LiveSnapshot) {
+        if let Some(catalog) = snapshot.measurement_catalog.as_ref()
+            && let Some(selection) = selection_from_catalog(catalog, self.selection.as_ref())
+        {
+            self.selection = Some(selection);
+            self.sync_measure_projection();
+        }
         self.live = Some(snapshot);
         self.report_cursor = 0;
+        self.clamp_measure_cursor();
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> UiAction {
@@ -252,13 +269,7 @@ impl WorkspaceState {
                 UiAction::None
             }
             KeyCode::Char(' ') if self.screen == Screen::Measures => {
-                if let Some(row) = self
-                    .visible_indices()
-                    .get(self.measure_cursor)
-                    .and_then(|i| self.measures.get_mut(*i))
-                {
-                    row.selected = !row.selected;
-                }
+                self.toggle_current_measure();
                 UiAction::None
             }
             KeyCode::Char('g') if self.screen == Screen::Measures => {
@@ -267,12 +278,24 @@ impl WorkspaceState {
             }
             KeyCode::Char('/') if self.screen == Screen::Measures => UiAction::None,
             KeyCode::Char(c) if self.screen == Screen::Measures && !c.is_control() => {
-                self.search.push(c);
+                let mut candidate = self.search.clone();
+                candidate.push(c);
+                if candidate.chars().count() <= MAX_QUERY_BYTES {
+                    self.search = candidate;
+                    if let Some(selection) = self.selection.as_mut() {
+                        let _ = selection.set_query(self.search.clone());
+                    }
+                    self.sync_measure_projection();
+                }
                 self.measure_cursor = 0;
                 UiAction::None
             }
             KeyCode::Backspace if self.screen == Screen::Measures => {
                 self.search.pop();
+                if let Some(selection) = self.selection.as_mut() {
+                    let _ = selection.set_query(self.search.clone());
+                }
+                self.sync_measure_projection();
                 self.measure_cursor = 0;
                 UiAction::None
             }
@@ -318,12 +341,65 @@ impl WorkspaceState {
             .collect()
     }
 
+    fn clamp_measure_cursor(&mut self) {
+        self.measure_cursor = self
+            .measure_cursor
+            .min(self.visible_indices().len().saturating_sub(1));
+    }
+
+    fn sync_measure_projection(&mut self) {
+        if let Some(selection) = self.selection.as_ref() {
+            self.measures = selection
+                .measurements()
+                .iter()
+                .map(|measurement| MeasureRow {
+                    id: measurement.id().to_owned(),
+                    group: measurement.group().to_owned(),
+                    name: measurement.name().to_owned(),
+                    selected: selection.is_selected(measurement.id()),
+                })
+                .collect();
+        }
+        self.clamp_measure_cursor();
+    }
+
+    fn toggle_current_measure(&mut self) {
+        let Some(index) = self.visible_indices().get(self.measure_cursor).copied() else {
+            return;
+        };
+        if let Some(selection) = self.selection.as_mut() {
+            let Some(measurement) = selection
+                .measurements()
+                .iter()
+                .find(|measurement| measurement.id() == self.measures[index].id)
+            else {
+                return;
+            };
+            let id = measurement.id().to_owned();
+            let selected = !selection.is_selected(&id);
+            let _ = selection.set_measure_selected(&id, selected);
+            self.sync_measure_projection();
+        } else if let Some(row) = self.measures.get_mut(index) {
+            row.selected = !row.selected;
+        }
+    }
+
     fn toggle_visible_group(&mut self) {
         let indices = self.visible_indices();
         let Some(&current) = indices.get(self.measure_cursor) else {
             return;
         };
-        let group = self.measures[current].group;
+        let group = self.measures[current].group.clone();
+        if let Some(selection) = self.selection.as_mut() {
+            let select = selection
+                .visible_groups()
+                .into_iter()
+                .find(|summary| summary.group() == group)
+                .is_some_and(|summary| summary.state() != crate::selection::GroupSelection::All);
+            let _ = selection.set_visible_group_selected(&group, select);
+            self.sync_measure_projection();
+            return;
+        }
         let members: Vec<usize> = indices
             .into_iter()
             .filter(|index| self.measures[*index].group == group)
@@ -339,6 +415,37 @@ impl WorkspaceState {
             .as_ref()
             .map_or(2, |snapshot| snapshot.runs.len().max(1))
     }
+}
+
+fn selection_from_catalog(
+    catalog: &MeasurementCatalog,
+    previous: Option<&MeasurementSelection>,
+) -> Option<MeasurementSelection> {
+    let measurements = catalog
+        .measurements
+        .iter()
+        .map(|definition| {
+            let group = catalog
+                .groups
+                .iter()
+                .find(|group| group.id == definition.group)
+                .map(|group| group.label.clone())?;
+            Measurement::new(
+                definition.id.clone(),
+                group,
+                definition.name.clone(),
+                definition.unit.clone(),
+            )
+            .ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut selection = MeasurementSelection::new(measurements).ok()?;
+    if let Some(previous) = previous {
+        for id in previous.selected_ids() {
+            let _ = selection.set_measure_selected(id, true);
+        }
+    }
+    Some(selection)
 }
 
 fn next_screen(screen: Screen) -> Screen {
@@ -697,6 +804,29 @@ mod tests {
         assert!(s.help);
         s.handle_key(key(KeyCode::Esc));
         assert!(!s.help);
+    }
+
+    #[test]
+    fn authoritative_empty_catalog_replaces_built_in_measure_rows() {
+        let mut state = WorkspaceState::default();
+        let snapshot = LiveSnapshot {
+            connection: Connection::Negotiated,
+            runner_instance_id: Some("runner-catalog".into()),
+            latest_revision: None,
+            capabilities: None,
+            measurement_catalog: Some(MeasurementCatalog {
+                schema_version: 1,
+                catalog_sha256: String::new(),
+                groups: Vec::new(),
+                measurements: Vec::new(),
+            }),
+            agent_catalog: None,
+            agent_lifecycle: None,
+            runs: Vec::new(),
+        };
+        state.apply_live_snapshot(snapshot);
+        assert!(state.measures.is_empty());
+        assert_eq!(state.measure_cursor, 0);
     }
 
     #[test]

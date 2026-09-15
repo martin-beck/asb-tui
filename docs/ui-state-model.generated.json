@@ -13,6 +13,7 @@
     "hover",
     "query",
     "selection",
+    "measurement_catalog",
     "connection",
     "capabilities",
     "startup_wizard_opened",
