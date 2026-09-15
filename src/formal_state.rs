@@ -261,7 +261,11 @@ fn validate_document(model: &Document) -> Result<(), String> {
         {
             return Err(format!("invalid transition {}", transition.event));
         }
-        let expected = if transition.event == "go_back" {
+        let expected = if matches!(transition.event.as_str(), "wizard_next" | "wizard_back") {
+            ["wizard_step_changed", "focus_reset"].as_slice()
+        } else if transition.event == "wizard_set_value" {
+            ["wizard_draft_changed", "focus_reset"].as_slice()
+        } else if transition.event == "go_back" {
             ["route_restored", "focus_reset"].as_slice()
         } else if transition.event == "open_help" {
             ["return_route_saved", "route_changed", "focus_reset"].as_slice()
