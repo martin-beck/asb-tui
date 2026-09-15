@@ -7,6 +7,7 @@
 
 use crate::{
     live_projection::{Connection, LiveSnapshot},
+    startup::{self, StartupInput},
     terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
     wizard::{self, Wizard},
 };
@@ -117,6 +118,19 @@ impl WorkspaceState {
             wizard::startup_route(asb_setup_ready),
             wizard::StartupRoute::Wizard
         ) {
+            state.screen = Screen::Wizard;
+        }
+        state
+    }
+
+    /// Create workspace state from the complete normalized readiness result.
+    /// Only explicitly unconfigured or incomplete input opens the wizard;
+    /// unavailable, malformed, stale, and unauthorized states stay closed.
+    #[must_use]
+    pub fn for_readiness(input: StartupInput) -> Self {
+        let mut state = Self::default();
+        let decision = startup::classify(input);
+        if decision.auto_opens_wizard() {
             state.screen = Screen::Wizard;
         }
         state
@@ -701,6 +715,59 @@ mod tests {
         assert_eq!(state.wizard.step(), crate::wizard::Step::Agent);
         let configured = WorkspaceState::for_startup(true);
         assert_eq!(configured.screen, Screen::Landing);
+    }
+
+    #[test]
+    fn readiness_injection_opens_only_for_explicitly_unconfigured_states() {
+        let base = StartupInput {
+            configuration_present: true,
+            configuration_complete: true,
+            endpoint_available: true,
+            configuration_malformed: false,
+            configuration_stale: false,
+            authorized: true,
+        };
+        assert_eq!(WorkspaceState::for_readiness(base).screen, Screen::Landing);
+        assert_eq!(
+            WorkspaceState::for_readiness(StartupInput {
+                configuration_present: false,
+                ..base
+            })
+            .screen,
+            Screen::Wizard
+        );
+        assert_eq!(
+            WorkspaceState::for_readiness(StartupInput {
+                endpoint_available: false,
+                ..base
+            })
+            .screen,
+            Screen::Landing
+        );
+        assert_eq!(
+            WorkspaceState::for_readiness(StartupInput {
+                configuration_malformed: true,
+                ..base
+            })
+            .screen,
+            Screen::Landing
+        );
+        assert_eq!(
+            WorkspaceState::for_readiness(StartupInput {
+                configuration_stale: true,
+                ..base
+            })
+            .screen,
+            Screen::Landing
+        );
+        assert_eq!(
+            WorkspaceState::for_readiness(StartupInput {
+                authorized: false,
+                ..base
+            })
+            .screen,
+            Screen::Landing
+        );
     }
 
     #[test]

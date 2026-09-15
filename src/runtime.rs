@@ -6,6 +6,7 @@ use crate::{
     app::{Action, AppError, AppState},
     control_transport::AuthenticatedBrokerSession,
     live_projection::ControlProjection,
+    startup::ReadinessProvider,
     terminal::{RenderPolicy, frame_dimensions_are_safe},
     ui,
 };
@@ -339,6 +340,18 @@ impl TerminalSession {
 /// Run the single-writer interactive draw loop until the operator quits.
 pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(), RuntimeError> {
     run_interactive_loop(state, policy, ui::WorkspaceState::default(), None)
+}
+
+/// Run the interactive frontend after one injected, normalized readiness
+/// observation. The provider owns probing; this runtime only selects the
+/// initial route and never persists or contacts ASB for readiness.
+pub fn run_interactive_with_readiness<P: ReadinessProvider>(
+    state: &mut AppState,
+    policy: RenderPolicy,
+    provider: &mut P,
+) -> Result<(), RuntimeError> {
+    let workspace = ui::WorkspaceState::for_readiness(provider.read());
+    run_interactive_loop(state, policy, workspace, None)
 }
 
 fn run_interactive_loop(

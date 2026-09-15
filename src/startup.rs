@@ -34,6 +34,13 @@ pub struct StartupInput {
     pub authorized: bool,
 }
 
+/// Injected, already-normalized readiness source for application startup.
+/// Implementations may probe configuration or ASB outside this crate; this
+/// interface itself performs no I/O and exposes only bounded facts.
+pub trait ReadinessProvider {
+    fn read(&mut self) -> StartupInput;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StartupDecision {
     readiness: Readiness,

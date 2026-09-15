@@ -27,6 +27,12 @@ class UiStateModelTests(unittest.TestCase):
     def test_startup_controller_state_is_formally_declared(self):
         self.assertIn("startup_wizard_opened", self.model["state_fields"])
 
+    def test_readiness_routes_are_closed_before_wizard_selection(self):
+        route_ids = {route["id"] for route in self.model["routes"]}
+        self.assertIn("landing", route_ids)
+        self.assertIn("wizard", route_ids)
+        self.assertIn("open_wizard", {item["event"] for item in self.model["transitions"]})
+
     def test_resize_layout_state_is_formally_declared(self):
         self.assertIn("responsive_layout", self.model["state_fields"])
 
