@@ -99,6 +99,16 @@
       "action": "toggle_group",
       "element": "measures.group_toggle",
       "key": "g"
+    },
+    {
+      "action": "focus_configuration",
+      "element": "configuration.entry",
+      "key": "Enter"
+    },
+    {
+      "action": "save_configuration",
+      "element": "configuration.entry",
+      "key": "Ctrl-S"
     }
   ],
   "routes": [
@@ -634,6 +644,15 @@
         "route_restored",
         "focus_reset"
       ]
+    },
+    {
+      "event": "save_configuration",
+      "from": "configuration",
+      "to": "configuration",
+      "effects": [
+        "configuration_persisted",
+        "focus_reset"
+      ]
     }
   ],
   "help": [
@@ -691,7 +710,7 @@
     },
     {
       "id": "configuration.entry",
-      "text": "Edit this setting; its value controls the next benchmark."
+      "text": "Edit this setting and press Ctrl-S to apply the validated local draft."
     },
     {
       "id": "configuration.search",

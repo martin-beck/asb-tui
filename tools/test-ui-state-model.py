@@ -54,6 +54,15 @@ class UiStateModelTests(unittest.TestCase):
     def test_configuration_persistence_state_is_formally_declared(self):
         self.assertIn("configuration_persistence", self.model["state_fields"])
 
+    def test_configuration_save_binding_and_transition_are_formally_declared(self):
+        bindings = {(item["action"], item["element"], item["key"]) for item in self.model["bindings"]}
+        self.assertIn(("focus_configuration", "configuration.entry", "Enter"), bindings)
+        self.assertIn(("save_configuration", "configuration.entry", "Ctrl-S"), bindings)
+        transitions = {(item["event"], item["from"], item["to"]) for item in self.model["transitions"]}
+        self.assertIn(("save_configuration", "configuration", "configuration"), transitions)
+        save = next(item for item in self.model["transitions"] if item["event"] == "save_configuration")
+        self.assertEqual(save["effects"], ["configuration_persisted", "focus_reset"])
+
     def test_wizard_catalog_state_is_formally_declared(self):
         self.assertIn("wizard_catalog", self.model["state_fields"])
 
