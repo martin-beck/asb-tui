@@ -29,6 +29,8 @@ pub struct LiveSnapshot {
     pub latest_revision: Option<Revision>,
     pub capabilities: Option<crate::control_codec::Capabilities>,
     pub measurement_catalog: Option<MeasurementCatalog>,
+    pub agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
+    pub agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     pub runs: Vec<RunSummary>,
 }
 
@@ -59,6 +61,8 @@ pub struct ControlProjection {
     negotiated: Option<Negotiated>,
     capabilities: Option<crate::control_codec::Capabilities>,
     measurement_catalog: Option<MeasurementCatalog>,
+    agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
+    agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     runs: BTreeMap<String, RunSummary>,
 }
 
@@ -119,6 +123,29 @@ impl ControlProjection {
                 }
                 self.measurement_catalog = Some(value.catalog.clone());
             }
+            (ControlCall::AgentCatalog(_), ControlResult::AgentCatalog(value)) => {
+                if self.negotiated.as_ref().is_none_or(|session| {
+                    session.version < crate::control_codec::CONTROL_AGENT_CATALOG_V1
+                }) {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.agent_catalog = Some(value.clone());
+            }
+            (
+                ControlCall::AgentInstall(_)
+                | ControlCall::AgentStatus(_)
+                | ControlCall::AgentCancel(_)
+                | ControlCall::AgentRetry(_)
+                | ControlCall::AgentRemove(_),
+                ControlResult::AgentLifecycle(value),
+            ) => {
+                if self.negotiated.as_ref().is_none_or(|session| {
+                    session.version < crate::control_codec::CONTROL_AGENT_LIFECYCLE_V1
+                }) {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.agent_lifecycle = Some(value.clone());
+            }
             (ControlCall::History(_), ControlResult::History(page)) => {
                 if self.runs.len() + page.items.len() > MAX_PROJECTED_RUNS {
                     return Err(ProjectionError::TooManyRuns);
@@ -172,6 +199,8 @@ impl ControlProjection {
             latest_revision: self.negotiated.as_ref().map(|value| value.latest_revision),
             capabilities: self.capabilities.clone(),
             measurement_catalog: self.measurement_catalog.clone(),
+            agent_catalog: self.agent_catalog.clone(),
+            agent_lifecycle: self.agent_lifecycle.clone(),
             runs,
         }
     }
@@ -219,18 +248,22 @@ mod tests {
         })
     }
 
-    fn negotiate_response(id: u64) -> ControlResponse {
+    fn negotiate_response_at(id: u64, version: ControlVersion) -> ControlResponse {
         ControlResponse::Success(SuccessResponse {
             jsonrpc: "2.0".into(),
             id: RequestId(id),
             result: ControlSuccess::Negotiated(Negotiated {
-                version: ControlVersion { major: 1, minor: 3 },
+                version,
                 limits: ControlLimits::default(),
                 runner_instance_id: "runner".into(),
                 oldest_revision: Revision(1),
                 latest_revision: Revision(5),
             }),
         })
+    }
+
+    fn negotiate_response(id: u64) -> ControlResponse {
+        negotiate_response_at(id, ControlVersion { major: 1, minor: 3 })
     }
 
     fn connected_projection() -> ControlProjection {
@@ -245,6 +278,22 @@ mod tests {
             .apply(
                 &request(call, 99),
                 &negotiate_response(99),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        projection
+    }
+
+    fn connected_projection_at(version: ControlVersion) -> ControlProjection {
+        let call = ControlCall::Negotiate(crate::control_codec::NegotiateParams {
+            versions: [version].into_iter().collect(),
+            limits: ControlLimits::default(),
+        });
+        let mut projection = ControlProjection::default();
+        projection
+            .apply(
+                &request(call, 99),
+                &negotiate_response_at(99, version),
                 ControlLimits::default(),
             )
             .unwrap();
@@ -374,6 +423,56 @@ mod tests {
             ),
             Err(ProjectionError::StaleRun)
         );
+    }
+
+    #[test]
+    fn agent_catalog_and_lifecycle_are_projected_only_at_their_protocol_versions() {
+        let catalog: crate::agent_catalog::AgentCatalog =
+            crate::agent_catalog::parse_agent_catalog_response(include_str!(
+                "../tests/fixtures/asb-v1.4-agent-catalog-response.json"
+            ))
+            .unwrap();
+        let catalog_call = ControlCall::AgentCatalog(crate::agent_catalog::AgentCatalogRequest {
+            action: crate::agent_catalog::AgentCatalogAction::Status,
+            runner_instance_id: "runner-1".into(),
+            known_generation: None,
+        });
+        let mut old = connected_projection();
+        assert_eq!(
+            old.apply(
+                &request(catalog_call.clone(), 1),
+                &response(1, ControlResult::AgentCatalog(catalog.clone())),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::UnexpectedResult)
+        );
+
+        let mut current = connected_projection_at(crate::control_codec::V1_5);
+        current
+            .apply(
+                &request(catalog_call, 2),
+                &response(2, ControlResult::AgentCatalog(catalog)),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        let lifecycle: crate::asb_lifecycle::AgentLifecycleResponse =
+            crate::asb_lifecycle::parse_lifecycle_response(include_str!(
+                "../tests/fixtures/asb-v1.5-agent-install-response.json"
+            ))
+            .unwrap();
+        let lifecycle_call = ControlCall::AgentStatus(crate::asb_lifecycle::AgentStatusRequest {
+            binding: lifecycle.binding.clone(),
+            operation_id: None,
+        });
+        current
+            .apply(
+                &request(lifecycle_call, 3),
+                &response(3, ControlResult::AgentLifecycle(lifecycle.clone())),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(current.snapshot().agent_lifecycle, Some(lifecycle));
+        assert!(current.snapshot().agent_catalog.is_some());
     }
 
     #[test]

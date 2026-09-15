@@ -48,6 +48,7 @@ pub struct FramedControlStream {
     limits: ControlLimits,
     expected_peer: RunnerIdentity,
     negotiated: bool,
+    negotiated_version: Option<control_codec::ControlVersion>,
 }
 
 impl FramedControlStream {
@@ -71,6 +72,7 @@ impl FramedControlStream {
             limits,
             expected_peer,
             negotiated: false,
+            negotiated_version: None,
         })
     }
 
@@ -104,6 +106,7 @@ impl FramedControlStream {
                 runner_instance_id: String::new(),
             },
             negotiated: false,
+            negotiated_version: None,
         })
     }
 
@@ -114,6 +117,8 @@ impl FramedControlStream {
             timeout_ms: self.limits.max_timeout_ms,
             call: control_codec::ControlCall::Negotiate(NegotiateParams {
                 versions: [
+                    control_codec::V1_5,
+                    control_codec::V1_4,
                     control_codec::V1_3,
                     control_codec::V1_2,
                     control_codec::V1_0,
@@ -134,6 +139,8 @@ impl FramedControlStream {
         if (!self.expected_peer.runner_instance_id.is_empty()
             && session.runner_instance_id != self.expected_peer.runner_instance_id)
             || ![
+                control_codec::V1_5,
+                control_codec::V1_4,
                 control_codec::V1_3,
                 control_codec::V1_2,
                 control_codec::V1_0,
@@ -142,6 +149,10 @@ impl FramedControlStream {
         {
             return Err(TransportError::NotNegotiated);
         }
+        if session.version < control_codec::V1_0 {
+            return Err(TransportError::NotNegotiated);
+        }
+        self.negotiated_version = Some(session.version);
         self.negotiated = true;
         Ok(ControlSuccess::Negotiated(session))
     }
@@ -167,6 +178,11 @@ impl FramedControlStream {
         let response: ControlResponse =
             control_codec::decode(&frame, self.limits.max_frame_bytes as usize)?;
         response.validate_for(request, self.limits)?;
+        if let Some(version) = self.negotiated_version
+            && minimum_version_for_call(&request.call).is_some_and(|minimum| version < minimum)
+        {
+            return Err(TransportError::NotNegotiated);
+        }
         Ok(response)
     }
 
@@ -213,6 +229,24 @@ impl FramedControlStream {
         let mut frame = header.to_vec();
         frame.extend(body);
         Ok(frame)
+    }
+}
+
+fn minimum_version_for_call(
+    call: &control_codec::ControlCall,
+) -> Option<control_codec::ControlVersion> {
+    match call {
+        control_codec::ControlCall::AgentCatalog(_) => {
+            Some(control_codec::CONTROL_AGENT_CATALOG_V1)
+        }
+        control_codec::ControlCall::AgentInstall(_)
+        | control_codec::ControlCall::AgentStatus(_)
+        | control_codec::ControlCall::AgentCancel(_)
+        | control_codec::ControlCall::AgentRetry(_)
+        | control_codec::ControlCall::AgentRemove(_) => {
+            Some(control_codec::CONTROL_AGENT_LIFECYCLE_V1)
+        }
+        _ => None,
     }
 }
 
@@ -364,20 +398,25 @@ impl AuthenticatedBrokerSession {
         next.accept_negotiated(self.negotiated.clone())
             .map_err(|_| TransportError::Projection)?;
         let limits = self.negotiated.limits;
-        let calls = [
-            ControlCall::Capabilities,
-            ControlCall::MeasurementCatalog,
-            ControlCall::History(PageParams {
-                after: None::<Revision>,
-                limit: limits.max_page_items,
-            }),
-        ];
+        let mut calls = vec![ControlCall::Capabilities];
+        if self.negotiated.version >= control_codec::CONTROL_MEASUREMENT_CATALOG_V1 {
+            calls.push(ControlCall::MeasurementCatalog);
+        }
+        calls.push(ControlCall::History(PageParams {
+            after: None::<Revision>,
+            limit: limits.max_page_items,
+        }));
+        if self.negotiated.version >= control_codec::CONTROL_AGENT_CATALOG_V1 {
+            calls.push(ControlCall::AgentCatalog(
+                crate::agent_catalog::AgentCatalogRequest {
+                    action: crate::agent_catalog::AgentCatalogAction::Status,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    known_generation: None,
+                },
+            ));
+        }
+        let bootstrap_count = calls.len();
         for (offset, call) in calls.into_iter().enumerate() {
-            if matches!(&call, ControlCall::MeasurementCatalog)
-                && self.negotiated.version < control_codec::CONTROL_MEASUREMENT_CATALOG_V1
-            {
-                return Err(TransportError::NotNegotiated);
-            }
             let id = RequestId(u64::try_from(offset + 2).map_err(|_| TransportError::Io)?);
             let request = ControlRequest {
                 jsonrpc: control_codec::JSONRPC_VERSION.into(),
@@ -391,6 +430,38 @@ impl AuthenticatedBrokerSession {
             }
             next.apply(&request, &response, limits)
                 .map_err(|_| TransportError::Projection)?;
+        }
+        if self.negotiated.version >= control_codec::CONTROL_AGENT_LIFECYCLE_V1
+            && let Some(catalog) = next.snapshot().agent_catalog
+        {
+            let base_id = 2_u64
+                .checked_add(u64::try_from(bootstrap_count).map_err(|_| TransportError::Io)?)
+                .ok_or(TransportError::Io)?;
+            for (offset, entry) in catalog.agents.iter().enumerate() {
+                let request = ControlRequest {
+                    jsonrpc: control_codec::JSONRPC_VERSION.into(),
+                    id: RequestId(
+                        base_id
+                            .checked_add(u64::try_from(offset).map_err(|_| TransportError::Io)?)
+                            .ok_or(TransportError::Io)?,
+                    ),
+                    timeout_ms: limits.max_timeout_ms,
+                    call: ControlCall::AgentStatus(crate::asb_lifecycle::AgentStatusRequest {
+                        binding: crate::asb_lifecycle::AgentLifecycleBinding {
+                            agent_id: entry.agent_id.clone(),
+                            runner_instance_id: catalog.runner_instance_id.clone(),
+                            catalog_sha256: catalog.catalog_sha256.clone(),
+                        },
+                        operation_id: None,
+                    }),
+                };
+                let response = self.transport.round_trip(&request)?;
+                if !matches!(response, ControlResponse::Success(_)) {
+                    return Err(TransportError::RemoteFailure);
+                }
+                next.apply(&request, &response, limits)
+                    .map_err(|_| TransportError::Projection)?;
+            }
         }
         *projection = next;
         Ok(())

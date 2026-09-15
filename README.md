@@ -166,3 +166,12 @@ unrelated children cannot be classified, signalled, or reaped as candidate desce
 This is the standalone half of the command contract. Current ASB releases do not yet route
 `asb tui install`, `asb tui`, `asb tui status`, `asb tui upgrade`, or `asb tui remove`; that narrow
 product-side router must land independently before those top-level commands are claimed available.
+
+## Agent catalog projection
+
+`protocol/v1/agent-catalog.schema.json` defines the renderer-neutral projection consumed by the
+standalone wizard. `agent_catalog::parse_agent_catalog` accepts only a bounded v1 response whose
+authentication status is verified and whose data is fenced to one runner generation and digest. It
+rejects unknown fields, duplicate identities, unsupported availability combinations, malformed
+package identities, and private/path-like values. Authentication and generation binding happen in
+the ASB control transport; parsing does not install, launch, mutate configuration, or render.

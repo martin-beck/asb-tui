@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0", "id": 7,
+  "result": {"kind": "operation", "value": {
+    "request_sha256": "396d5c940489b50e1e7b6ee4bff01d426e3b7415678c7c23f553ff10b22b98fe",
+    "result": {"kind": "agent_catalog", "value": {
+      "runner_instance_id": "runner-1", "generation": 3,
+      "catalog_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "target": {"operating_system": "linux", "architecture": "x86_64", "libc": "glibc", "libc_version": "2.35"},
+      "agents": [{"agent_id": "agent-a", "target": {"operating_system": "linux", "architecture": "x86_64", "libc": "glibc", "libc_version": "2.35"}, "package": {"package_id": "agent-package", "version": "1.2.3", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "signature_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "provenance": {"source_revision": "cccccccccccccccccccccccccccccccccccccccc", "manifest_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, "capabilities": ["chat", "tools"], "availability": {"status": "available"}}],
+      "refreshed": false
+    }}
+  }}
+}
