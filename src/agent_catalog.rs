@@ -16,7 +16,7 @@ const MAX_AGENTS: usize = 256;
 const MAX_CAPABILITIES: usize = 32;
 const MAX_TARGETS: usize = 16;
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentCatalog {
     pub protocol: String,
@@ -27,14 +27,14 @@ pub struct AgentCatalog {
     pub agents: Vec<AgentDescriptor>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Authentication {
     pub status: String,
     pub authorization: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentDescriptor {
     pub id: String,
@@ -46,14 +46,14 @@ pub struct AgentDescriptor {
     pub availability: Availability,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub operating_system: String,
     pub architecture: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Package {
     pub format: String,
@@ -62,7 +62,7 @@ pub struct Package {
     pub provenance: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Availability {
     pub state: String,
