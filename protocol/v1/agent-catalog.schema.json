@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/martin-beck/asb-tui/blob/main/protocol/v1/agent-catalog.schema.json",
+  "title": "Authenticated ASB agent catalog projection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "protocol_version", "runner_generation", "catalog_digest", "authentication", "agents"],
+  "properties": {
+    "protocol": {"const": "asb-agent-catalog"},
+    "protocol_version": {"const": 1},
+    "runner_generation": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"},
+    "catalog_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "authentication": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "authorization"],
+      "properties": {"status": {"const": "verified"}, "authorization": {"const": "agent-catalog-read"}}
+    },
+    "agents": {
+      "type": "array", "minItems": 1, "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "name", "version", "targets", "package", "capabilities", "availability"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 128},
+          "version": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"},
+          "targets": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["operating_system", "architecture"], "properties": {"operating_system": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}, "architecture": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}}}},
+          "package": {"type": "object", "additionalProperties": false, "required": ["format", "digest", "signature", "provenance"], "properties": {"format": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}, "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "signature": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}, "provenance": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}}},
+          "capabilities": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}},
+          "availability": {"type": "object", "additionalProperties": false, "required": ["state", "reason"], "properties": {"state": {"enum": ["available", "unavailable"]}, "reason": {"type": ["string", "null"], "maxLength": 64, "pattern": "^[^/\\\\\\u0000-\\u001f]+$"}}}
+        }
+      }
+    }
+  }
+}

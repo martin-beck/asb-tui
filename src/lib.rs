@@ -5,6 +5,7 @@
 //! Closed capability parsing, authenticated release discovery, and standalone frontend state.
 
 pub mod actions;
+pub mod agent_catalog;
 pub mod app;
 pub mod broker_adoption;
 pub mod bundle;
