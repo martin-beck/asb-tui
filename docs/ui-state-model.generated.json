@@ -21,6 +21,7 @@
     "contextual_help",
     "wizard_step",
     "wizard_draft",
+    "wizard_catalog",
     "configuration_persistence"
   ],
   "bindings": [
