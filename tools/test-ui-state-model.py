@@ -33,6 +33,36 @@ class UiStateModelTests(unittest.TestCase):
     def test_contextual_help_state_is_formally_declared(self):
         self.assertIn("contextual_help", self.model["state_fields"])
 
+    def test_workspace_wizard_route_and_bindings_are_formally_declared(self):
+        routes = {route["id"]: route for route in self.model["routes"]}
+        self.assertIn("wizard", routes)
+        self.assertTrue(
+            {"wizard.agent", "wizard.provider", "wizard.review"}.issubset(
+                routes["wizard"]["elements"]
+            )
+        )
+        bindings = {(item["action"], item["key"]) for item in self.model["bindings"]}
+        self.assertTrue(
+            {
+                ("open_wizard", "w"),
+                ("wizard_next", "Enter"),
+                ("wizard_back", "Esc"),
+                ("cancel_wizard", "q"),
+            }.issubset(bindings)
+        )
+        transitions = {
+            (item["event"], item["from"], item["to"])
+            for item in self.model["transitions"]
+        }
+        self.assertTrue(
+            {
+                ("open_wizard", "landing", "wizard"),
+                ("wizard_next", "wizard", "wizard"),
+                ("wizard_back", "wizard", "wizard"),
+                ("cancel_wizard", "wizard", "landing"),
+            }.issubset(transitions)
+        )
+
     def test_unknown_element_is_rejected(self):
         model = copy.deepcopy(self.model)
         model["routes"][0]["elements"].append("landing.missing")

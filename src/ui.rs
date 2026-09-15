@@ -8,6 +8,7 @@
 use crate::{
     live_projection::{Connection, LiveSnapshot},
     terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
+    wizard::{self, Wizard},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -21,6 +22,7 @@ use ratatui::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
     Landing,
+    Wizard,
     Measures,
     Configuration,
     Reports,
@@ -45,6 +47,9 @@ pub struct WorkspaceState {
     pub report_cursor: usize,
     /// Last validated snapshot supplied by the authenticated control seam.
     pub live: Option<LiveSnapshot>,
+    /// Local setup draft and its one-shot startup gate. This has no persistence
+    /// or ASB side effects; those remain downstream integration seams.
+    pub wizard: Wizard,
     /// Last validated dimensions received from the terminal event stream.
     /// Rendering still uses the frame's authoritative area, so a missed
     /// event cannot make the renderer allocate from stale dimensions.
@@ -62,6 +67,7 @@ impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
             screen: Screen::Landing,
+            wizard: Wizard::default(),
             help: false,
             search: String::new(),
             measure_cursor: 0,
@@ -101,6 +107,26 @@ impl Default for WorkspaceState {
 }
 
 impl WorkspaceState {
+    /// Create workspace state from an already-authoritative readiness result.
+    /// An unconfigured result opens the wizard once; no probing or persistence
+    /// is performed here.
+    #[must_use]
+    pub fn for_startup(asb_setup_ready: bool) -> Self {
+        let mut state = Self::default();
+        if matches!(
+            wizard::startup_route(asb_setup_ready),
+            wizard::StartupRoute::Wizard
+        ) {
+            state.screen = Screen::Wizard;
+        }
+        state
+    }
+
+    /// Open the wizard for a later manual reconfiguration.
+    pub fn open_wizard(&mut self) {
+        self.screen = Screen::Wizard;
+    }
+
     /// Apply a live terminal resize without disturbing the current route,
     /// query, selection, or overlay state. Invalid dimensions are rejected
     /// atomically and leave the workspace unchanged.
@@ -144,6 +170,31 @@ impl WorkspaceState {
             }
             return UiAction::None;
         }
+        if self.screen == Screen::Wizard {
+            return match key.code {
+                KeyCode::Enter => {
+                    let _ = self.wizard.advance();
+                    UiAction::None
+                }
+                KeyCode::Esc => {
+                    if self.wizard.back().is_err() {
+                        self.screen = Screen::Landing;
+                    }
+                    UiAction::None
+                }
+                KeyCode::Char('q') => {
+                    self.wizard.cancel();
+                    self.screen = Screen::Landing;
+                    UiAction::None
+                }
+                KeyCode::Char(c) if !c.is_control() => {
+                    let _ = self.wizard.set_value(c.to_string());
+                    UiAction::None
+                }
+                KeyCode::Backspace => UiAction::None,
+                _ => UiAction::None,
+            };
+        }
         match key.code {
             KeyCode::Char('q') => UiAction::Quit,
             KeyCode::Char('?') | KeyCode::Char('h') => {
@@ -160,6 +211,10 @@ impl WorkspaceState {
             }
             KeyCode::Char('3') => {
                 self.screen = Screen::Configuration;
+                UiAction::None
+            }
+            KeyCode::Char('w') => {
+                self.open_wizard();
                 UiAction::None
             }
             KeyCode::Char('4') => {
@@ -275,6 +330,7 @@ impl WorkspaceState {
 fn next_screen(screen: Screen) -> Screen {
     match screen {
         Screen::Landing => Screen::Measures,
+        Screen::Wizard => Screen::Measures,
         Screen::Measures => Screen::Configuration,
         Screen::Configuration => Screen::Reports,
         Screen::Reports | Screen::Help => Screen::Landing,
@@ -283,6 +339,7 @@ fn next_screen(screen: Screen) -> Screen {
 fn previous_screen(screen: Screen) -> Screen {
     match screen {
         Screen::Landing => Screen::Reports,
+        Screen::Wizard => Screen::Landing,
         Screen::Measures => Screen::Landing,
         Screen::Configuration => Screen::Measures,
         Screen::Reports | Screen::Help => Screen::Configuration,
@@ -291,6 +348,9 @@ fn previous_screen(screen: Screen) -> Screen {
 
 pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolicy) {
     let area = frame.area();
+    if state.screen == Screen::Wizard {
+        return wizard::render(frame, &state.wizard, policy);
+    }
     if area.width < 38 || area.height < 8 {
         render_compact(frame, area, policy);
         return;
@@ -306,6 +366,7 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
     let titles = ["1 Home", "2 Measures", "3 Configure", "4 Reports"];
     let selected = match state.screen {
         Screen::Landing => 0,
+        Screen::Wizard => 2,
         Screen::Measures => 1,
         Screen::Configuration => 2,
         Screen::Reports => 3,
@@ -324,6 +385,7 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
     );
     match state.screen {
         Screen::Landing => landing(frame, chunks[1], state, policy),
+        Screen::Wizard => unreachable!("wizard is rendered before workspace layout"),
         Screen::Measures => measures(frame, chunks[1], state, policy),
         Screen::Configuration => configuration(frame, chunks[1], state, policy),
         Screen::Reports => reports(frame, chunks[1], state, policy),
@@ -506,7 +568,8 @@ fn footer(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: Ren
         "? help"
     };
     let context = match state.screen {
-        Screen::Landing => "Enter open   2 measures   3 configure   4 reports",
+        Screen::Landing => "w setup   2 measures   3 configure   4 reports",
+        Screen::Wizard => "Enter next   Esc back   q cancel",
         Screen::Measures => "Up/Down move   Space item   g group   type search",
         Screen::Configuration => "Up/Down move   Enter edit   Ctrl-S save",
         Screen::Reports => "Up/Down move   Enter open/compare",
@@ -620,6 +683,54 @@ mod tests {
         assert!(s.help);
         s.handle_key(key(KeyCode::Esc));
         assert!(!s.help);
+    }
+
+    #[test]
+    fn startup_and_manual_wizard_route_are_local_and_one_shot() {
+        let mut state = WorkspaceState::for_startup(false);
+        assert_eq!(state.screen, Screen::Wizard);
+        state.handle_key(key(KeyCode::Char('q')));
+        assert_eq!(state.screen, Screen::Landing);
+        state.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(state.screen, Screen::Wizard);
+        state.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(state.wizard.step(), crate::wizard::Step::Agent);
+        state.handle_key(key(KeyCode::Enter));
+        assert_eq!(state.wizard.step(), crate::wizard::Step::Provider);
+        state.handle_key(key(KeyCode::Esc));
+        assert_eq!(state.wizard.step(), crate::wizard::Step::Agent);
+        let configured = WorkspaceState::for_startup(true);
+        assert_eq!(configured.screen, Screen::Landing);
+    }
+
+    #[test]
+    fn wizard_route_hands_rendering_to_wizard_at_normal_and_tiny_sizes() {
+        let mut state = WorkspaceState::for_startup(false);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("setup wizard"));
+        terminal.backend_mut().resize(24, 6);
+        state.apply_resize(24, 6);
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("ASB setup wizard"));
     }
     #[test]
     fn test_backend_snapshot_contains_contextual_controls() {

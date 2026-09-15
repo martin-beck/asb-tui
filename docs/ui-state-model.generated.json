@@ -38,6 +38,26 @@
       "key": "3"
     },
     {
+      "action": "open_wizard",
+      "element": "landing.primary",
+      "key": "w"
+    },
+    {
+      "action": "wizard_next",
+      "element": "wizard.review",
+      "key": "Enter"
+    },
+    {
+      "action": "wizard_back",
+      "element": "navigation",
+      "key": "Esc"
+    },
+    {
+      "action": "cancel_wizard",
+      "element": "navigation",
+      "key": "q"
+    },
+    {
       "action": "open_help",
       "element": "navigation",
       "key": "?"
