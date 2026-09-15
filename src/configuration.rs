@@ -352,7 +352,7 @@ fn reject_excessive_nesting(input: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigurationDraft {
     original: Configuration,
     current: Configuration,

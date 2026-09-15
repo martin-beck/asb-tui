@@ -22,6 +22,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -40,6 +41,18 @@ pub enum UiAction {
     Resize(u16, u16),
 }
 
+/// Result of the local configuration save action.  A failed save never clears
+/// the draft, and an unavailable store is reported instead of pretending that
+/// Ctrl-S applied anything.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigurationSaveState {
+    Clean,
+    Dirty,
+    Saved,
+    Unavailable,
+    Failed,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceState {
     pub screen: Screen,
@@ -49,6 +62,9 @@ pub struct WorkspaceState {
     pub measures: Vec<MeasureRow>,
     pub config_cursor: usize,
     pub report_cursor: usize,
+    configuration_draft: crate::configuration::ConfigurationDraft,
+    configuration_path: Option<PathBuf>,
+    configuration_save_state: ConfigurationSaveState,
     /// Last validated snapshot supplied by the authenticated control seam.
     pub live: Option<LiveSnapshot>,
     selection: Option<MeasurementSelection>,
@@ -113,6 +129,12 @@ impl Default for WorkspaceState {
             ],
             config_cursor: 0,
             report_cursor: 0,
+            configuration_draft: crate::configuration::ConfigurationDraft::new(
+                crate::configuration::Configuration::default(),
+            )
+            .expect("default configuration is valid"),
+            configuration_path: None,
+            configuration_save_state: ConfigurationSaveState::Unavailable,
             live: None,
             selection: None,
             layout: ResponsiveLayout::from_dimensions(None, None),
@@ -121,6 +143,91 @@ impl Default for WorkspaceState {
 }
 
 impl WorkspaceState {
+    /// Load a bounded local configuration store for the configuration screen.
+    /// This performs no ASB probing or backend acknowledgement.
+    pub fn with_configuration_store(
+        path: impl Into<PathBuf>,
+    ) -> Result<Self, crate::configuration::ConfigError> {
+        let path = path.into();
+        let config = crate::configuration::ConfigurationStore::new(&path).load_or_default()?;
+        Ok(Self {
+            configuration_draft: crate::configuration::ConfigurationDraft::new(config)
+                .expect("store configuration was validated on load"),
+            configuration_path: Some(path),
+            configuration_save_state: ConfigurationSaveState::Clean,
+            ..Self::default()
+        })
+    }
+
+    /// The current local configuration draft projected by the screen.
+    #[must_use]
+    pub fn configuration_draft(&self) -> &crate::configuration::ConfigurationDraft {
+        &self.configuration_draft
+    }
+
+    /// Edit the local draft transactionally.  The store is not touched until
+    /// [`Self::save_configuration`] succeeds.
+    pub fn edit_configuration<F>(
+        &mut self,
+        edit: F,
+    ) -> Result<(), crate::configuration::ConfigError>
+    where
+        F: FnOnce(&mut crate::configuration::Configuration),
+    {
+        self.configuration_draft.edit(edit)?;
+        self.configuration_save_state = if self.configuration_path.is_some() {
+            ConfigurationSaveState::Dirty
+        } else {
+            ConfigurationSaveState::Unavailable
+        };
+        Ok(())
+    }
+
+    /// Persist and commit the draft atomically through [`ConfigurationStore`].
+    pub fn save_configuration(&mut self) -> Result<(), crate::configuration::ConfigError> {
+        // Validate the documented route/action transition before touching the
+        // local store.  This keeps the keyboard action fail-closed if the
+        // authored formal model ever drifts from the implementation.
+        let mut formal = crate::formal_state::FormalUiState::new(80, 24).map_err(|error| {
+            crate::configuration::ConfigError::Invalid(format!(
+                "formal configuration save transition unavailable: {error:?}"
+            ))
+        })?;
+        formal
+            .apply(crate::formal_state::FormalEvent::OpenConfiguration, None)
+            .and_then(|_| {
+                formal.apply(
+                    crate::formal_state::FormalEvent::Focus("configuration.entry"),
+                    None,
+                )
+            })
+            .and_then(|_| formal.apply(crate::formal_state::FormalEvent::SaveConfiguration, None))
+            .map_err(|error| {
+                crate::configuration::ConfigError::Invalid(format!(
+                    "formal configuration save transition unavailable: {error:?}"
+                ))
+            })?;
+        let Some(path) = self.configuration_path.as_ref() else {
+            self.configuration_save_state = ConfigurationSaveState::Unavailable;
+            return Err(crate::configuration::ConfigError::Invalid(
+                "no local configuration store is configured".into(),
+            ));
+        };
+        let store = crate::configuration::ConfigurationStore::new(path);
+        if let Err(error) = store.save(self.configuration_draft.current()) {
+            self.configuration_save_state = ConfigurationSaveState::Failed;
+            return Err(error);
+        }
+        self.configuration_draft.apply()?;
+        self.configuration_save_state = ConfigurationSaveState::Saved;
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn configuration_save_state(&self) -> ConfigurationSaveState {
+        self.configuration_save_state
+    }
+
     /// Create workspace state from an already-authoritative readiness result.
     /// An unconfigured result opens the wizard once; no probing or persistence
     /// is performed here.
@@ -268,6 +375,13 @@ impl WorkspaceState {
                 _ => UiAction::None,
             };
         }
+        if self.screen == Screen::Configuration
+            && key.code == KeyCode::Char('s')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            let _ = self.save_configuration();
+            return UiAction::None;
+        }
         match key.code {
             KeyCode::Char('q') => UiAction::Quit,
             KeyCode::Char('?') | KeyCode::Char('h') => {
@@ -310,6 +424,15 @@ impl WorkspaceState {
                 self.move_cursor(1);
                 UiAction::None
             }
+            KeyCode::Enter if self.screen == Screen::Configuration => {
+                let setting = self
+                    .configuration_draft
+                    .visible_settings()
+                    .get(self.config_cursor)
+                    .map(|descriptor| descriptor.id);
+                self.configuration_draft.focus(setting);
+                UiAction::None
+            }
             KeyCode::Char(' ') if self.screen == Screen::Measures => {
                 self.toggle_current_measure();
                 UiAction::None
@@ -348,7 +471,7 @@ impl WorkspaceState {
     fn move_cursor(&mut self, delta: i8) {
         let max = match self.screen {
             Screen::Measures => self.visible_indices().len(),
-            Screen::Configuration => 4,
+            Screen::Configuration => self.configuration_draft.visible_settings().len(),
             Screen::Reports => 3,
             _ => 1,
         };
@@ -677,22 +800,34 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
 }
 
 fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
-    let entries = [
-        "Provider: default",
-        "Model: negotiated",
-        "Run mode: reproducible",
-        "Save changes: Ctrl-S",
-    ];
-    let items: Vec<ListItem> = entries.iter().map(|x| ListItem::new(*x)).collect();
+    let entries = state.configuration_draft.visible_settings();
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|setting| ListItem::new(format!("{} [{}]", setting.label, setting.category)))
+        .collect();
     let mut ls = ListState::default();
-    ls.select(Some(state.config_cursor));
+    ls.select((state.config_cursor < items.len()).then_some(state.config_cursor));
     frame.render_stateful_widget(
         List::new(items)
-            .block(panel(" Configuration - Enter edits ", policy))
+            .block(panel(" Configuration - Enter focus, Ctrl-S apply ", policy))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
         area,
         &mut ls,
     );
+    let status = match state.configuration_save_state {
+        ConfigurationSaveState::Clean => "No local changes",
+        ConfigurationSaveState::Dirty => "Unsaved local changes",
+        ConfigurationSaveState::Saved => "Applied to local configuration",
+        ConfigurationSaveState::Unavailable => "Save unavailable: no local store",
+        ConfigurationSaveState::Failed => "Save failed: draft retained",
+    };
+    let footer = Rect {
+        x: area.x,
+        y: area.y.saturating_add(area.height.saturating_sub(2)),
+        width: area.width,
+        height: 2.min(area.height),
+    };
+    frame.render_widget(Paragraph::new(status).style(muted(policy)), footer);
 }
 
 fn reports(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
@@ -836,11 +971,37 @@ fn muted(policy: RenderPolicy) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::configuration::ConfigurationStore;
     use crate::control_codec::{AttemptId, PublicRunState, Revision, RunId, RunSummary};
     use crossterm::event::KeyEventKind;
     use ratatui::{Terminal, backend::TestBackend};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new_with_kind(code, KeyModifiers::NONE, KeyEventKind::Press)
+    }
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new_with_kind(code, KeyModifiers::CONTROL, KeyEventKind::Press)
+    }
+
+    fn private_temp_dir() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "asb-tui-ui-config-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        path
     }
     fn policy() -> RenderPolicy {
         RenderPolicy {
@@ -869,6 +1030,69 @@ mod tests {
         assert!(s.help);
         s.handle_key(key(KeyCode::Esc));
         assert!(!s.help);
+    }
+
+    #[test]
+    fn configuration_screen_save_is_truthful_and_atomic() {
+        let directory = private_temp_dir();
+        let path = directory.join("config.json");
+        let mut state = WorkspaceState::with_configuration_store(&path).unwrap();
+        state.screen = Screen::Configuration;
+        state
+            .edit_configuration(|configuration| configuration.frontend.contrast = true)
+            .unwrap();
+        assert_eq!(
+            state.configuration_save_state(),
+            ConfigurationSaveState::Dirty
+        );
+        state.handle_key(ctrl_key(KeyCode::Char('s')));
+        assert_eq!(
+            state.configuration_save_state(),
+            ConfigurationSaveState::Saved
+        );
+        assert!(
+            ConfigurationStore::new(&path)
+                .load()
+                .unwrap()
+                .frontend
+                .contrast
+        );
+        assert!(!state.configuration_draft().is_dirty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn configuration_save_without_store_reports_unavailable_and_keeps_draft() {
+        let mut state = WorkspaceState {
+            screen: Screen::Configuration,
+            ..WorkspaceState::default()
+        };
+        state
+            .edit_configuration(|configuration| configuration.frontend.contrast = true)
+            .unwrap();
+        state.handle_key(ctrl_key(KeyCode::Char('s')));
+        assert_eq!(
+            state.configuration_save_state(),
+            ConfigurationSaveState::Unavailable
+        );
+        assert!(state.configuration_draft().is_dirty());
+    }
+
+    #[test]
+    fn configuration_save_failure_keeps_dirty_draft_and_previous_file() {
+        let directory = private_temp_dir();
+        let path = directory.join("config.json");
+        let mut state = WorkspaceState::with_configuration_store(&path).unwrap();
+        state
+            .edit_configuration(|configuration| configuration.frontend.contrast = true)
+            .unwrap();
+        fs::remove_dir_all(&directory).unwrap();
+        assert!(state.save_configuration().is_err());
+        assert_eq!(
+            state.configuration_save_state(),
+            ConfigurationSaveState::Failed
+        );
+        assert!(state.configuration_draft().is_dirty());
     }
 
     #[test]

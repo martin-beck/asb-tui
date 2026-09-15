@@ -58,6 +58,7 @@ pub enum FormalEvent {
     OpenReports,
     OpenHelp,
     GoBack,
+    SaveConfiguration,
     Resize { columns: u16, lines: u16 },
     Focus(&'static str),
 }
@@ -73,6 +74,7 @@ impl FormalEvent {
             Self::OpenReports => Some("open_reports"),
             Self::OpenHelp => Some("open_help"),
             Self::GoBack => Some("go_back"),
+            Self::SaveConfiguration => Some("save_configuration"),
             Self::Resize { .. } | Self::Focus(_) => None,
         }
     }
@@ -152,7 +154,9 @@ impl FormalUiState {
                         event: event_id.to_owned(),
                     });
                 };
-                let expected_effects: &[&str] = if event == FormalEvent::GoBack {
+                let expected_effects: &[&str] = if event == FormalEvent::SaveConfiguration {
+                    &["configuration_persisted", "focus_reset"]
+                } else if event == FormalEvent::GoBack {
                     &["route_restored", "focus_reset"]
                 } else if event == FormalEvent::OpenHelp {
                     &["return_route_saved", "route_changed", "focus_reset"]
@@ -261,7 +265,9 @@ fn validate_document(model: &Document) -> Result<(), String> {
         {
             return Err(format!("invalid transition {}", transition.event));
         }
-        let expected = if matches!(transition.event.as_str(), "wizard_next" | "wizard_back") {
+        let expected = if transition.event == "save_configuration" {
+            ["configuration_persisted", "focus_reset"].as_slice()
+        } else if matches!(transition.event.as_str(), "wizard_next" | "wizard_back") {
             ["wizard_step_changed", "focus_reset"].as_slice()
         } else if transition.event == "wizard_set_value" {
             ["wizard_draft_changed", "focus_reset"].as_slice()

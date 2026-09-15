@@ -20,6 +20,8 @@
     {"action":"focus_measure_search","element":"measures.search","key":"/"},
     {"action":"toggle_measure","element":"measures.row","key":"Space"},
     {"action":"toggle_group","element":"measures.group_toggle","key":"g"}
+    ,{"action":"focus_configuration","element":"configuration.entry","key":"Enter"}
+    ,{"action":"save_configuration","element":"configuration.entry","key":"Ctrl-S"}
   ],
   "routes": [
     {"id":"landing","elements":["landing.primary","navigation","status.connection"]},
@@ -84,6 +86,7 @@
     {"event":"open_landing","from":"reports","to":"landing","effects":["route_changed","focus_reset"]},
     {"event":"open_help","from":"reports","to":"help","effects":["return_route_saved","route_changed","focus_reset"]},
     {"event":"go_back","from":"help","to":"landing","effects":["route_restored","focus_reset"]}
+    ,{"event":"save_configuration","from":"configuration","to":"configuration","effects":["configuration_persisted","focus_reset"]}
   ],
   "help": [
     {"id":"screen.landing","text":"Choose a benchmark task or open another screen."},
@@ -99,7 +102,7 @@
     {"id":"measures.search","text":"Type to filter benchmark measures by group or name."},
     {"id":"measures.row","text":"Select or clear this measure for the benchmark."},
     {"id":"measures.group_toggle","text":"Select or clear every visible measure in this group."},
-    {"id":"configuration.entry","text":"Edit this setting; its value controls the next benchmark."},
+    {"id":"configuration.entry","text":"Edit this setting and press Ctrl-S to apply the validated local draft."},
     {"id":"configuration.search","text":"Type to find a configuration setting by name or description."},
     {"id":"run.status","text":"Shows whether the benchmark is idle, running, complete, or failed."},
     {"id":"run.start","text":"Start a benchmark using the current configuration and measures."},
