@@ -97,6 +97,9 @@ impl Wizard {
     }
 
     pub fn set_value(&mut self, value: impl Into<String>) -> Result<(), WizardError> {
+        if self.step == Step::Review {
+            return Err(WizardError::InvalidValue);
+        }
         let value = value.into();
         if value.chars().count() > 256 {
             return Err(WizardError::TooLong);

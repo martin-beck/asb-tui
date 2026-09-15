@@ -71,3 +71,19 @@ fn formal_wizard_flow_checks_documented_route_and_step_effects() {
     state.apply(FormalEvent::Complete).unwrap();
     assert_eq!(state.route(), StartupRoute::Landing);
 }
+
+#[test]
+fn back_and_cancel_are_formal_wizard_transitions() {
+    let mut state = WizardFormalState::new().unwrap();
+    state.apply(FormalEvent::OpenWizard).unwrap();
+    assert_eq!(
+        state.apply(FormalEvent::Back),
+        Err(asb_tui::wizard::WizardError::AtStart)
+    );
+    state.apply(FormalEvent::SetValue("agent".into())).unwrap();
+    state.apply(FormalEvent::Next).unwrap();
+    state.apply(FormalEvent::Back).unwrap();
+    assert_eq!(state.step(), Step::Agent);
+    state.apply(FormalEvent::Cancel).unwrap();
+    assert_eq!(state.route(), StartupRoute::Landing);
+}
