@@ -183,6 +183,8 @@ fn catalog_validation_rejects_each_authenticated_identity_field() {
         let target = &mut candidate["result"]["value"]["result"]["value"];
         if field == "runner_instance_id" || field == "catalog_sha256" {
             target[field] = serde_json::Value::String(bad.into());
+        } else if field == "manifest_sha256" {
+            target["agents"][0]["provenance"][field] = serde_json::Value::String(bad.into());
         } else {
             target["agents"][0]["package"][field] = serde_json::Value::String(bad.into());
         }
