@@ -29,6 +29,7 @@ pub mod runtime;
 pub mod selection;
 mod sha256;
 pub mod shell;
+pub mod startup;
 pub mod system_probe;
 pub mod terminal;
 pub mod ui;
