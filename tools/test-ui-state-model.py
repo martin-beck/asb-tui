@@ -27,6 +27,9 @@ class UiStateModelTests(unittest.TestCase):
     def test_startup_controller_state_is_formally_declared(self):
         self.assertIn("startup_wizard_opened", self.model["state_fields"])
 
+    def test_resize_layout_state_is_formally_declared(self):
+        self.assertIn("responsive_layout", self.model["state_fields"])
+
     def test_unknown_element_is_rejected(self):
         model = copy.deepcopy(self.model)
         model["routes"][0]["elements"].append("landing.missing")

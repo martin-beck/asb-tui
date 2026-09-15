@@ -7,7 +7,7 @@
 
 use crate::{
     live_projection::{Connection, LiveSnapshot},
-    terminal::{CapabilityTier, RenderPolicy},
+    terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -45,6 +45,10 @@ pub struct WorkspaceState {
     pub report_cursor: usize,
     /// Last validated snapshot supplied by the authenticated control seam.
     pub live: Option<LiveSnapshot>,
+    /// Last validated dimensions received from the terminal event stream.
+    /// Rendering still uses the frame's authoritative area, so a missed
+    /// event cannot make the renderer allocate from stale dimensions.
+    layout: ResponsiveLayout,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,11 +95,35 @@ impl Default for WorkspaceState {
             config_cursor: 0,
             report_cursor: 0,
             live: None,
+            layout: ResponsiveLayout::from_dimensions(None, None),
         }
     }
 }
 
 impl WorkspaceState {
+    /// Apply a live terminal resize without disturbing the current route,
+    /// query, selection, or overlay state. Invalid dimensions are rejected
+    /// atomically and leave the workspace unchanged.
+    pub fn apply_resize(&mut self, columns: u16, lines: u16) -> bool {
+        if !frame_dimensions_are_safe(columns, lines) {
+            return false;
+        }
+        self.layout = ResponsiveLayout::from_dimensions(Some(columns), Some(lines));
+        self.measure_cursor = self
+            .measure_cursor
+            .min(self.visible_indices().len().saturating_sub(1));
+        self.config_cursor = self.config_cursor.min(3);
+        self.report_cursor = self
+            .report_cursor
+            .min(self.report_entry_count().saturating_sub(1));
+        true
+    }
+
+    /// The most recently observed responsive layout decision.
+    pub const fn responsive_layout(&self) -> ResponsiveLayout {
+        self.layout
+    }
+
     /// Replace presentation data only after it has passed the typed control
     /// projection. No renderer input can mutate ASB state through this method.
     pub fn apply_live_snapshot(&mut self, snapshot: LiveSnapshot) {
@@ -235,6 +263,12 @@ impl WorkspaceState {
         for index in members {
             self.measures[index].selected = select;
         }
+    }
+
+    fn report_entry_count(&self) -> usize {
+        self.live
+            .as_ref()
+            .map_or(2, |snapshot| snapshot.runs.len().max(1))
     }
 }
 
@@ -711,5 +745,85 @@ mod tests {
             state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)),
             UiAction::Quit
         );
+    }
+
+    #[test]
+    fn live_resize_reflows_without_losing_route_focus_query_or_overlay() {
+        let mut state = WorkspaceState {
+            screen: Screen::Measures,
+            search: "qual".into(),
+            measure_cursor: 1,
+            help: true,
+            ..WorkspaceState::default()
+        };
+        assert!(state.apply_resize(120, 40));
+        assert_eq!(
+            state.responsive_layout().class,
+            crate::terminal::LayoutClass::Wide
+        );
+        assert_eq!(state.screen, Screen::Measures);
+        assert_eq!(state.search, "qual");
+        assert_eq!(state.measure_cursor, 1);
+        assert!(state.help);
+
+        assert!(state.apply_resize(30, 7));
+        assert_eq!(
+            state.responsive_layout().class,
+            crate::terminal::LayoutClass::Compact
+        );
+        assert_eq!(state.screen, Screen::Measures);
+        assert_eq!(state.search, "qual");
+        assert!(state.help);
+    }
+
+    #[test]
+    fn invalid_resize_is_atomic_and_resize_clamps_each_focusable_route() {
+        let mut state = WorkspaceState {
+            screen: Screen::Configuration,
+            config_cursor: usize::MAX,
+            report_cursor: usize::MAX,
+            ..WorkspaceState::default()
+        };
+        let before = state.clone();
+        assert!(!state.apply_resize(0, 24));
+        assert_eq!(state, before);
+
+        assert!(state.apply_resize(80, 24));
+        assert_eq!(state.config_cursor, 3);
+        state.screen = Screen::Reports;
+        assert_eq!(state.report_cursor, 1);
+    }
+
+    #[test]
+    fn test_backend_reflow_survives_resize_across_routes_and_overlay() {
+        let mut state = WorkspaceState::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        for screen in [
+            Screen::Landing,
+            Screen::Measures,
+            Screen::Configuration,
+            Screen::Reports,
+        ] {
+            state.screen = screen;
+            state.help = false;
+            terminal
+                .draw(|frame| render(frame, &state, policy()))
+                .unwrap();
+            terminal.backend_mut().resize(32, 8);
+            assert!(state.apply_resize(32, 8));
+            terminal
+                .draw(|frame| render(frame, &state, policy()))
+                .unwrap();
+            state.help = true;
+            terminal
+                .draw(|frame| render(frame, &state, policy()))
+                .unwrap();
+            state.help = false;
+            terminal.backend_mut().resize(100, 24);
+            assert!(state.apply_resize(100, 24));
+            terminal
+                .draw(|frame| render(frame, &state, policy()))
+                .unwrap();
+        }
     }
 }

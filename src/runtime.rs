@@ -358,6 +358,9 @@ fn run_interactive_loop(
             match event::read()? {
                 Event::Resize(columns, lines) if frame_dimensions_are_safe(columns, lines) => {
                     state.apply(Action::Resize { columns, lines })?;
+                    // Keep presentation focus bounded while retaining the
+                    // active route, search query, and help overlay.
+                    workspace.apply_resize(columns, lines);
                 }
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if matches!(workspace.handle_key(key), ui::UiAction::Quit) {
