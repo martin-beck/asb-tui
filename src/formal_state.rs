@@ -35,6 +35,8 @@ struct DocumentElement {
     route: String,
     role: String,
     help_id: String,
+    focusable: bool,
+    hoverable: bool,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct DocumentTransition {
@@ -80,6 +82,7 @@ impl FormalEvent {
 pub enum FormalError {
     InvalidModel(String),
     UnknownElement(String),
+    ElementNotFocusable(String),
     InvalidDimensions(AppError),
     UnknownTransition { route: Route, event: String },
     RouteUnavailable(Route),
@@ -126,13 +129,15 @@ impl FormalUiState {
             }
             FormalEvent::Focus(element) => {
                 let id = element.to_owned();
-                if document.elements.iter().any(|item| {
+                let Some(item) = document.elements.iter().find(|item| {
                     item.id == id && (item.route == route_id(self.route) || item.route == "global")
-                }) {
-                    self.focus = Some(id);
-                } else {
+                }) else {
                     return Err(FormalError::UnknownElement(id));
+                };
+                if !item.focusable {
+                    return Err(FormalError::ElementNotFocusable(id));
                 }
+                self.focus = Some(id);
             }
             event => {
                 let event_id = event.id().expect("navigation events have IDs");
@@ -392,6 +397,17 @@ mod tests {
             state.apply(FormalEvent::Focus("reports.compare"), None),
             Err(FormalError::UnknownElement(_))
         ));
+    }
+
+    #[test]
+    fn interpreter_rejects_documented_but_non_focusable_elements() {
+        let mut state = FormalUiState::new(80, 24).unwrap();
+        let before = state.clone();
+        assert_eq!(
+            state.apply(FormalEvent::Focus("status.connection"), None),
+            Err(FormalError::ElementNotFocusable("status.connection".into()))
+        );
+        assert_eq!(state, before);
     }
 
     #[test]
