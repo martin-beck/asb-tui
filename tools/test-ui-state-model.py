@@ -4,10 +4,14 @@
 import copy
 import importlib.util
 import json
+from pathlib import Path
 import subprocess
 import unittest
 
-SPEC = importlib.util.spec_from_file_location("validator", "tools/validate-ui-state-model.py")
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location(
+    "validator", ROOT / "tools" / "validate-ui-state-model.py"
+)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
@@ -63,6 +67,20 @@ class UiStateModelTests(unittest.TestCase):
             self.assertTrue(any("formal model update" in error for error in errors), owner)
             self.assertTrue(any("focused formal-model test" in error for error in errors), owner)
         self.assertEqual(MODULE.validate_changes(["src/ui.rs", "docs/ui-state-model.json", "tests/ui.rs"]), [])
+
+    def test_malformed_route_and_transition_ids_fail_closed(self):
+        model = copy.deepcopy(self.model)
+        model["routes"].append({"id": {"bad": "id"}, "elements": ["navigation"]})
+        model["transitions"].append({"from": {"bad": "id"}, "to": "landing", "event": "bad"})
+        errors = MODULE.validate(model)
+        self.assertTrue(any("invalid route id" in error for error in errors))
+        self.assertTrue(any("route ids must be strings" in error for error in errors))
+
+    def test_malformed_route_elements_fail_closed(self):
+        model = copy.deepcopy(self.model)
+        model["routes"][0]["elements"] = {"bad": "shape"}
+        errors = MODULE.validate(model)
+        self.assertTrue(any("elements must be a non-empty array" in error for error in errors))
 
     def test_binding_and_parent_cycles_are_rejected(self):
         model = copy.deepcopy(self.model)

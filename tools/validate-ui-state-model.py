@@ -41,9 +41,19 @@ def validate(model):
     fields = model.get("state_fields")
     if not isinstance(fields, list) or not fields or any(not isinstance(field, str) or not field for field in fields):
         errors.append("model: state_fields must be non-empty strings")
-    route_ids = [item.get("id") for item in routes if isinstance(item, dict)]
-    if len(route_ids) != len(set(route_ids)) or any(not isinstance(item, str) or not item for item in route_ids):
-        errors.append("routes: duplicate or invalid route id")
+    route_ids = []
+    for item in routes:
+        if not isinstance(item, dict):
+            errors.append("routes: entry must be an object")
+            continue
+        ident = item.get("id")
+        if not isinstance(ident, str) or not ident:
+            errors.append(f"routes: invalid route id {ident!r}")
+            continue
+        if ident in route_ids:
+            errors.append(f"routes: duplicate route id {ident!r}")
+            continue
+        route_ids.append(ident)
     route_set, element_map = set(route_ids), {}
     for item in elements:
         if not isinstance(item, dict):
@@ -113,14 +123,18 @@ def validate(model):
                 binding_ids.add(action)
     listed = []
     for route in routes:
-        if not isinstance(route, dict) or route.get("id") not in route_set:
+        route_id = route.get("id") if isinstance(route, dict) else None
+        if not isinstance(route_id, str) or route_id not in route_set:
             errors.append("routes: malformed route")
             continue
-        route_id, route_elements = route["id"], route.get("elements")
+        route_elements = route.get("elements")
         if not isinstance(route_elements, list) or not route_elements:
             errors.append(f"{route_id}: elements must be a non-empty array")
             continue
         for ident in route_elements:
+            if not isinstance(ident, str):
+                errors.append(f"{route_id}: element id must be a string")
+                continue
             listed.append(ident)
             if ident not in element_map:
                 errors.append(f"{route_id}: unknown element {ident}")
@@ -136,6 +150,9 @@ def validate(model):
         source, target, event = (transition.get(key) for key in ("from", "to", "event"))
         if not isinstance(event, str) or not event:
             errors.append("transition: event must be a non-empty stable id")
+        if not isinstance(source, str) or not isinstance(target, str):
+            errors.append(f"transition: route ids must be strings {source!r}->{target!r}")
+            continue
         if source not in graph or target not in graph:
             errors.append(f"transition: unknown route {source!r}->{target!r}")
         else:
