@@ -13,6 +13,7 @@ use crate::{
     startup::{self, StartupInput},
     terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
     wizard::{self, FormalEvent, Wizard, WizardFormalState},
+    wizard_catalog::WizardCatalog,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -236,6 +237,16 @@ impl WorkspaceState {
         self.configuration_save_state
     }
 
+    /// Attach a validated, already-authenticated catalog to the wizard. Catalog
+    /// acquisition and installation remain outside the presentation layer.
+    pub fn with_wizard_catalog(mut self, catalog: WizardCatalog) -> Self {
+        if let Ok(formal) = WizardFormalState::new_with_catalog(catalog) {
+            self.wizard_formal = formal;
+            self.wizard = self.wizard_formal.wizard().clone();
+        }
+        self
+    }
+
     /// The bounded text currently visible in the focused configuration editor.
     pub fn configuration_edit_value(&self) -> Option<&str> {
         self.configuration_editing
@@ -366,15 +377,36 @@ impl WorkspaceState {
                 KeyCode::Enter => {
                     let event = if self.wizard.step() == wizard::Step::Review {
                         FormalEvent::Complete
+                    } else if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) {
+                        FormalEvent::CatalogSelect
                     } else {
                         FormalEvent::Next
                     };
-                    if self.wizard_formal.apply(event).is_ok() {
+                    if self.wizard_formal.apply(event.clone()).is_ok() {
                         self.wizard = self.wizard_formal.wizard().clone();
+                        if matches!(event, FormalEvent::CatalogSelect)
+                            && self.wizard_formal.apply(FormalEvent::Next).is_ok()
+                        {
+                            self.wizard = self.wizard_formal.wizard().clone();
+                        }
                         if self.wizard_formal.route() == wizard::StartupRoute::Landing {
                             self.screen = Screen::Landing;
                         }
                     }
+                    UiAction::None
+                }
+                KeyCode::Up
+                    if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) =>
+                {
+                    let _ = self.wizard_formal.apply(FormalEvent::CatalogMove(-1));
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Down
+                    if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) =>
+                {
+                    let _ = self.wizard_formal.apply(FormalEvent::CatalogMove(1));
+                    self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None
                 }
                 KeyCode::Esc => {
@@ -397,6 +429,21 @@ impl WorkspaceState {
                     UiAction::None
                 }
                 KeyCode::Char(c) if !c.is_control() => {
+                    if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) {
+                        let mut query = self
+                            .wizard
+                            .catalog()
+                            .map_or_else(String::new, |catalog| catalog.query().to_owned());
+                        query.push(c);
+                        if self
+                            .wizard_formal
+                            .apply(FormalEvent::CatalogQuery(query))
+                            .is_ok()
+                        {
+                            self.wizard = self.wizard_formal.wizard().clone();
+                        }
+                        return UiAction::None;
+                    }
                     let mut value = self.wizard.current_value().to_owned();
                     value.push(c);
                     if self
@@ -409,6 +456,21 @@ impl WorkspaceState {
                     UiAction::None
                 }
                 KeyCode::Backspace => {
+                    if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) {
+                        let mut query = self
+                            .wizard
+                            .catalog()
+                            .map_or_else(String::new, |catalog| catalog.query().to_owned());
+                        query.pop();
+                        if self
+                            .wizard_formal
+                            .apply(FormalEvent::CatalogQuery(query))
+                            .is_ok()
+                        {
+                            self.wizard = self.wizard_formal.wizard().clone();
+                        }
+                        return UiAction::None;
+                    }
                     let mut value = self.wizard.current_value().to_owned();
                     value.pop();
                     if self
@@ -660,6 +722,13 @@ impl WorkspaceState {
             .as_ref()
             .map_or(2, |snapshot| snapshot.runs.len().max(1))
     }
+}
+
+const fn catalog_step(step: wizard::Step) -> bool {
+    matches!(
+        step,
+        wizard::Step::Agent | wizard::Step::Provider | wizard::Step::Model
+    )
 }
 
 fn selection_from_catalog(

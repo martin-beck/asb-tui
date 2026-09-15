@@ -71,6 +71,26 @@
       "key": "?"
     },
     {
+      "action": "wizard_catalog_query",
+      "element": "wizard.agent",
+      "key": "Character"
+    },
+    {
+      "action": "wizard_catalog_backspace",
+      "element": "wizard.agent",
+      "key": "Backspace"
+    },
+    {
+      "action": "wizard_catalog_move",
+      "element": "wizard.agent",
+      "key": "Up/Down"
+    },
+    {
+      "action": "wizard_catalog_select",
+      "element": "wizard.agent",
+      "key": "Enter"
+    },
+    {
       "action": "wizard_back",
       "element": "navigation",
       "key": "Esc"
@@ -475,6 +495,34 @@
       ]
     },
     {
+      "event": "wizard_catalog_query",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_catalog_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "wizard_catalog_move",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_catalog_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "wizard_catalog_select",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_catalog_changed",
+        "wizard_draft_changed",
+        "focus_reset"
+      ]
+    },
+    {
       "event": "complete_wizard",
       "from": "wizard",
       "to": "landing",
@@ -702,15 +750,15 @@
     },
     {
       "id": "wizard.agent",
-      "text": "Choose the agent that will execute this benchmark."
+      "text": "Search and choose an available agent for this benchmark."
     },
     {
       "id": "wizard.provider",
-      "text": "Choose the provider for the selected agent model."
+      "text": "Search and choose a provider for the selected agent."
     },
     {
       "id": "wizard.model",
-      "text": "Choose the model exposed by the selected provider."
+      "text": "Search and choose a model exposed by the selected provider."
     },
     {
       "id": "wizard.configuration",

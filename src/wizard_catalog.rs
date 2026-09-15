@@ -26,6 +26,7 @@ pub struct WizardOption {
     pub id: String,
     pub label: String,
     pub available: bool,
+    compatible_ids: Vec<String>,
 }
 
 impl WizardOption {
@@ -38,9 +39,23 @@ impl WizardOption {
             id: id.into(),
             label: label.into(),
             available,
+            compatible_ids: Vec::new(),
         };
         validate_option(&option)?;
         Ok(option)
+    }
+
+    /// Bind a provider to agent IDs or a model to provider IDs.  The meaning
+    /// is determined by the catalog section containing this option.
+    pub fn compatible_with(mut self, ids: Vec<String>) -> Result<Self, String> {
+        self.compatible_ids = ids;
+        validate_option(&self)?;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn compatible_ids(&self) -> &[String] {
+        &self.compatible_ids
     }
 }
 
@@ -60,6 +75,29 @@ impl WizardCatalog {
         validate_options(&agents, "agents")?;
         validate_options(&providers, "providers")?;
         validate_options(&models, "models")?;
+        let agent_ids: BTreeSet<&str> = agents.iter().map(|option| option.id.as_str()).collect();
+        for provider in &providers {
+            if provider.compatible_ids.is_empty()
+                || provider
+                    .compatible_ids
+                    .iter()
+                    .any(|id| !agent_ids.contains(id.as_str()))
+            {
+                return Err("provider compatibility references are incomplete".into());
+            }
+        }
+        let provider_ids: BTreeSet<&str> =
+            providers.iter().map(|option| option.id.as_str()).collect();
+        for model in &models {
+            if model.compatible_ids.is_empty()
+                || model
+                    .compatible_ids
+                    .iter()
+                    .any(|id| !provider_ids.contains(id.as_str()))
+            {
+                return Err("model compatibility references are incomplete".into());
+            }
+        }
         Ok(Self {
             agents,
             providers,
@@ -107,6 +145,14 @@ impl WizardCatalogState {
     pub const fn kind(&self) -> OptionKind {
         self.kind
     }
+    /// Switch the active picker while retaining selections for all three
+    /// option kinds.  Query and cursor are reset so a filter from one picker
+    /// cannot silently hide choices in the next one.
+    pub fn set_kind(&mut self, kind: OptionKind) {
+        self.kind = kind;
+        self.query.clear();
+        self.cursor = 0;
+    }
     #[must_use]
     pub const fn cursor(&self) -> usize {
         self.cursor
@@ -114,6 +160,10 @@ impl WizardCatalogState {
     #[must_use]
     pub fn query(&self) -> &str {
         &self.query
+    }
+    #[must_use]
+    pub fn catalog(&self) -> &WizardCatalog {
+        &self.catalog
     }
     #[must_use]
     pub fn selected(&self, kind: OptionKind) -> Option<&str> {
@@ -130,9 +180,25 @@ impl WizardCatalogState {
             .options(self.kind)
             .iter()
             .filter(|option| {
-                query.is_empty()
-                    || option.id.to_ascii_lowercase().contains(&query)
-                    || option.label.to_ascii_lowercase().contains(&query)
+                let compatible = match self.kind {
+                    OptionKind::Agent => true,
+                    OptionKind::Provider => self.selected_agent.as_deref().is_some_and(|id| {
+                        option
+                            .compatible_ids
+                            .iter()
+                            .any(|candidate| candidate == id)
+                    }),
+                    OptionKind::Model => self.selected_provider.as_deref().is_some_and(|id| {
+                        option
+                            .compatible_ids
+                            .iter()
+                            .any(|candidate| candidate == id)
+                    }),
+                };
+                compatible
+                    && (query.is_empty()
+                        || option.id.to_ascii_lowercase().contains(&query)
+                        || option.label.to_ascii_lowercase().contains(&query))
             })
             .collect()
     }
@@ -173,10 +239,22 @@ impl WizardCatalogState {
         Ok(())
     }
 
+    #[must_use]
+    pub fn selected_for_active_kind(&self) -> Option<&str> {
+        self.selected(self.kind)
+    }
+
     fn set_selected(&mut self, id: String) {
         match self.kind {
-            OptionKind::Agent => self.selected_agent = Some(id),
-            OptionKind::Provider => self.selected_provider = Some(id),
+            OptionKind::Agent => {
+                self.selected_agent = Some(id);
+                self.selected_provider = None;
+                self.selected_model = None;
+            }
+            OptionKind::Provider => {
+                self.selected_provider = Some(id);
+                self.selected_model = None;
+            }
             OptionKind::Model => self.selected_model = Some(id),
         }
     }
@@ -211,6 +289,17 @@ fn validate_option(option: &WizardOption) -> Result<(), String> {
     {
         return Err("invalid wizard catalog option label".into());
     }
+    let mut ids = BTreeSet::new();
+    for id in &option.compatible_ids {
+        if id.is_empty()
+            || id.len() > MAX_ID_BYTES
+            || !id.is_ascii()
+            || id.chars().any(char::is_control)
+            || !ids.insert(id)
+        {
+            return Err("invalid wizard catalog compatibility id".into());
+        }
+    }
     Ok(())
 }
 
@@ -221,8 +310,18 @@ mod tests {
     fn catalog() -> WizardCatalog {
         WizardCatalog::new(
             vec![WizardOption::new("agent-a", "Agent A", true).unwrap()],
-            vec![WizardOption::new("provider-a", "Provider A", true).unwrap()],
-            vec![WizardOption::new("model-a", "Model A", true).unwrap()],
+            vec![
+                WizardOption::new("provider-a", "Provider A", true)
+                    .unwrap()
+                    .compatible_with(vec!["agent-a".into()])
+                    .unwrap(),
+            ],
+            vec![
+                WizardOption::new("model-a", "Model A", true)
+                    .unwrap()
+                    .compatible_with(vec!["provider-a".into()])
+                    .unwrap(),
+            ],
         )
         .unwrap()
     }
@@ -248,5 +347,61 @@ mod tests {
         assert!(state.select_cursor().is_err());
         assert!(state.set_query("x".repeat(MAX_QUERY_BYTES + 1)).is_err());
         assert!(WizardOption::new("agent", "", true).is_err());
+    }
+
+    #[test]
+    fn compatibility_is_required_and_filters_dependents_fail_closed() {
+        let agents = vec![
+            WizardOption::new("agent-a", "Agent A", true).unwrap(),
+            WizardOption::new("agent-b", "Agent B", true).unwrap(),
+        ];
+        let providers = vec![
+            WizardOption::new("provider-a", "Provider A", true)
+                .unwrap()
+                .compatible_with(vec!["agent-a".into()])
+                .unwrap(),
+            WizardOption::new("provider-b", "Provider B", true)
+                .unwrap()
+                .compatible_with(vec!["agent-b".into()])
+                .unwrap(),
+        ];
+        let models = vec![
+            WizardOption::new("model-a", "Model A", true)
+                .unwrap()
+                .compatible_with(vec!["provider-a".into()])
+                .unwrap(),
+        ];
+        assert!(
+            WizardCatalog::new(
+                agents.clone(),
+                vec![
+                    WizardOption::new("provider-x", "Provider X", true)
+                        .unwrap()
+                        .compatible_with(vec!["missing".into()])
+                        .unwrap()
+                ],
+                models.clone(),
+            )
+            .is_err()
+        );
+        let mut state = WizardCatalogState::new(
+            WizardCatalog::new(agents, providers, models).unwrap(),
+            OptionKind::Provider,
+        );
+        assert!(state.visible_options().is_empty());
+        state.set_kind(OptionKind::Agent);
+        state.select_cursor().unwrap();
+        state.set_kind(OptionKind::Provider);
+        assert_eq!(
+            state
+                .visible_options()
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["provider-a"]
+        );
+        state.select_cursor().unwrap();
+        state.set_kind(OptionKind::Model);
+        assert_eq!(state.visible_options()[0].id, "model-a");
     }
 }

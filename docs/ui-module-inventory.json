@@ -4,7 +4,7 @@
     {"path":"src/actions.rs","kind":"interaction"},
     {"path":"src/app.rs","kind":"state"},
     {"path":"src/configuration.rs","kind":"state","responsibility":"Bounded configuration drafts, local persistence, and fail-closed startup state"},
-    {"path":"src/formal_state.rs","kind":"state"},
+    {"path":"src/formal_state.rs","kind":"state","responsibility":"Renderer-neutral workspace and wizard transition validation"},
     {"path":"src/help.rs","kind":"interaction"},
     {"path":"src/landing.rs","kind":"projection"},
     {"path":"src/live_projection.rs","kind":"projection"},
@@ -15,9 +15,9 @@
     {"path":"src/shell.rs","kind":"state"},
     {"path":"src/startup.rs","kind":"startup"},
     {"path":"src/terminal.rs","kind":"terminal"},
-    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, wizard editing, contextual help, completion, and formally checked local configuration editing and save"},
+    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, wizard catalog selection, editing, contextual help, completion, and formally checked local configuration editing and save"},
     {"path":"src/visual.rs","kind":"rendering"},
-    {"path":"src/wizard.rs","kind":"state"}
+    {"path":"src/wizard.rs","kind":"state","responsibility":"Formally checked wizard routes, steps, catalog selection, and bounded transitions"}
     ,{"path":"src/wizard_catalog.rs","kind":"state","responsibility":"Bounded renderer-neutral agent, provider, and model choices for the setup wizard"}
   ],
   "exemptions": [

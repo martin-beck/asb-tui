@@ -6,7 +6,10 @@
 //! or runner side effects.  Its transitions are checked against the authored
 //! UI state model before state is committed.
 
-use crate::terminal::RenderPolicy;
+use crate::{
+    terminal::RenderPolicy,
+    wizard_catalog::{OptionKind, WizardCatalog, WizardCatalogState},
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
@@ -59,7 +62,7 @@ pub const fn element_id(step: Step) -> &'static str {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WizardError {
     Missing,
     AtStart,
@@ -67,6 +70,7 @@ pub enum WizardError {
     InvalidValue,
     TooLong,
     InvalidModel,
+    Catalog(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,6 +78,7 @@ pub struct Wizard {
     step: Step,
     values: [String; 7],
     cancelled: bool,
+    catalog: Option<WizardCatalogState>,
 }
 
 impl Default for Wizard {
@@ -82,11 +87,19 @@ impl Default for Wizard {
             step: Step::Agent,
             values: Default::default(),
             cancelled: false,
+            catalog: None,
         }
     }
 }
 
 impl Wizard {
+    #[must_use]
+    pub fn with_catalog(catalog: WizardCatalog) -> Self {
+        Self {
+            catalog: Some(WizardCatalogState::new(catalog, OptionKind::Agent)),
+            ..Self::default()
+        }
+    }
     #[must_use]
     pub const fn step(&self) -> Step {
         self.step
@@ -102,6 +115,55 @@ impl Wizard {
         self.values
             .get(self.step as usize)
             .map_or("", String::as_str)
+    }
+
+    #[must_use]
+    pub fn catalog(&self) -> Option<&WizardCatalogState> {
+        self.catalog.as_ref()
+    }
+
+    pub fn set_catalog_query(&mut self, query: impl Into<String>) -> Result<(), WizardError> {
+        self.catalog
+            .as_mut()
+            .ok_or_else(|| WizardError::Catalog("wizard catalog is unavailable".into()))?
+            .set_query(query)
+            .map_err(WizardError::Catalog)
+    }
+
+    pub fn move_catalog_cursor(&mut self, offset: isize) -> Result<(), WizardError> {
+        self.catalog
+            .as_mut()
+            .ok_or_else(|| WizardError::Catalog("wizard catalog is unavailable".into()))?
+            .move_cursor(offset);
+        Ok(())
+    }
+
+    pub fn select_catalog_cursor(&mut self) -> Result<(), WizardError> {
+        let catalog = self
+            .catalog
+            .as_mut()
+            .ok_or_else(|| WizardError::Catalog("wizard catalog is unavailable".into()))?;
+        catalog.select_cursor().map_err(WizardError::Catalog)?;
+        let value = catalog
+            .selected_for_active_kind()
+            .unwrap_or_default()
+            .to_owned();
+        self.set_value(value)
+    }
+
+    fn select_kind_for_step(&mut self) {
+        let Some(catalog) = self.catalog.as_mut() else {
+            return;
+        };
+        let kind = match self.step {
+            Step::Agent => Some(OptionKind::Agent),
+            Step::Provider => Some(OptionKind::Provider),
+            Step::Model => Some(OptionKind::Model),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            catalog.set_kind(kind);
+        }
     }
 
     pub fn set_value(&mut self, value: impl Into<String>) -> Result<(), WizardError> {
@@ -135,6 +197,7 @@ impl Wizard {
             Step::Replay => Step::Review,
             Step::Review => return Err(WizardError::AtEnd),
         };
+        self.select_kind_for_step();
         Ok(())
     }
 
@@ -149,6 +212,7 @@ impl Wizard {
             Step::Replay => Step::Recording,
             Step::Review => Step::Replay,
         };
+        self.select_kind_for_step();
         Ok(())
     }
     pub fn cancel(&mut self) {
@@ -169,6 +233,9 @@ pub enum FormalEvent {
     Complete,
     Cancel,
     SetValue(String),
+    CatalogQuery(String),
+    CatalogMove(isize),
+    CatalogSelect,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -179,10 +246,18 @@ pub struct WizardFormalState {
 
 impl WizardFormalState {
     pub fn new() -> Result<Self, WizardError> {
+        Self::new_with_wizard(Wizard::default())
+    }
+
+    pub fn new_with_catalog(catalog: WizardCatalog) -> Result<Self, WizardError> {
+        Self::new_with_wizard(Wizard::with_catalog(catalog))
+    }
+
+    fn new_with_wizard(wizard: Wizard) -> Result<Self, WizardError> {
         validate_model()?;
         Ok(Self {
             route: StartupRoute::Landing,
-            wizard: Wizard::default(),
+            wizard,
         })
     }
     pub fn apply(&mut self, event: FormalEvent) -> Result<(), WizardError> {
@@ -195,6 +270,9 @@ impl WizardFormalState {
             FormalEvent::Complete => ("complete_wizard", "landing"),
             FormalEvent::Cancel => ("cancel_wizard", "landing"),
             FormalEvent::SetValue(_) => ("wizard_set_value", "wizard"),
+            FormalEvent::CatalogQuery(_) => ("wizard_catalog_query", "wizard"),
+            FormalEvent::CatalogMove(_) => ("wizard_catalog_move", "wizard"),
+            FormalEvent::CatalogSelect => ("wizard_catalog_select", "wizard"),
         };
         let from = match next.route {
             StartupRoute::Wizard => "wizard",
@@ -210,6 +288,15 @@ impl WizardFormalState {
         let expected_effects = match event_id {
             "wizard_next" | "wizard_back" => ["wizard_step_changed", "focus_reset"].as_slice(),
             "wizard_set_value" => ["wizard_draft_changed", "focus_reset"].as_slice(),
+            "wizard_catalog_query" | "wizard_catalog_move" => {
+                ["wizard_catalog_changed", "focus_reset"].as_slice()
+            }
+            "wizard_catalog_select" => [
+                "wizard_catalog_changed",
+                "wizard_draft_changed",
+                "focus_reset",
+            ]
+            .as_slice(),
             _ => ["route_changed", "focus_reset"].as_slice(),
         };
         if transition
@@ -227,6 +314,15 @@ impl WizardFormalState {
             }
             FormalEvent::SetValue(value) if next.route == StartupRoute::Wizard => {
                 next.wizard.set_value(value)?
+            }
+            FormalEvent::CatalogQuery(query) if next.route == StartupRoute::Wizard => {
+                next.wizard.set_catalog_query(query)?
+            }
+            FormalEvent::CatalogMove(offset) if next.route == StartupRoute::Wizard => {
+                next.wizard.move_catalog_cursor(offset)?
+            }
+            FormalEvent::CatalogSelect if next.route == StartupRoute::Wizard => {
+                next.wizard.select_catalog_cursor()?
             }
             FormalEvent::Next if next.route == StartupRoute::Wizard => next.wizard.advance()?,
             FormalEvent::Back if next.route == StartupRoute::Wizard => next.wizard.back()?,
@@ -330,8 +426,29 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         .block(Block::default().borders(Borders::ALL).title(" Setup ")),
         regions[0],
     );
-    frame.render_widget(
-        Paragraph::new(vec![
+    let body = if let Some(catalog) = wizard.catalog() {
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!("Step: {}", step_title(wizard.step)),
+                accent,
+            )),
+            Line::from(step_prompt(wizard.step)),
+            Line::from(format!("Search: {}", catalog.query())),
+            Line::from(format!("Element: {}", element_id(wizard.step))),
+        ];
+        for (index, option) in catalog.visible_options().into_iter().take(8).enumerate() {
+            let cursor = catalog.cursor() == index;
+            let selected = catalog.selected_for_active_kind() == Some(option.id.as_str());
+            lines.push(Line::from(format!(
+                "{}{} {}",
+                if cursor { ">" } else { " " },
+                if selected { "*" } else { " " },
+                option.label
+            )));
+        }
+        lines
+    } else {
+        vec![
             Line::from(Span::styled(
                 format!("Step: {}", step_title(wizard.step)),
                 accent,
@@ -339,9 +456,10 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
             Line::from(step_prompt(wizard.step)),
             Line::from(format!("Value: {}", wizard.current_value())),
             Line::from(format!("Element: {}", element_id(wizard.step))),
-        ])
-        .wrap(Wrap { trim: true })
-        .block(
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(body).wrap(Wrap { trim: true }).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Current step "),
