@@ -45,14 +45,29 @@
       "key": "w"
     },
     {
-      "action": "wizard_next",
+      "action": "complete_wizard",
       "element": "wizard.review",
       "key": "Enter"
     },
     {
-      "action": "complete_wizard",
-      "element": "wizard.review",
+      "action": "wizard_next",
+      "element": "wizard.agent",
       "key": "Enter"
+    },
+    {
+      "action": "wizard_edit",
+      "element": "wizard.agent",
+      "key": "Character"
+    },
+    {
+      "action": "wizard_backspace",
+      "element": "wizard.agent",
+      "key": "Backspace"
+    },
+    {
+      "action": "wizard_help",
+      "element": "wizard.agent",
+      "key": "?"
     },
     {
       "action": "wizard_back",
@@ -105,6 +120,7 @@
         "wizard.recording",
         "wizard.replay",
         "wizard.review",
+        "wizard.controls",
         "navigation"
       ]
     },
@@ -384,6 +400,15 @@
       "focusable": true,
       "hoverable": true,
       "parent": null
+    },
+    {
+      "id": "wizard.controls",
+      "route": "wizard",
+      "role": "navigation",
+      "help_id": "wizard.controls",
+      "focusable": false,
+      "hoverable": true,
+      "parent": null
     }
   ],
   "transitions": [
@@ -646,6 +671,10 @@
     {
       "id": "wizard.review",
       "text": "Review every setup choice before completing the wizard."
+    },
+    {
+      "id": "wizard.controls",
+      "text": "Edit the active value, move between steps, or open contextual help."
     },
     {
       "id": "measures.search",
