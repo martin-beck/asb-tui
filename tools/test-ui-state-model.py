@@ -48,6 +48,9 @@ class UiStateModelTests(unittest.TestCase):
     def test_contextual_help_state_is_formally_declared(self):
         self.assertIn("contextual_help", self.model["state_fields"])
 
+    def test_measurement_catalog_projection_is_formally_declared(self):
+        self.assertIn("measurement_catalog", self.model["state_fields"])
+
     def test_configuration_persistence_state_is_formally_declared(self):
         self.assertIn("configuration_persistence", self.model["state_fields"])
 
