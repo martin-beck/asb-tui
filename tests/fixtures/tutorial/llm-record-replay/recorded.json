@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "state": "recorded",
+  "cassette_id": "synthetic-cassette-001",
+  "benchmark_id": "synthetic-benchmark",
+  "benchmark_digest": "sha256:synthetic-benchmark-001",
+  "run_id": "synthetic-run-001",
+  "generation": 7,
+  "response_count": 3,
+  "content_digest": "sha256:synthetic-cassette-001",
+  "credential_references": [],
+  "explanation": "The cassette is redacted, digest-bound, and ready for offline replay."
+}

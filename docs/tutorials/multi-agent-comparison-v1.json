@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "tutorial_id": "asb-tui-multi-agent-comparison",
+  "title": "Compare agents from the same benchmark",
+  "steps": [
+    {
+      "id": "select-runs",
+      "command": ["asb", "tui", "compare", "--benchmark", "synthetic-benchmark", "--runs", "synthetic-run-a,synthetic-run-b"],
+      "expect": {"exit_code": 0, "stdout_shape": "comparison-selection-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/multi-agent-comparison/comparable.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "review-report",
+      "command": ["asb", "tui", "compare", "--benchmark", "synthetic-benchmark", "--runs", "synthetic-run-a,synthetic-run-b", "--report"],
+      "expect": {"exit_code": 0, "stdout_shape": "comparison-report-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/multi-agent-comparison/comparable.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "refuse-incomparable",
+      "command": ["asb", "tui", "compare", "--benchmark", "synthetic-benchmark", "--runs", "synthetic-run-a,synthetic-run-c", "--report"],
+      "expect": {"exit_code": 3, "stdout_shape": "comparison-incomparable-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/multi-agent-comparison/incomparable.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    }
+  ]
+}

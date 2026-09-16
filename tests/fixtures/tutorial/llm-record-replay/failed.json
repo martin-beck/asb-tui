@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "state": "failed",
+  "cassette_id": "synthetic-cassette-001",
+  "benchmark_id": "synthetic-benchmark",
+  "run_id": "synthetic-replay-002",
+  "source_run_id": "synthetic-run-001",
+  "generation": 7,
+  "completed_measures": 2,
+  "total_measures": 3,
+  "network_used": false,
+  "failure_retained": true,
+  "explanation": "One measure failed during replay and remains available with its reason for review."
+}
