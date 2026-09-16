@@ -49,6 +49,7 @@ jobs:
           python3 tools/validate-publication.py
           python3 tools/validate-ui-help.py
           python3 tools/test-ui-help.py
+          python3 tools/test-first-run-tutorial.py
           python3 tools/test-release-verifier.py
           tools/test-promoted-self-test.sh
           python3 -m json.tool provenance/dependencies.lock.json >/dev/null

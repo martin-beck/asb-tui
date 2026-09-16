@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "tutorial_id": "asb-tui-first-run-agent",
+  "title": "Configure your first agent in asb-tui",
+  "steps": [
+    {
+      "id": "inspect-capabilities",
+      "command": ["asb", "capabilities", "--format", "json"],
+      "expect": {"exit_code": 0, "stdout_shape": "capabilities-v1"},
+      "references": [{"path": "protocol/v1/capabilities.schema.json", "kind": "output"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "open-tui-doctor",
+      "command": ["asb", "tui", "doctor"],
+      "expect": {"exit_code": 3, "stdout_shape": "tui-doctor-v1"},
+      "references": [{"path": "docs/CAPABILITY_MATRIX.md", "kind": "output"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "inspect-provider-catalog",
+      "command": ["asb", "provider-catalog"],
+      "expect": {"exit_code": 0, "stdout_shape": "provider-catalog-v1"},
+      "references": [{"path": "docs/RELEASE_CHANNELS.md", "kind": "output"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "check-agent-auth",
+      "command": ["asb", "auth", "status", "--provider", "synthetic-provider"],
+      "expect": {"exit_code": 0, "stdout_shape": "auth-status-v1"},
+      "references": [{"path": "protocol/v1/capabilities.schema.json", "kind": "output"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "enroll-first-agent",
+      "command": [
+        "asb", "auth", "enroll", "--provider", "synthetic-provider",
+        "--endpoint-digest", "0000000000000000000000000000000000000000000000000000000000000000",
+        "--credential-digest", "1111111111111111111111111111111111111111111111111111111111111111",
+        "--idempotency-key", "first-agent-enroll-001"
+      ],
+      "expect": {"exit_code": 0, "stdout_shape": "auth-enroll-v1"},
+      "references": [{"path": "protocol/v1/lifecycle-request.schema.json", "kind": "input"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "preview-install",
+      "command": ["asb", "tui", "install", "--dry-run"],
+      "expect": {"exit_code": 0, "stdout_shape": "tui-install-dry-run-v1"},
+      "references": [{"path": "docs/RELEASE_CHANNELS.md", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "review-readiness",
+      "command": ["asb", "tui", "status"],
+      "expect": {"exit_code": 0, "stdout_shape": "tui-status-v1"},
+      "references": [{"path": "docs/CAPABILITY_MATRIX.md", "kind": "output"}],
+      "network": "denied",
+      "credentials": "none"
+    }
+  ]
+}
