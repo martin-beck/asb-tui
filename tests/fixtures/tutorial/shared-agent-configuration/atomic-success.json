@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "state": "applied",
+  "selected_agents": ["synthetic-agent-a", "synthetic-agent-b"],
+  "configuration": {
+    "provider": {"value": "synthetic-provider", "origin": "explicit"},
+    "model": {"value": "synthetic-model", "origin": "explicit"},
+    "benchmark": {"value": "synthetic-benchmark", "origin": "explicit"}
+  },
+  "changed_agents": 2,
+  "explanation": "The same reviewed configuration was applied atomically to every selected agent."
+}

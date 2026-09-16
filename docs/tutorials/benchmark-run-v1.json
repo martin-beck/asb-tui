@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "tutorial_id": "asb-tui-benchmark-run",
+  "title": "Run one benchmark",
+  "steps": [
+    {
+      "id": "select-benchmark",
+      "command": ["asb", "tui", "run", "--benchmark", "synthetic-benchmark", "--agent", "synthetic-agent"],
+      "expect": {"exit_code": 0, "stdout_shape": "run-selection-v1"},
+      "references": [{"path": "protocol/v1/agent-catalog.schema.json", "kind": "input"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "confirm-run",
+      "command": ["asb", "tui", "run", "--benchmark", "synthetic-benchmark", "--agent", "synthetic-agent", "--confirm"],
+      "expect": {"exit_code": 0, "stdout_shape": "run-confirmation-v1"},
+      "references": [{"path": "docs/CAPABILITY_MATRIX.md", "kind": "output"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "observe-progress",
+      "command": ["asb", "tui", "run", "--status", "synthetic-run-001"],
+      "expect": {"exit_code": 0, "stdout_shape": "run-progress-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/benchmark-run/running.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "cancel-or-recover",
+      "command": ["asb", "tui", "run", "--cancel", "synthetic-run-001"],
+      "expect": {"exit_code": 0, "stdout_shape": "run-cancellation-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/benchmark-run/cancelled.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "recover-run",
+      "command": ["asb", "tui", "run", "--recover", "synthetic-run-001"],
+      "expect": {"exit_code": 0, "stdout_shape": "run-recovery-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/benchmark-run/recovered.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    }
+  ]
+}

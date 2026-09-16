@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "state": "recovered",
+  "run_id": "synthetic-run-001",
+  "benchmark_id": "synthetic-benchmark",
+  "agent_id": "synthetic-agent",
+  "completed_measures": 2,
+  "total_measures": 5,
+  "checkpoint": "measure-002",
+  "explanation": "The retained checkpoint was recovered; continuing will not duplicate completed measures."
+}
