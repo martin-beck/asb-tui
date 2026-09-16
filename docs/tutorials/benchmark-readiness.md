@@ -1,3 +1,5 @@
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<!-- SPDX-License-Identifier: MIT -->
 # Check benchmark readiness
 
 This tutorial is an offline, synthetic walkthrough for the TUI readiness screen.
