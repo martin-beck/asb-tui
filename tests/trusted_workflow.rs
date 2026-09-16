@@ -103,6 +103,7 @@ fn every_referenced_action_is_commit_sha_pinned() {
         "quality.yml",
         "development-runner-canary.yml",
         "trusted-main.yml",
+        "awq-shadow.yml",
     ] {
         let workflow = fs::read_to_string(format!(
             "{}/.github/workflows/{path}",
@@ -113,11 +114,20 @@ fn every_referenced_action_is_commit_sha_pinned() {
             .lines()
             .filter(|line| line.trim_start().starts_with("uses:"))
         {
-            let revision = line
+            let reference = line
+                .trim_start()
+                .strip_prefix("uses:")
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap();
+            if reference == "./.github/workflows/quality.yml" {
+                continue;
+            }
+            let revision = reference
                 .split_once('@')
                 .expect("action reference must have @")
                 .1;
-            let revision = revision.split_whitespace().next().unwrap();
             assert_eq!(revision.len(), 40, "action is not commit pinned: {line}");
             assert!(
                 revision
