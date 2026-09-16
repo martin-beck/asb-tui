@@ -40,7 +40,9 @@ jobs:
         with:
           repository: martin-beck/agent-systems-benchmark
           ref: 3e475bda8f44836a169bc8fc679b430f6c993961
-          path: .ci/asb-contract
+          # Keep upstream contract files outside the product tree so product
+          # publication/header/privacy gates never scan them as asb-tui files.
+          path: ../asb-contract
           persist-credentials: false
           fetch-depth: 1
       - name: Install exact Rust toolchain
@@ -62,7 +64,7 @@ jobs:
           python3 tools/test-benchmark-readiness-tutorial.py
           python3 tools/test-run-shared-config-tutorial.py
           python3 tools/test-replay-comparison-tutorial.py
-          python3 tools/test-tutorial-freshness.py --asb-root .ci/asb-contract
+          python3 tools/test-tutorial-freshness.py --asb-root ../asb-contract
           python3 tools/test-release-verifier.py
           tools/test-promoted-self-test.sh
           python3 -m json.tool provenance/dependencies.lock.json >/dev/null
