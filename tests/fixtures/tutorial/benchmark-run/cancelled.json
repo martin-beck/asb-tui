@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "state": "cancelled",
+  "run_id": "synthetic-run-001",
+  "benchmark_id": "synthetic-benchmark",
+  "agent_id": "synthetic-agent",
+  "completed_measures": 2,
+  "total_measures": 5,
+  "checkpoint": "measure-002",
+  "explanation": "Cancellation was accepted; recover from the retained checkpoint or discard the run."
+}

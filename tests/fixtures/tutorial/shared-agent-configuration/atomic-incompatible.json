@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "state": "refused",
+  "selected_agents": ["synthetic-agent-a", "synthetic-agent-b"],
+  "configuration": {
+    "provider": {"value": "synthetic-provider", "origin": "explicit"},
+    "model": {"value": "synthetic-model", "origin": "explicit"},
+    "benchmark": {"value": "synthetic-benchmark", "origin": "explicit"}
+  },
+  "incompatible_agents": [{"agent_id": "synthetic-agent-b", "reason": "model_not_supported"}],
+  "changed_agents": 0,
+  "explanation": "No agent was changed because one selected agent cannot use the requested model."
+}

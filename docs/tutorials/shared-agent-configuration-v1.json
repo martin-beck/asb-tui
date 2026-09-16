@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "tutorial_id": "asb-tui-shared-agent-configuration",
+  "title": "Apply shared configuration to agents",
+  "steps": [
+    {
+      "id": "select-agents",
+      "command": ["asb", "tui", "configure", "agents", "--agents", "synthetic-agent-a,synthetic-agent-b"],
+      "expect": {"exit_code": 0, "stdout_shape": "agent-selection-v1"},
+      "references": [{"path": "protocol/v1/agent-catalog.schema.json", "kind": "input"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "review-shared-draft",
+      "command": ["asb", "tui", "configure", "agents", "--agents", "synthetic-agent-a,synthetic-agent-b", "--provider", "synthetic-provider", "--model", "synthetic-model", "--benchmark", "synthetic-benchmark"],
+      "expect": {"exit_code": 0, "stdout_shape": "shared-config-draft-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/shared-agent-configuration/atomic-success.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "confirm-atomic-apply",
+      "command": ["asb", "tui", "configure", "agents", "--agents", "synthetic-agent-a,synthetic-agent-b", "--provider", "synthetic-provider", "--model", "synthetic-model", "--benchmark", "synthetic-benchmark", "--apply"],
+      "expect": {"exit_code": 0, "stdout_shape": "shared-config-result-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/shared-agent-configuration/atomic-incompatible.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    }
+  ]
+}
