@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "tutorial_id": "asb-tui-llm-record-replay",
+  "title": "Record and replay an LLM response",
+  "steps": [
+    {
+      "id": "choose-recording",
+      "command": ["asb", "tui", "record", "--run", "synthetic-run-001", "--output", "synthetic-cassette-001"],
+      "expect": {"exit_code": 0, "stdout_shape": "recording-summary-v1"},
+      "references": [{"path": "protocol/v1/agent-catalog.schema.json", "kind": "input"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "review-cassette",
+      "command": ["asb", "tui", "record", "--inspect", "synthetic-cassette-001"],
+      "expect": {"exit_code": 0, "stdout_shape": "cassette-provenance-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/llm-record-replay/recorded.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "replay-cassette",
+      "command": ["asb", "tui", "replay", "--cassette", "synthetic-cassette-001", "--benchmark", "synthetic-benchmark", "--agent", "synthetic-agent"],
+      "expect": {"exit_code": 0, "stdout_shape": "replay-summary-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/llm-record-replay/replayed.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    },
+    {
+      "id": "retain-failed-replay",
+      "command": ["asb", "tui", "replay", "--cassette", "synthetic-cassette-001", "--benchmark", "synthetic-benchmark", "--agent", "synthetic-agent", "--show-failed"],
+      "expect": {"exit_code": 0, "stdout_shape": "replay-failure-retention-v1"},
+      "references": [{"path": "tests/fixtures/tutorial/llm-record-replay/failed.json", "kind": "fixture"}],
+      "network": "denied",
+      "credentials": "none"
+    }
+  ]
+}

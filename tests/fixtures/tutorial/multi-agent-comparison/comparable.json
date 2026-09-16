@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "state": "comparable",
+  "benchmark_id": "synthetic-benchmark",
+  "benchmark_digest": "sha256:synthetic-benchmark-001",
+  "measure_set_digest": "sha256:synthetic-measures-001",
+  "revision": "synthetic-revision-001",
+  "generation": 7,
+  "runs": [
+    {"run_id": "synthetic-run-a", "agent_id": "synthetic-agent-a", "passed_measures": 3, "failed_measures": 0},
+    {"run_id": "synthetic-run-b", "agent_id": "synthetic-agent-b", "passed_measures": 2, "failed_measures": 1}
+  ],
+  "compared_measures": 3,
+  "explanation": "Both runs share the exact benchmark, revision, generation, and measure set."
+}

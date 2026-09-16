@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "state": "incomparable",
+  "benchmark_id": "synthetic-benchmark",
+  "runs": [
+    {"run_id": "synthetic-run-a", "agent_id": "synthetic-agent-a"},
+    {"run_id": "synthetic-run-c", "agent_id": "synthetic-agent-c"}
+  ],
+  "mismatch": "measure_set_digest",
+  "ranked": false,
+  "explanation": "The selected runs use different measure sets, so the report refuses to rank them."
+}
