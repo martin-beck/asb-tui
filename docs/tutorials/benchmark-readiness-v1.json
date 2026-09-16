@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "tutorial_id": "benchmark-readiness",
+  "title": "Check benchmark readiness",
+  "network": "denied",
+  "credentials": "none",
+  "steps": [
+    {"id": "capabilities", "command": ["asb", "capabilities", "--format", "json"], "expect": "capabilities-v1"},
+    {"id": "tui-status", "command": ["asb", "tui", "status"], "expect": "readiness-status-v1"},
+    {"id": "provider-catalog", "command": ["asb", "provider-catalog"], "expect": "provider-catalog-v1"},
+    {"id": "auth-status", "command": ["asb", "auth", "status", "--provider", "synthetic-provider"], "expect": "auth-status-v1"},
+    {"id": "tui-doctor", "command": ["asb", "tui", "doctor"], "expect": "readiness-doctor-v1"}
+  ]
+}
