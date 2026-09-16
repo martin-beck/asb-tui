@@ -34,17 +34,6 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # Consume the immutable ASB tutorial grammar; the freshness check itself
-      # remains parser-only and never runs this checkout or a tutorial command.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: martin-beck/agent-systems-benchmark
-          ref: 3e475bda8f44836a169bc8fc679b430f6c993961
-          # Keep upstream contract files outside the product tree so product
-          # publication/header/privacy gates never scan them as asb-tui files.
-          path: ../asb-contract
-          persist-credentials: false
-          fetch-depth: 1
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.93.0 --profile minimal --component clippy,rustfmt
       - name: Verify formatting, lint, tests, and documentation
@@ -125,3 +114,14 @@ jobs:
         run: |
           git diff --exit-code
           test -z "$(git status --porcelain)"
+      # Run this after product publication/privacy scans.  The upstream
+      # contract checkout is intentionally a CI-only input, not product data.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: martin-beck/agent-systems-benchmark
+          ref: 3e475bda8f44836a169bc8fc679b430f6c993961
+          path: .ci/asb-contract
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify cross-repository tutorial freshness
+        run: python3 tools/test-tutorial-freshness.py --asb-root .ci/asb-contract
