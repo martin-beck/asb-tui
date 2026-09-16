@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
 """Validate the benchmark-readiness tutorial and synthetic fixtures offline."""
 import json
 import re
