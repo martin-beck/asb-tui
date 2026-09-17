@@ -1110,20 +1110,20 @@
       "versionInfo": "1.0.220"
     },
     {
-      "SPDXID": "SPDXRef-serde-json-1.0.143",
+      "SPDXID": "SPDXRef-serde-json-1.0.151",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "d401abef1d108fbd9cbaebc3e46611f4b1021f714a0597a71f41ee463f5f4a5a"
+          "checksumValue": "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
         }
       ],
       "copyrightText": "NOASSERTION",
-      "downloadLocation": "https://crates.io/api/v1/crates/serde_json/1.0.143/download",
+      "downloadLocation": "https://crates.io/api/v1/crates/serde_json/1.0.151/download",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "serde_json",
-      "versionInfo": "1.0.143"
+      "versionInfo": "1.0.151"
     },
     {
       "SPDXID": "SPDXRef-signal-hook-0.3.18",
@@ -1508,6 +1508,22 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "windows-sys",
       "versionInfo": "0.61.2"
+    },
+    {
+      "SPDXID": "SPDXRef-zmij-1.0.23",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "https://crates.io/api/v1/crates/zmij/1.0.23/download",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "name": "zmij",
+      "versionInfo": "1.0.23"
     }
   ],
   "relationships": [
@@ -1547,7 +1563,7 @@
       "spdxElementId": "SPDXRef-asb-tui"
     },
     {
-      "relatedSpdxElement": "SPDXRef-serde-json-1.0.143",
+      "relatedSpdxElement": "SPDXRef-serde-json-1.0.151",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-asb-tui"
     },
