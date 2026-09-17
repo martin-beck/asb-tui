@@ -55,7 +55,7 @@ jobs:
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.93.0 --profile minimal --component clippy,llvm-tools-preview,rustfmt
       - name: Install pinned Rust quality tools
-        uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c
         with:
           tool: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-llvm-cov@0.9.0
       - name: Run complete locked Rust and supply-chain gates
