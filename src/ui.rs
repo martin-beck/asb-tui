@@ -1003,7 +1003,9 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
     };
     let footer = Rect {
         x: columns[0].x,
-        y: columns[0].y.saturating_add(columns[0].height.saturating_sub(2)),
+        y: columns[0]
+            .y
+            .saturating_add(columns[0].height.saturating_sub(2)),
         width: columns[0].width,
         height: 2.min(columns[0].height),
     };
@@ -1013,10 +1015,12 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
         footer,
     );
     let authoritative = state.live.as_ref().map_or_else(
-        || vec![
-            Line::from("Runner setup: not connected"),
-            Line::from("Provider/model catalog unavailable"),
-        ],
+        || {
+            vec![
+                Line::from("Runner setup: not connected"),
+                Line::from("Provider/model catalog unavailable"),
+            ]
+        },
         |snapshot| {
             let mut lines = vec![Line::from("Runner-authoritative setup")];
             if let Some(config) = &snapshot.configuration {

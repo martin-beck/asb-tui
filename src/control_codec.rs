@@ -144,7 +144,10 @@ pub enum ControlCall {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderCatalogAction { Status, Refresh }
+pub enum ProviderCatalogAction {
+    Status,
+    Refresh,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -156,15 +159,31 @@ pub struct ProviderCatalogRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderAuthMethod { CredentialReference, LocalDaemon, None }
+pub enum ProviderAuthMethod {
+    CredentialReference,
+    LocalDaemon,
+    None,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", content = "reason", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ProviderAvailability { Available, Unavailable(String) }
+#[serde(
+    tag = "status",
+    content = "reason",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ProviderAvailability {
+    Available,
+    Unavailable(String),
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProviderModel { pub model_id: String, pub revision: String, pub availability: ProviderAvailability }
+pub struct ProviderModel {
+    pub model_id: String,
+    pub revision: String,
+    pub availability: ProviderAvailability,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -188,7 +207,9 @@ pub struct ProviderCatalog {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigurationStatusRequest { pub runner_instance_id: String }
+pub struct ConfigurationStatusRequest {
+    pub runner_instance_id: String,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1122,7 +1143,10 @@ fn validate_provider_catalog(v: &ProviderCatalog) -> Result<(), CodecError> {
     if v.generation.0 == 0 || v.providers.is_empty() || v.providers.len() > 32 {
         return Err(CodecError::InvalidValue("provider catalog"));
     }
-    if v.providers.windows(2).any(|pair| pair[0].provider_id >= pair[1].provider_id) {
+    if v.providers
+        .windows(2)
+        .any(|pair| pair[0].provider_id >= pair[1].provider_id)
+    {
         return Err(CodecError::InvalidValue("provider ordering"));
     }
     for provider in &v.providers {
@@ -1146,8 +1170,16 @@ fn validate_configuration(v: &ConfigurationSnapshot) -> Result<(), CodecError> {
     }
     if v.configured {
         validate_sorted_ids(&v.agent_ids)?;
-        validate_id(v.provider_id.as_deref().ok_or(CodecError::InvalidValue("provider_id"))?)?;
-        validate_id(v.model_id.as_deref().ok_or(CodecError::InvalidValue("model_id"))?)?;
+        validate_id(
+            v.provider_id
+                .as_deref()
+                .ok_or(CodecError::InvalidValue("provider_id"))?,
+        )?;
+        validate_id(
+            v.model_id
+                .as_deref()
+                .ok_or(CodecError::InvalidValue("model_id"))?,
+        )?;
         if v.auth_method.is_none() {
             return Err(CodecError::InvalidValue("auth_method"));
         }
@@ -1293,7 +1325,10 @@ impl ControlResult {
                 | (ControlCall::ProviderCatalog(_), Self::ProviderCatalog(_))
                 | (ControlCall::ConfigurationStatus(_), Self::Configuration(_))
                 | (ControlCall::ConfigurationApply(_), Self::Configuration(_))
-                | (ControlCall::RecordingCampaignPlan(_), Self::RecordingCampaign(_))
+                | (
+                    ControlCall::RecordingCampaignPlan(_),
+                    Self::RecordingCampaign(_)
+                )
                 | (
                     ControlCall::RecordingCampaignStatus(_),
                     Self::RecordingCampaignStatus(_)
@@ -1548,6 +1583,9 @@ mod tests {
             .validate_for(&request, ControlLimits::default())
             .unwrap();
         let bytes = encode(&response, MAX_FRAME_BYTES).unwrap();
-        assert_eq!(decode::<ControlResponse>(&bytes, MAX_FRAME_BYTES).unwrap(), response);
+        assert_eq!(
+            decode::<ControlResponse>(&bytes, MAX_FRAME_BYTES).unwrap(),
+            response
+        );
     }
 }

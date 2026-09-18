@@ -8,9 +8,9 @@
 //! bounded, renderer-safe state.  It cannot launch, retry, or cancel work.
 
 use crate::control_codec::{
-    ControlCall, ControlLimits, ControlRequest, ControlResponse, ControlResult, ControlSuccess,
-    ConfigurationSnapshot, MeasurementCatalog, Negotiated, ProviderCatalog, RecordingCampaignPlan,
-    Revision, RunSummary,
+    ConfigurationSnapshot, ControlCall, ControlLimits, ControlRequest, ControlResponse,
+    ControlResult, ControlSuccess, MeasurementCatalog, Negotiated, ProviderCatalog,
+    RecordingCampaignPlan, Revision, RunSummary,
 };
 use std::{collections::BTreeMap, fmt};
 
@@ -154,20 +154,32 @@ impl ControlProjection {
                 self.agent_lifecycle = Some(value.clone());
             }
             (ControlCall::ProviderCatalog(_), ControlResult::ProviderCatalog(value)) => {
-                if self.negotiated.as_ref().is_none_or(|session| session.version < crate::control_codec::V1_7) {
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_none_or(|session| session.version < crate::control_codec::V1_7)
+                {
                     return Err(ProjectionError::UnexpectedResult);
                 }
                 self.provider_catalog = Some(value.clone());
             }
             (ControlCall::ConfigurationStatus(_), ControlResult::Configuration(value))
             | (ControlCall::ConfigurationApply(_), ControlResult::Configuration(value)) => {
-                if self.negotiated.as_ref().is_none_or(|session| session.version < crate::control_codec::V1_7) {
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_none_or(|session| session.version < crate::control_codec::V1_7)
+                {
                     return Err(ProjectionError::UnexpectedResult);
                 }
                 self.configuration = Some(value.clone());
             }
             (ControlCall::RecordingCampaignPlan(_), ControlResult::RecordingCampaign(value)) => {
-                if self.negotiated.as_ref().is_none_or(|session| session.version < crate::control_codec::V1_7) {
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_none_or(|session| session.version < crate::control_codec::V1_7)
+                {
                     return Err(ProjectionError::UnexpectedResult);
                 }
                 self.recording_campaign = Some(value.clone());
@@ -351,7 +363,9 @@ mod tests {
             }),
             1,
         );
-        projection.apply(&negotiate, &negotiation, ControlLimits::default()).unwrap();
+        projection
+            .apply(&negotiate, &negotiation, ControlLimits::default())
+            .unwrap();
         let catalog_call = ControlCall::ProviderCatalog(ProviderCatalogRequest {
             action: ProviderCatalogAction::Status,
             runner_instance_id: "runner-1".into(),
@@ -381,7 +395,15 @@ mod tests {
                 ControlLimits::default(),
             )
             .unwrap();
-        assert_eq!(projection.snapshot().provider_catalog.unwrap().providers.len(), 1);
+        assert_eq!(
+            projection
+                .snapshot()
+                .provider_catalog
+                .unwrap()
+                .providers
+                .len(),
+            1
+        );
     }
 
     fn catalog() -> crate::control_codec::MeasurementCatalogPublication {
