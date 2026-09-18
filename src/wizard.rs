@@ -117,6 +117,14 @@ impl Wizard {
             .map_or("", String::as_str)
     }
 
+    /// Return a bounded copy of the completed setup draft for the authenticated
+    /// control seam. The wizard never stores secrets; authentication values are
+    /// validated downstream as a closed method/reference form.
+    #[must_use]
+    pub fn values(&self) -> [String; 7] {
+        self.values.clone()
+    }
+
     #[must_use]
     pub fn catalog(&self) -> Option<&WizardCatalogState> {
         self.catalog.as_ref()

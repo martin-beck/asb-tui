@@ -151,7 +151,13 @@ pub fn run_interactive_with_control(
     let mut projection = ControlProjection::default();
     let mut workspace = ui::WorkspaceState::default();
     poll_authenticated_workspace(session, &mut projection, &mut workspace)?;
-    run_interactive_loop(state, policy, workspace, Some(session))
+    run_interactive_loop(
+        state,
+        policy,
+        workspace,
+        Some(session),
+        Some(&mut projection),
+    )
 }
 
 trait LifecycleOps {
@@ -339,7 +345,7 @@ impl TerminalSession {
 
 /// Run the single-writer interactive draw loop until the operator quits.
 pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(), RuntimeError> {
-    run_interactive_loop(state, policy, ui::WorkspaceState::default(), None)
+    run_interactive_loop(state, policy, ui::WorkspaceState::default(), None, None)
 }
 
 /// Run the interactive frontend after one injected, normalized readiness
@@ -351,14 +357,15 @@ pub fn run_interactive_with_readiness<P: ReadinessProvider>(
     provider: &mut P,
 ) -> Result<(), RuntimeError> {
     let workspace = ui::WorkspaceState::for_readiness(provider.read());
-    run_interactive_loop(state, policy, workspace, None)
+    run_interactive_loop(state, policy, workspace, None, None)
 }
 
 fn run_interactive_loop(
     state: &mut AppState,
     policy: RenderPolicy,
     mut workspace: ui::WorkspaceState,
-    _control: Option<&mut AuthenticatedBrokerSession>,
+    mut control: Option<&mut AuthenticatedBrokerSession>,
+    mut projection: Option<&mut ControlProjection>,
 ) -> Result<(), RuntimeError> {
     let mut signals = Signals::new([SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGCONT])?;
     let mut session = TerminalSession::enter(policy)?;
@@ -378,6 +385,18 @@ fn run_interactive_loop(
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if matches!(workspace.handle_key(key), ui::UiAction::Quit) {
                         state.apply(Action::Quit)?;
+                    }
+                    if let (Some(control), Some(projection), Some(values)) = (
+                        control.as_deref_mut(),
+                        projection.as_deref_mut(),
+                        workspace.take_wizard_completion(),
+                    ) {
+                        let selection = ui::WorkspaceState::wizard_configuration_selection(&values)
+                            .map_err(|reason| RuntimeError(io::Error::other(reason)))?;
+                        control
+                            .apply_configuration(projection, selection)
+                            .map_err(|error| RuntimeError(io::Error::other(error)))?;
+                        workspace.apply_live_snapshot(projection.snapshot());
                     }
                 }
                 _ => {}
