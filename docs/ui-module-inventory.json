@@ -37,6 +37,6 @@
     {"path":"src/main.rs","reason":"CLI bootstrap only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/release_channel.rs","reason":"Release policy only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/sha256.rs","reason":"Digest primitive only; it has no UI state or projection ownership.","expires":"2027-12-31"},
-    {"path":"src/system_probe.rs","reason":"Host probing only; it has no UI state or projection ownership.","expires":"2027-12-31"}
+    {"path":"src/system_probe.rs","reason":"Host probing and environment-independent coverage tests only; it has no UI state or projection ownership.","expires":"2027-12-31"}
   ]
 }

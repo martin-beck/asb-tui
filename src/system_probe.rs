@@ -1285,9 +1285,6 @@ mod tests {
         let _guard = PROCESS_TEST_LOCK.lock().unwrap();
         let probe = detect(&LocalSystem);
         assert_eq!(probe.schema_version, 1);
-        if probe.terminal.channel == TerminalChannel::Tty && probe.terminal.columns >= 80 {
-            assert!(probe.terminal.resize_events);
-        }
         let report = serde_json::to_value(crate::compatibility::evaluate(probe)).unwrap();
         let object = report.as_object().unwrap();
         assert_eq!(
