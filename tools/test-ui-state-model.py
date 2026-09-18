@@ -68,6 +68,9 @@ class UiStateModelTests(unittest.TestCase):
     def test_wizard_catalog_state_is_formally_declared(self):
         self.assertIn("wizard_catalog", self.model["state_fields"])
 
+    def test_wizard_completion_state_is_formally_declared(self):
+        self.assertIn("wizard_completion", self.model["state_fields"])
+
     def test_wizard_editing_help_and_completion_bindings_are_formally_declared(self):
         bindings = {(item["action"], item["element"], item["key"]) for item in self.model["bindings"]}
         self.assertIn(("wizard_edit", "wizard.agent", "Character"), bindings)
