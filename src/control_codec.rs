@@ -16,6 +16,7 @@ pub const V1_2: ControlVersion = ControlVersion { major: 1, minor: 2 };
 pub const V1_3: ControlVersion = ControlVersion { major: 1, minor: 3 };
 pub const V1_4: ControlVersion = ControlVersion { major: 1, minor: 4 };
 pub const V1_5: ControlVersion = ControlVersion { major: 1, minor: 5 };
+pub const V1_7: ControlVersion = ControlVersion { major: 1, minor: 7 };
 /// Minimum negotiated version that exposes the authenticated agent catalog.
 pub const CONTROL_AGENT_CATALOG_V1: ControlVersion = V1_4;
 /// Minimum negotiated version that exposes verified local-agent lifecycle calls.
@@ -134,6 +135,132 @@ pub enum ControlCall {
     Analyze { run_ids: Vec<RunId> },
     Events(PageParams),
     ArtifactMetadata { run_id: RunId, digest: String },
+    ProviderCatalog(ProviderCatalogRequest),
+    ConfigurationStatus(ConfigurationStatusRequest),
+    ConfigurationApply(ConfigurationApplyParams),
+    RecordingCampaignPlan(RecordingCampaignPlanParams),
+    RecordingCampaignStatus(RecordingCampaignStatusRequest),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCatalogAction { Status, Refresh }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCatalogRequest {
+    pub action: ProviderCatalogAction,
+    pub runner_instance_id: String,
+    pub known_generation: Option<Revision>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAuthMethod { CredentialReference, LocalDaemon, None }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", content = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProviderAvailability { Available, Unavailable(String) }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderModel { pub model_id: String, pub revision: String, pub availability: ProviderAvailability }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCatalogEntry {
+    pub provider_id: String,
+    pub display_name: String,
+    pub auth_methods: Vec<ProviderAuthMethod>,
+    pub models: Vec<ProviderModel>,
+    pub availability: ProviderAvailability,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCatalog {
+    pub runner_instance_id: String,
+    pub generation: Revision,
+    pub catalog_sha256: String,
+    pub providers: Vec<ProviderCatalogEntry>,
+    pub refreshed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigurationStatusRequest { pub runner_instance_id: String }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigurationSnapshot {
+    pub runner_instance_id: String,
+    pub generation: Revision,
+    pub configured: bool,
+    pub agent_ids: Vec<String>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub auth_method: Option<ProviderAuthMethod>,
+    pub credential_reference_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigurationSelection {
+    pub agent_ids: Vec<String>,
+    pub provider_id: String,
+    pub model_id: String,
+    pub auth_method: ProviderAuthMethod,
+    pub credential_reference_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigurationApplyParams {
+    pub idempotency_key: String,
+    pub expected_generation: Revision,
+    pub selection: ConfigurationSelection,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignPlanParams {
+    pub idempotency_key: String,
+    pub expected_generation: Revision,
+    pub runner_instance_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub agent_ids: Vec<String>,
+    pub workload_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignPlan {
+    pub runner_instance_id: String,
+    pub generation: Revision,
+    pub campaign_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub agent_ids: Vec<String>,
+    pub workload_ids: Vec<String>,
+    pub tuple_count: u16,
+    pub state: String,
+    pub offline_ready: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignStatusRequest {
+    pub runner_instance_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignStatus {
+    pub runner_instance_id: String,
+    pub generation: Revision,
+    pub campaign: Option<RecordingCampaignPlan>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -176,6 +303,7 @@ pub struct PageParams {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum ControlResponse {
     Success(SuccessResponse),
     Failure(FailureResponse),
@@ -677,6 +805,10 @@ pub enum ControlResult {
     Events(Page<ControlEvent>),
     Analysis(AnalysisSummary),
     ArtifactMetadata(ArtifactMetadata),
+    ProviderCatalog(ProviderCatalog),
+    Configuration(ConfigurationSnapshot),
+    RecordingCampaign(RecordingCampaignPlan),
+    RecordingCampaignStatus(RecordingCampaignStatus),
 }
 
 impl ControlRequest {
@@ -778,7 +910,7 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
             if v.versions.is_empty()
                 || v.versions
                     .iter()
-                    .any(|v| !matches!(*v, V1_0 | V1_2 | V1_3 | V1_4 | V1_5))
+                    .any(|v| !matches!(*v, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_7))
             {
                 return Err(CodecError::UnsupportedVersion);
             }
@@ -843,13 +975,38 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
         ControlCall::AgentRemove(v) => v
             .validate()
             .map_err(|_| CodecError::InvalidValue("agent_remove"))?,
+        ControlCall::ProviderCatalog(v) => validate_id(&v.runner_instance_id)?,
+        ControlCall::ConfigurationStatus(v) => validate_id(&v.runner_instance_id)?,
+        ControlCall::ConfigurationApply(v) => {
+            validate_id(&v.idempotency_key)?;
+            if v.expected_generation.0 == 0 {
+                return Err(CodecError::InvalidValue("expected_generation"));
+            }
+            validate_selection(&v.selection)?;
+        }
+        ControlCall::RecordingCampaignPlan(v) => {
+            validate_id(&v.idempotency_key)?;
+            validate_id(&v.runner_instance_id)?;
+            if v.expected_generation.0 == 0 {
+                return Err(CodecError::InvalidValue("expected_generation"));
+            }
+            validate_id(&v.provider_id)?;
+            validate_id(&v.model_id)?;
+            validate_sorted_ids(&v.agent_ids)?;
+            validate_sorted_ids(&v.workload_ids)?;
+            let tuples = v.agent_ids.len().saturating_mul(v.workload_ids.len());
+            if tuples == 0 || tuples > 256 {
+                return Err(CodecError::InvalidValue("campaign tuple count"));
+            }
+        }
+        ControlCall::RecordingCampaignStatus(v) => validate_id(&v.runner_instance_id)?,
     }
     Ok(())
 }
 fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(), CodecError> {
     match success {
         ControlSuccess::Negotiated(v) => {
-            if !matches!(v.version, V1_0 | V1_2 | V1_3 | V1_4 | V1_5)
+            if !matches!(v.version, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_7)
                 || v.oldest_revision > v.latest_revision
             {
                 return Err(CodecError::InvalidVersion);
@@ -915,6 +1072,10 @@ fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), 
             validate_digest(&v.analysis_sha256)?;
         }
         ControlResult::ArtifactMetadata(v) => validate_digest(&v.sha256)?,
+        ControlResult::ProviderCatalog(v) => validate_provider_catalog(v)?,
+        ControlResult::Configuration(v) => validate_configuration(v)?,
+        ControlResult::RecordingCampaign(v) => validate_campaign_plan(v)?,
+        ControlResult::RecordingCampaignStatus(v) => validate_campaign_status(v)?,
     }
     Ok(())
 }
@@ -924,6 +1085,117 @@ fn validate_summary(v: &RunSummary) -> Result<(), CodecError> {
     validate_digest(&v.plan_sha256)?;
     if v.created_revision > v.revision {
         return Err(CodecError::InvalidValue("revision"));
+    }
+    Ok(())
+}
+
+fn validate_sorted_ids(values: &[String]) -> Result<(), CodecError> {
+    if values.is_empty() || values.len() > 32 {
+        return Err(CodecError::InvalidValue("ids"));
+    }
+    if values.iter().any(|value| validate_id(value).is_err())
+        || values.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(CodecError::InvalidValue("ids"));
+    }
+    Ok(())
+}
+
+fn validate_selection(v: &ConfigurationSelection) -> Result<(), CodecError> {
+    validate_sorted_ids(&v.agent_ids)?;
+    validate_id(&v.provider_id)?;
+    validate_id(&v.model_id)?;
+    match (v.auth_method, v.credential_reference_sha256.as_deref()) {
+        (ProviderAuthMethod::CredentialReference, Some(value)) => validate_digest(value)?,
+        (ProviderAuthMethod::CredentialReference, None) => {
+            return Err(CodecError::InvalidValue("credential_reference_sha256"));
+        }
+        (_, Some(_)) => return Err(CodecError::InvalidValue("credential_reference_sha256")),
+        (_, None) => {}
+    }
+    Ok(())
+}
+
+fn validate_provider_catalog(v: &ProviderCatalog) -> Result<(), CodecError> {
+    validate_id(&v.runner_instance_id)?;
+    validate_digest(&v.catalog_sha256)?;
+    if v.generation.0 == 0 || v.providers.is_empty() || v.providers.len() > 32 {
+        return Err(CodecError::InvalidValue("provider catalog"));
+    }
+    if v.providers.windows(2).any(|pair| pair[0].provider_id >= pair[1].provider_id) {
+        return Err(CodecError::InvalidValue("provider ordering"));
+    }
+    for provider in &v.providers {
+        validate_id(&provider.provider_id)?;
+        validate_id(&provider.display_name)?;
+        if provider.auth_methods.is_empty() || provider.models.is_empty() {
+            return Err(CodecError::InvalidValue("provider entry"));
+        }
+        for model in &provider.models {
+            validate_id(&model.model_id)?;
+            validate_id(&model.revision)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_configuration(v: &ConfigurationSnapshot) -> Result<(), CodecError> {
+    validate_id(&v.runner_instance_id)?;
+    if v.generation.0 == 0 {
+        return Err(CodecError::InvalidValue("configuration generation"));
+    }
+    if v.configured {
+        validate_sorted_ids(&v.agent_ids)?;
+        validate_id(v.provider_id.as_deref().ok_or(CodecError::InvalidValue("provider_id"))?)?;
+        validate_id(v.model_id.as_deref().ok_or(CodecError::InvalidValue("model_id"))?)?;
+        if v.auth_method.is_none() {
+            return Err(CodecError::InvalidValue("auth_method"));
+        }
+    } else if !v.agent_ids.is_empty()
+        || v.provider_id.is_some()
+        || v.model_id.is_some()
+        || v.auth_method.is_some()
+        || v.credential_reference_sha256.is_some()
+    {
+        return Err(CodecError::InvalidValue("unconfigured state"));
+    }
+    if let Some(value) = &v.credential_reference_sha256 {
+        validate_digest(value)?;
+    }
+    Ok(())
+}
+
+fn validate_campaign_plan(v: &RecordingCampaignPlan) -> Result<(), CodecError> {
+    validate_id(&v.runner_instance_id)?;
+    validate_id(&v.campaign_id)?;
+    validate_id(&v.provider_id)?;
+    validate_id(&v.model_id)?;
+    validate_sorted_ids(&v.agent_ids)?;
+    validate_sorted_ids(&v.workload_ids)?;
+    let tuples = v.agent_ids.len().saturating_mul(v.workload_ids.len());
+    if v.generation.0 == 0
+        || v.tuple_count as usize != tuples
+        || v.state != "planned"
+        || v.offline_ready
+        || v.unavailable_reason.as_deref() != Some("recording-required")
+    {
+        return Err(CodecError::InvalidValue("campaign plan"));
+    }
+    Ok(())
+}
+
+fn validate_campaign_status(v: &RecordingCampaignStatus) -> Result<(), CodecError> {
+    validate_id(&v.runner_instance_id)?;
+    if v.generation.0 == 0 {
+        return Err(CodecError::InvalidValue("campaign status generation"));
+    }
+    if let Some(campaign) = &v.campaign {
+        validate_campaign_plan(campaign)?;
+        if campaign.runner_instance_id != v.runner_instance_id
+            || campaign.generation != v.generation
+        {
+            return Err(CodecError::InvalidValue("campaign status identity"));
+        }
     }
     Ok(())
 }
@@ -1017,6 +1289,14 @@ impl ControlResult {
                 | (
                     ControlCall::ArtifactMetadata { .. },
                     Self::ArtifactMetadata(_)
+                )
+                | (ControlCall::ProviderCatalog(_), Self::ProviderCatalog(_))
+                | (ControlCall::ConfigurationStatus(_), Self::Configuration(_))
+                | (ControlCall::ConfigurationApply(_), Self::Configuration(_))
+                | (ControlCall::RecordingCampaignPlan(_), Self::RecordingCampaign(_))
+                | (
+                    ControlCall::RecordingCampaignStatus(_),
+                    Self::RecordingCampaignStatus(_)
                 )
         )
     }
@@ -1225,5 +1505,49 @@ mod tests {
             catalog,
         };
         publication.validate().unwrap();
+    }
+
+    #[test]
+    fn setup_and_campaign_plan_wire_shapes_are_closed_and_renderer_neutral() {
+        let request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(7),
+            timeout_ms: 1_000,
+            call: ControlCall::RecordingCampaignPlan(RecordingCampaignPlanParams {
+                idempotency_key: "campaign-plan".into(),
+                expected_generation: Revision(2),
+                runner_instance_id: "runner-1".into(),
+                provider_id: "openai".into(),
+                model_id: "gpt-5.2-2025-12-11".into(),
+                agent_ids: vec!["aider".into()],
+                workload_ids: vec!["original.bug-fix".into()],
+            }),
+        };
+        request.validate(ControlLimits::default()).unwrap();
+        let response = ControlResponse::Success(SuccessResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(7),
+            result: ControlSuccess::Operation(BoundResult {
+                request_sha256: "a".repeat(64),
+                result: ControlResult::RecordingCampaign(RecordingCampaignPlan {
+                    runner_instance_id: "runner-1".into(),
+                    generation: Revision(2),
+                    campaign_id: "campaign-123".into(),
+                    provider_id: "openai".into(),
+                    model_id: "gpt-5.2-2025-12-11".into(),
+                    agent_ids: vec!["aider".into()],
+                    workload_ids: vec!["original.bug-fix".into()],
+                    tuple_count: 1,
+                    state: "planned".into(),
+                    offline_ready: false,
+                    unavailable_reason: Some("recording-required".into()),
+                }),
+            }),
+        });
+        response
+            .validate_for(&request, ControlLimits::default())
+            .unwrap();
+        let bytes = encode(&response, MAX_FRAME_BYTES).unwrap();
+        assert_eq!(decode::<ControlResponse>(&bytes, MAX_FRAME_BYTES).unwrap(), response);
     }
 }
