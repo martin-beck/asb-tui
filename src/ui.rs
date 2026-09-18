@@ -1830,4 +1830,42 @@ mod tests {
         invalid[4] = "sk-live-secret".into();
         assert!(WorkspaceState::wizard_configuration_selection(&invalid).is_err());
     }
+
+    #[test]
+    fn wizard_selection_rejects_missing_identity_and_supports_each_nonsecret_auth_mode() {
+        let mut values = [
+            "".into(),
+            "provider".into(),
+            "model".into(),
+            "config".into(),
+            "none".into(),
+            "record".into(),
+            "replay".into(),
+        ];
+        assert!(WorkspaceState::wizard_configuration_selection(&values).is_err());
+        values[0] = "agent".into();
+        values[1].clear();
+        assert!(WorkspaceState::wizard_configuration_selection(&values).is_err());
+        values[1] = "provider".into();
+        values[2].clear();
+        assert!(WorkspaceState::wizard_configuration_selection(&values).is_err());
+        values[2] = "model".into();
+        values[4] = "local_daemon".into();
+        let selection = WorkspaceState::wizard_configuration_selection(&values).unwrap();
+        assert_eq!(selection.auth_method, ProviderAuthMethod::LocalDaemon);
+        assert!(selection.credential_reference_sha256.is_none());
+        values[4] = "none".into();
+        let selection = WorkspaceState::wizard_configuration_selection(&values).unwrap();
+        assert_eq!(selection.auth_method, ProviderAuthMethod::None);
+    }
+
+    #[test]
+    fn wizard_completion_is_consumed_once() {
+        let mut state = WorkspaceState {
+            wizard_completion: Some(Default::default()),
+            ..WorkspaceState::default()
+        };
+        assert!(state.take_wizard_completion().is_some());
+        assert!(state.take_wizard_completion().is_none());
+    }
 }

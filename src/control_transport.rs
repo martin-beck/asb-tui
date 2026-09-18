@@ -754,6 +754,84 @@ mod tests {
     }
 
     #[test]
+    fn wizard_configuration_apply_round_trips_and_updates_projection() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_7,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner-7".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(1),
+        };
+        let join = thread::spawn(move || {
+            let mut server = server;
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let size = u32::from_be_bytes(header) as usize;
+            let mut body = vec![0_u8; size];
+            server.read_exact(&mut body).unwrap();
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id,
+                result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                    request_sha256:
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                    result: crate::control_codec::ControlResult::Configuration(
+                        crate::control_codec::ConfigurationSnapshot {
+                            runner_instance_id: "runner-7".into(),
+                            generation: Revision(2),
+                            configured: true,
+                            agent_ids: vec!["codex".into()],
+                            provider_id: Some("openai".into()),
+                            model_id: Some("gpt-5.2".into()),
+                            auth_method: Some(crate::control_codec::ProviderAuthMethod::None),
+                            credential_reference_sha256: None,
+                        },
+                    ),
+                }),
+            });
+            server
+                .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                .unwrap();
+        });
+        let mut transport =
+            FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_7);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [9; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated).unwrap();
+        session
+            .apply_configuration(
+                &mut projection,
+                crate::control_codec::ConfigurationSelection {
+                    agent_ids: vec!["codex".into()],
+                    provider_id: "openai".into(),
+                    model_id: "gpt-5.2".into(),
+                    auth_method: crate::control_codec::ProviderAuthMethod::None,
+                    credential_reference_sha256: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            projection.snapshot().configuration.unwrap().generation,
+            Revision(2)
+        );
+        join.join().unwrap();
+    }
+
+    #[test]
     fn broker_continuity_rejects_epoch_change_and_sequence_skip() {
         let mut continuity = BrokerContinuity::new(BrokerGeneration {
             epoch: [1; 16],
