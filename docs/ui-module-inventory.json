@@ -7,7 +7,7 @@
     {"path":"src/formal_state.rs","kind":"state","responsibility":"Renderer-neutral workspace and wizard transition validation"},
     {"path":"src/help.rs","kind":"interaction"},
     {"path":"src/landing.rs","kind":"projection"},
-    {"path":"src/live_projection.rs","kind":"projection"},
+    {"path":"src/live_projection.rs","kind":"projection","responsibility":"Authenticated run, agent, provider, configuration, and recording-campaign projection"},
     {"path":"src/renderer.rs","kind":"rendering"},
     {"path":"src/reports.rs","kind":"projection"},
     {"path":"src/runtime.rs","kind":"terminal"},
@@ -15,7 +15,7 @@
     {"path":"src/shell.rs","kind":"state"},
     {"path":"src/startup.rs","kind":"startup"},
     {"path":"src/terminal.rs","kind":"terminal"},
-    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, normalized startup readiness routing, wizard catalog selection, editing, contextual help, completion, and formally checked local configuration editing and save"},
+    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, runner-authoritative setup and recording status, normalized startup readiness routing, wizard catalog selection, editing, contextual help, completion, and formally checked local configuration editing and save"},
     {"path":"src/visual.rs","kind":"rendering"},
     {"path":"src/wizard.rs","kind":"state","responsibility":"Formally checked manual and automatic startup wizard routes, steps, catalog selection, and bounded transitions"}
     ,{"path":"src/wizard_catalog.rs","kind":"state","responsibility":"Bounded renderer-neutral agent, provider, and model choices for the setup wizard"}
@@ -28,8 +28,8 @@
     {"path":"src/bundle.rs","reason":"Bundle verification only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/compatibility.rs","reason":"Compatibility probing only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/control_client.rs","reason":"Control transport client only; it has no UI state or projection ownership.","expires":"2027-12-31"},
-    {"path":"src/control_codec.rs","reason":"Wire codec only; it has no UI state or projection ownership.","expires":"2027-12-31"},
-    {"path":"src/control_transport.rs","reason":"Authenticated transport only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/control_codec.rs","reason":"Wire codec only; setup contract changes remain renderer-neutral and have no UI state ownership.","expires":"2027-12-31"},
+    {"path":"src/control_transport.rs","reason":"Authenticated transport only; setup refresh remains transport-owned and has no UI state ownership.","expires":"2027-12-31"},
     {"path":"src/delegated.rs","reason":"Lifecycle delegation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/identity_adapter.rs","reason":"Identity validation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/lib.rs","reason":"Module exports only; it has no UI state or projection ownership.","expires":"2027-12-31"},

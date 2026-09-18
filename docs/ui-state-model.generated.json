@@ -16,6 +16,9 @@
     "measurement_catalog",
     "connection",
     "capabilities",
+    "provider_catalog",
+    "configuration",
+    "recording_campaign",
     "startup_wizard_opened",
     "responsive_layout",
     "contextual_help",
@@ -184,6 +187,7 @@
       "elements": [
         "configuration.entry",
         "configuration.search",
+        "configuration.control_status",
         "navigation"
       ]
     },
@@ -273,6 +277,15 @@
       "role": "editable",
       "help_id": "configuration.search",
       "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "configuration.control_status",
+      "route": "configuration",
+      "role": "status",
+      "help_id": "configuration.control_status",
+      "focusable": false,
       "hoverable": true,
       "parent": null
     },
@@ -812,6 +825,10 @@
     {
       "id": "configuration.search",
       "text": "Type to find a configuration setting by name or description."
+    },
+    {
+      "id": "configuration.control_status",
+      "text": "Inspect provider model and recording readiness reported by the authenticated runner."
     },
     {
       "id": "run.status",
