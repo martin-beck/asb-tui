@@ -960,6 +960,10 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
 }
 
 fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
     let entries = state.configuration_draft.visible_settings();
     let items: Vec<ListItem> = entries
         .iter()
@@ -986,7 +990,7 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
         List::new(items)
             .block(panel(" Configuration - Enter focus, Ctrl-S apply ", policy))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
-        area,
+        columns[0],
         &mut ls,
     );
     let status = match state.configuration_save_state {
@@ -998,15 +1002,68 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
         ConfigurationSaveState::Invalid => "Invalid value: correct it before applying",
     };
     let footer = Rect {
-        x: area.x,
-        y: area.y.saturating_add(area.height.saturating_sub(2)),
-        width: area.width,
-        height: 2.min(area.height),
+        x: columns[0].x,
+        y: columns[0]
+            .y
+            .saturating_add(columns[0].height.saturating_sub(2)),
+        width: columns[0].width,
+        height: 2.min(columns[0].height),
     };
     let detail = state.configuration_edit_error.as_deref().unwrap_or("");
     frame.render_widget(
         Paragraph::new(format!("{status}  {detail}")).style(muted(policy)),
         footer,
+    );
+    let authoritative = state.live.as_ref().map_or_else(
+        || {
+            vec![
+                Line::from("Runner setup: not connected"),
+                Line::from("Provider/model catalog unavailable"),
+            ]
+        },
+        |snapshot| {
+            let mut lines = vec![Line::from("Runner-authoritative setup")];
+            if let Some(config) = &snapshot.configuration {
+                lines.push(Line::from(format!(
+                    "Provider: {}",
+                    config.provider_id.as_deref().unwrap_or("not configured")
+                )));
+                lines.push(Line::from(format!(
+                    "Model: {}",
+                    config.model_id.as_deref().unwrap_or("not configured")
+                )));
+                lines.push(Line::from(format!("Agents: {}", config.agent_ids.len())));
+            } else {
+                lines.push(Line::from("Configuration status unavailable"));
+            }
+            if let Some(campaign) = &snapshot.recording_campaign {
+                lines.push(Line::from(format!(
+                    "Recording: {} ({} tuples)",
+                    campaign.state, campaign.tuple_count
+                )));
+                lines.push(Line::from(if campaign.offline_ready {
+                    "Offline default: ready"
+                } else {
+                    "Offline default: not ready"
+                }));
+            } else {
+                lines.push(Line::from("Recording: no campaign"));
+                lines.push(Line::from("Offline default: not ready"));
+            }
+            if let Some(catalog) = &snapshot.provider_catalog {
+                lines.push(Line::from(format!(
+                    "Providers: {} available",
+                    catalog.providers.len()
+                )));
+            }
+            lines
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(authoritative)
+            .block(panel(" ASB control status ", policy))
+            .wrap(Wrap { trim: true }),
+        columns[1],
     );
 }
 
@@ -1315,6 +1372,9 @@ mod tests {
             }),
             agent_catalog: None,
             agent_lifecycle: None,
+            provider_catalog: None,
+            configuration: None,
+            recording_campaign: None,
             runs: Vec::new(),
         };
         state.apply_live_snapshot(snapshot);
@@ -1510,6 +1570,9 @@ mod tests {
             measurement_catalog: None,
             agent_catalog: None,
             agent_lifecycle: None,
+            provider_catalog: None,
+            configuration: None,
+            recording_campaign: None,
             runs: vec![RunSummary {
                 run_id: RunId("run-7".into()),
                 attempt_id: AttemptId("attempt-7".into()),

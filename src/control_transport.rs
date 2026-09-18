@@ -117,6 +117,7 @@ impl FramedControlStream {
             timeout_ms: self.limits.max_timeout_ms,
             call: control_codec::ControlCall::Negotiate(NegotiateParams {
                 versions: [
+                    control_codec::V1_7,
                     control_codec::V1_5,
                     control_codec::V1_4,
                     control_codec::V1_3,
@@ -139,6 +140,7 @@ impl FramedControlStream {
         if (!self.expected_peer.runner_instance_id.is_empty()
             && session.runner_instance_id != self.expected_peer.runner_instance_id)
             || ![
+                control_codec::V1_7,
                 control_codec::V1_5,
                 control_codec::V1_4,
                 control_codec::V1_3,
@@ -454,6 +456,51 @@ impl AuthenticatedBrokerSession {
                         },
                         operation_id: None,
                     }),
+                };
+                let response = self.transport.round_trip(&request)?;
+                if !matches!(response, ControlResponse::Success(_)) {
+                    return Err(TransportError::RemoteFailure);
+                }
+                next.apply(&request, &response, limits)
+                    .map_err(|_| TransportError::Projection)?;
+            }
+        }
+        if self.negotiated.version >= control_codec::V1_7 {
+            let setup_calls = [
+                ControlCall::ProviderCatalog(control_codec::ProviderCatalogRequest {
+                    action: control_codec::ProviderCatalogAction::Status,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    known_generation: None,
+                }),
+                ControlCall::ConfigurationStatus(control_codec::ConfigurationStatusRequest {
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                }),
+                ControlCall::RecordingCampaignStatus(
+                    control_codec::RecordingCampaignStatusRequest {
+                        runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    },
+                ),
+            ];
+            let base_id = 2_u64
+                .checked_add(u64::try_from(bootstrap_count).map_err(|_| TransportError::Io)?)
+                .and_then(|value| {
+                    next.snapshot()
+                        .agent_catalog
+                        .as_ref()
+                        .and_then(|catalog| u64::try_from(catalog.agents.len()).ok())
+                        .and_then(|count| value.checked_add(count))
+                })
+                .ok_or(TransportError::Io)?;
+            for (offset, call) in setup_calls.into_iter().enumerate() {
+                let request = ControlRequest {
+                    jsonrpc: control_codec::JSONRPC_VERSION.into(),
+                    id: RequestId(
+                        base_id
+                            .checked_add(u64::try_from(offset).map_err(|_| TransportError::Io)?)
+                            .ok_or(TransportError::Io)?,
+                    ),
+                    timeout_ms: limits.max_timeout_ms,
+                    call,
                 };
                 let response = self.transport.round_trip(&request)?;
                 if !matches!(response, ControlResponse::Success(_)) {

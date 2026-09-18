@@ -8,8 +8,9 @@
 //! bounded, renderer-safe state.  It cannot launch, retry, or cancel work.
 
 use crate::control_codec::{
-    ControlCall, ControlLimits, ControlRequest, ControlResponse, ControlResult, ControlSuccess,
-    MeasurementCatalog, Negotiated, Revision, RunSummary,
+    ConfigurationSnapshot, ControlCall, ControlLimits, ControlRequest, ControlResponse,
+    ControlResult, ControlSuccess, MeasurementCatalog, Negotiated, ProviderCatalog,
+    RecordingCampaignPlan, Revision, RunSummary,
 };
 use std::{collections::BTreeMap, fmt};
 
@@ -31,6 +32,9 @@ pub struct LiveSnapshot {
     pub measurement_catalog: Option<MeasurementCatalog>,
     pub agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
     pub agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
+    pub provider_catalog: Option<ProviderCatalog>,
+    pub configuration: Option<ConfigurationSnapshot>,
+    pub recording_campaign: Option<RecordingCampaignPlan>,
     pub runs: Vec<RunSummary>,
 }
 
@@ -63,6 +67,9 @@ pub struct ControlProjection {
     measurement_catalog: Option<MeasurementCatalog>,
     agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
     agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
+    provider_catalog: Option<ProviderCatalog>,
+    configuration: Option<ConfigurationSnapshot>,
+    recording_campaign: Option<RecordingCampaignPlan>,
     runs: BTreeMap<String, RunSummary>,
 }
 
@@ -146,6 +153,37 @@ impl ControlProjection {
                 }
                 self.agent_lifecycle = Some(value.clone());
             }
+            (ControlCall::ProviderCatalog(_), ControlResult::ProviderCatalog(value)) => {
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_none_or(|session| session.version < crate::control_codec::V1_7)
+                {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.provider_catalog = Some(value.clone());
+            }
+            (ControlCall::ConfigurationStatus(_), ControlResult::Configuration(value))
+            | (ControlCall::ConfigurationApply(_), ControlResult::Configuration(value)) => {
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_none_or(|session| session.version < crate::control_codec::V1_7)
+                {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.configuration = Some(value.clone());
+            }
+            (ControlCall::RecordingCampaignPlan(_), ControlResult::RecordingCampaign(value)) => {
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_none_or(|session| session.version < crate::control_codec::V1_7)
+                {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.recording_campaign = Some(value.clone());
+            }
             (ControlCall::History(_), ControlResult::History(page)) => {
                 if self.runs.len() + page.items.len() > MAX_PROJECTED_RUNS {
                     return Err(ProjectionError::TooManyRuns);
@@ -201,6 +239,9 @@ impl ControlProjection {
             measurement_catalog: self.measurement_catalog.clone(),
             agent_catalog: self.agent_catalog.clone(),
             agent_lifecycle: self.agent_lifecycle.clone(),
+            provider_catalog: self.provider_catalog.clone(),
+            configuration: self.configuration.clone(),
+            recording_campaign: self.recording_campaign.clone(),
             runs,
         }
     }
@@ -298,6 +339,71 @@ mod tests {
             )
             .unwrap();
         projection
+    }
+
+    #[test]
+    fn v17_setup_catalog_and_campaign_are_projected_only_after_negotiation() {
+        use crate::control_codec::*;
+        let mut projection = ControlProjection::default();
+        let negotiation = ControlResponse::Success(SuccessResponse {
+            jsonrpc: "2.0".into(),
+            id: RequestId(1),
+            result: ControlSuccess::Negotiated(Negotiated {
+                version: V1_7,
+                limits: ControlLimits::default(),
+                runner_instance_id: "runner-1".into(),
+                oldest_revision: Revision(1),
+                latest_revision: Revision(2),
+            }),
+        });
+        let negotiate = request(
+            ControlCall::Negotiate(NegotiateParams {
+                versions: [V1_7].into_iter().collect(),
+                limits: ControlLimits::default(),
+            }),
+            1,
+        );
+        projection
+            .apply(&negotiate, &negotiation, ControlLimits::default())
+            .unwrap();
+        let catalog_call = ControlCall::ProviderCatalog(ProviderCatalogRequest {
+            action: ProviderCatalogAction::Status,
+            runner_instance_id: "runner-1".into(),
+            known_generation: None,
+        });
+        let catalog = ProviderCatalog {
+            runner_instance_id: "runner-1".into(),
+            generation: Revision(1),
+            catalog_sha256: "a".repeat(64),
+            providers: vec![ProviderCatalogEntry {
+                provider_id: "openai".into(),
+                display_name: "OpenAI".into(),
+                auth_methods: vec![ProviderAuthMethod::CredentialReference],
+                models: vec![ProviderModel {
+                    model_id: "gpt-5.2-2025-12-11".into(),
+                    revision: "pinned".into(),
+                    availability: ProviderAvailability::Available,
+                }],
+                availability: ProviderAvailability::Available,
+            }],
+            refreshed: false,
+        };
+        projection
+            .apply(
+                &request(catalog_call, 2),
+                &response(2, ControlResult::ProviderCatalog(catalog)),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            projection
+                .snapshot()
+                .provider_catalog
+                .unwrap()
+                .providers
+                .len(),
+            1
+        );
     }
 
     fn catalog() -> crate::control_codec::MeasurementCatalogPublication {

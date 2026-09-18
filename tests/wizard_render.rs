@@ -32,6 +32,23 @@ fn setup_is_required_only_when_authoritative_readiness_is_false() {
 }
 
 #[test]
+fn ui_model_declares_runner_setup_and_recording_projection_state() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    let fields = model["state_fields"].as_array().unwrap();
+    for field in ["provider_catalog", "configuration", "recording_campaign"] {
+        assert!(fields.iter().any(|value| value == field));
+    }
+    assert!(
+        model["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["id"] == "configuration.control_status")
+    );
+}
+
+#[test]
 fn wizard_render_has_stable_context_and_tiny_fallback() {
     let wizard = Wizard::default();
     assert_eq!(element_id(wizard.step()), "wizard.agent");
