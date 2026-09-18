@@ -15,7 +15,7 @@
     {"path":"src/shell.rs","kind":"state"},
     {"path":"src/startup.rs","kind":"startup"},
     {"path":"src/terminal.rs","kind":"terminal"},
-    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, runner-authoritative setup and recording status, normalized startup readiness routing, wizard catalog selection, credential-free completion selection, editing, contextual help, and formally checked local configuration editing and save"},
+    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, runner-authoritative setup and recording status, normalized startup readiness routing, credential-free wizard completion selection and tests, editing, contextual help, and formally checked local configuration editing and save"},
     {"path":"src/visual.rs","kind":"rendering"},
     {"path":"src/wizard.rs","kind":"state","responsibility":"Formally checked manual and automatic startup wizard routes, steps, catalog selection, bounded transitions, and completion-draft export"}
     ,{"path":"src/wizard_catalog.rs","kind":"state","responsibility":"Bounded renderer-neutral agent, provider, and model choices for the setup wizard"}
@@ -29,7 +29,7 @@
     {"path":"src/compatibility.rs","reason":"Compatibility probing only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/control_client.rs","reason":"Control transport client only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/control_codec.rs","reason":"Wire codec and renderer-neutral setup validation tests only; it has no UI state or projection ownership.","expires":"2027-12-31"},
-    {"path":"src/control_transport.rs","reason":"Authenticated transport, bounded framing tests, and credential-free setup mutation only; it has no UI state or renderer ownership.","expires":"2027-12-31"},
+    {"path":"src/control_transport.rs","reason":"Authenticated transport, bounded framing, credential-free setup mutation, and its round-trip tests only; it has no renderer ownership.","expires":"2027-12-31"},
     {"path":"src/delegated.rs","reason":"Lifecycle delegation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/identity_adapter.rs","reason":"Identity validation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/lib.rs","reason":"Module exports only; it has no UI state or projection ownership.","expires":"2027-12-31"},
