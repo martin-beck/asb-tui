@@ -8,8 +8,9 @@
 //! typed JSON-RPC boundary.
 
 use crate::control_codec::{
-    self, CodecError, ControlCall, ControlLimits, ControlRequest, ControlResponse, ControlSuccess,
-    NegotiateParams, PageParams, RequestId, Revision,
+    self, CodecError, ConfigurationApplyParams, ConfigurationSelection, ControlCall, ControlLimits,
+    ControlRequest, ControlResponse, ControlSuccess, NegotiateParams, PageParams, RequestId,
+    Revision,
 };
 use crate::{
     broker_adoption::{AdoptionError, BrokerGeneration, ReceivedChannel},
@@ -386,6 +387,44 @@ impl AuthenticatedBrokerSession {
 
     pub fn transport_mut(&mut self) -> &mut FramedControlStream {
         &mut self.transport
+    }
+
+    /// Apply one wizard selection through the authenticated runner. The
+    /// expected generation is read from the last authoritative projection,
+    /// making stale concurrent edits fail closed at the backend boundary.
+    pub fn apply_configuration(
+        &mut self,
+        projection: &mut ControlProjection,
+        selection: ConfigurationSelection,
+    ) -> Result<(), TransportError> {
+        if self.negotiated.version < control_codec::V1_7 {
+            return Err(TransportError::NotNegotiated);
+        }
+        let expected_generation = projection
+            .snapshot()
+            .configuration
+            .as_ref()
+            .map_or(Revision(1), |snapshot| snapshot.generation);
+        let request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: RequestId(9_000_000_001),
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call: ControlCall::ConfigurationApply(ConfigurationApplyParams {
+                idempotency_key: format!(
+                    "asb-tui-wizard-{}-{}",
+                    self.negotiated.runner_instance_id, expected_generation.0
+                ),
+                expected_generation,
+                selection,
+            }),
+        };
+        let response = self.transport.round_trip(&request)?;
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
+        projection
+            .apply(&request, &response, self.negotiated.limits)
+            .map_err(|_| TransportError::Projection)
     }
 
     /// Poll the bounded read-only bootstrap state used by the workspace.

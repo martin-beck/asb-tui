@@ -6,7 +6,7 @@
 //! the external ASB control plane.
 
 use crate::{
-    control_codec::MeasurementCatalog,
+    control_codec::{ConfigurationSelection, MeasurementCatalog, ProviderAuthMethod},
     help::document_help_text,
     live_projection::{Connection, LiveSnapshot},
     selection::{MAX_QUERY_BYTES, Measurement, MeasurementSelection},
@@ -77,6 +77,7 @@ pub struct WorkspaceState {
     /// or ASB side effects; those remain downstream integration seams.
     pub wizard: Wizard,
     wizard_formal: WizardFormalState,
+    wizard_completion: Option<[String; 7]>,
     /// Last validated dimensions received from the terminal event stream.
     /// Rendering still uses the frame's authoritative area, so a missed
     /// event cannot make the renderer allocate from stale dimensions.
@@ -97,6 +98,7 @@ impl Default for WorkspaceState {
             screen: Screen::Landing,
             wizard: Wizard::default(),
             wizard_formal: WizardFormalState::new().expect("authored wizard model must be valid"),
+            wizard_completion: None,
             help: false,
             search: String::new(),
             measure_cursor: 0,
@@ -245,6 +247,65 @@ impl WorkspaceState {
             self.wizard = self.wizard_formal.wizard().clone();
         }
         self
+    }
+
+    /// Take a completed wizard draft. Completion is consumed exactly once so a
+    /// retry cannot accidentally replay a configuration mutation.
+    pub fn take_wizard_completion(&mut self) -> Option<[String; 7]> {
+        self.wizard_completion.take()
+    }
+
+    /// Convert the bounded wizard draft to the backend's credential-free
+    /// configuration selection. API keys never cross this presentation seam;
+    /// credential auth is represented only by a 64-character SHA-256 digest.
+    pub fn wizard_configuration_selection(
+        values: &[String; 7],
+    ) -> Result<ConfigurationSelection, &'static str> {
+        let agent_ids: Vec<String> = values[0]
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if agent_ids.is_empty() || agent_ids.len() > 64 {
+            return Err("agent selection is required");
+        }
+        let provider_id = values[1].trim();
+        let model_id = values[2].trim();
+        if provider_id.is_empty() || model_id.is_empty() {
+            return Err("provider and model are required");
+        }
+        let (auth_method, credential_reference_sha256) = match values[4].trim() {
+            "none" => (ProviderAuthMethod::None, None),
+            "local_daemon" => (ProviderAuthMethod::LocalDaemon, None),
+            value
+                if value
+                    .strip_prefix("credential_reference:")
+                    .is_some_and(|digest| {
+                        digest.len() == 64
+                            && digest
+                                .chars()
+                                .all(|character| character.is_ascii_hexdigit())
+                    }) =>
+            {
+                (
+                    ProviderAuthMethod::CredentialReference,
+                    Some(value["credential_reference:".len()..].to_owned()),
+                )
+            }
+            _ => {
+                return Err(
+                    "authentication must be none, local_daemon, or a credential reference digest",
+                );
+            }
+        };
+        Ok(ConfigurationSelection {
+            agent_ids,
+            provider_id: provider_id.to_owned(),
+            model_id: model_id.to_owned(),
+            auth_method,
+            credential_reference_sha256,
+        })
     }
 
     /// The bounded text currently visible in the focused configuration editor.
@@ -401,6 +462,7 @@ impl WorkspaceState {
                             self.wizard = self.wizard_formal.wizard().clone();
                         }
                         if self.wizard_formal.route() == wizard::StartupRoute::Landing {
+                            self.wizard_completion = Some(self.wizard.values());
                             self.screen = Screen::Landing;
                         }
                     }
@@ -1740,5 +1802,32 @@ mod tests {
                 .draw(|frame| render(frame, &state, policy()))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn wizard_selection_is_credential_free_and_closed() {
+        let values = [
+            "codex,goose".into(),
+            "openai".into(),
+            "gpt-5.2".into(),
+            "shared".into(),
+            format!("credential_reference:{}", "a".repeat(64)),
+            "record".into(),
+            "offline".into(),
+        ];
+        let selection = WorkspaceState::wizard_configuration_selection(&values).unwrap();
+        assert_eq!(selection.agent_ids, ["codex", "goose"]);
+        assert_eq!(
+            selection.auth_method,
+            ProviderAuthMethod::CredentialReference
+        );
+        assert_eq!(
+            selection.credential_reference_sha256.as_deref(),
+            Some("a".repeat(64).as_str())
+        );
+
+        let mut invalid = values;
+        invalid[4] = "sk-live-secret".into();
+        assert!(WorkspaceState::wizard_configuration_selection(&invalid).is_err());
     }
 }

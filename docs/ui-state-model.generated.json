@@ -25,6 +25,7 @@
     "wizard_step",
     "wizard_draft",
     "wizard_catalog",
+    "wizard_completion",
     "configuration_persistence"
   ],
   "bindings": [
