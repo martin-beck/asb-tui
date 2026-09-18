@@ -596,6 +596,7 @@ mod tests {
         let mut stream =
             FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
                 .unwrap();
+        stream.negotiated = true;
         let request = ControlRequest {
             jsonrpc: "2.0".into(),
             id: RequestId(1),
@@ -741,5 +742,45 @@ mod tests {
             })
             .unwrap();
         assert_eq!(continuity.generation().sequence, 9);
+    }
+
+    #[test]
+    fn setup_calls_require_v17_and_invalid_frames_fail_before_decode() {
+        let agent_call = ControlCall::AgentCatalog(crate::agent_catalog::AgentCatalogRequest {
+            action: crate::agent_catalog::AgentCatalogAction::Status,
+            runner_instance_id: "runner-7".into(),
+            known_generation: None,
+        });
+        assert_eq!(
+            minimum_version_for_call(&agent_call),
+            Some(crate::control_codec::CONTROL_AGENT_CATALOG_V1)
+        );
+        assert_eq!(minimum_version_for_call(&ControlCall::Capabilities), None);
+
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let join = thread::spawn(move || {
+            let mut request_header = [0_u8; 4];
+            server.read_exact(&mut request_header).unwrap();
+            let request_size = u32::from_be_bytes(request_header) as usize;
+            let mut request_body = vec![0_u8; request_size];
+            server.read_exact(&mut request_body).unwrap();
+            server.write_all(&0_u32.to_be_bytes()).unwrap();
+        });
+        let mut stream =
+            FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        stream.negotiated = true;
+        let request = ControlRequest {
+            jsonrpc: "2.0".into(),
+            id: RequestId(20),
+            timeout_ms: 1000,
+            call: ControlCall::Capabilities,
+        };
+        stream.write_request(&request).unwrap();
+        assert_eq!(
+            stream.read_response(&request),
+            Err(TransportError::Codec(CodecError::FrameTooLarge))
+        );
+        join.join().unwrap();
     }
 }

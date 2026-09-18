@@ -1588,4 +1588,450 @@ mod tests {
             response
         );
     }
+
+    #[test]
+    fn setup_catalog_and_configuration_validation_cover_connected_and_unconfigured_states() {
+        let provider = ProviderCatalogEntry {
+            provider_id: "openai".into(),
+            display_name: "OpenAI".into(),
+            auth_methods: vec![ProviderAuthMethod::CredentialReference],
+            models: vec![ProviderModel {
+                model_id: "gpt-5.2-2025-12-11".into(),
+                revision: "catalog-v1".into(),
+                availability: ProviderAvailability::Available,
+            }],
+            availability: ProviderAvailability::Available,
+        };
+        let catalog = ProviderCatalog {
+            runner_instance_id: "runner-1".into(),
+            generation: Revision(3),
+            catalog_sha256: "a".repeat(64),
+            providers: vec![provider],
+            refreshed: true,
+        };
+        let request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(8),
+            timeout_ms: 1000,
+            call: ControlCall::ProviderCatalog(ProviderCatalogRequest {
+                action: ProviderCatalogAction::Refresh,
+                runner_instance_id: "runner-1".into(),
+                known_generation: Some(Revision(2)),
+            }),
+        };
+        request.validate(ControlLimits::default()).unwrap();
+        let response = ControlResponse::Success(SuccessResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(8),
+            result: ControlSuccess::Operation(BoundResult {
+                request_sha256: "b".repeat(64),
+                result: ControlResult::ProviderCatalog(catalog),
+            }),
+        });
+        response
+            .validate_for(&request, ControlLimits::default())
+            .unwrap();
+
+        let configured = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(9),
+            timeout_ms: 1000,
+            call: ControlCall::ConfigurationApply(ConfigurationApplyParams {
+                idempotency_key: "apply-1".into(),
+                expected_generation: Revision(3),
+                selection: ConfigurationSelection {
+                    agent_ids: vec!["codex".into()],
+                    provider_id: "openai".into(),
+                    model_id: "gpt-5.2-2025-12-11".into(),
+                    auth_method: ProviderAuthMethod::CredentialReference,
+                    credential_reference_sha256: Some("c".repeat(64)),
+                },
+            }),
+        };
+        configured.validate(ControlLimits::default()).unwrap();
+        let configured_result = ControlResponse::Success(SuccessResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(9),
+            result: ControlSuccess::Operation(BoundResult {
+                request_sha256: "d".repeat(64),
+                result: ControlResult::Configuration(ConfigurationSnapshot {
+                    runner_instance_id: "runner-1".into(),
+                    generation: Revision(4),
+                    configured: true,
+                    agent_ids: vec!["codex".into()],
+                    provider_id: Some("openai".into()),
+                    model_id: Some("gpt-5.2-2025-12-11".into()),
+                    auth_method: Some(ProviderAuthMethod::CredentialReference),
+                    credential_reference_sha256: Some("c".repeat(64)),
+                }),
+            }),
+        });
+        configured_result
+            .validate_for(&configured, ControlLimits::default())
+            .unwrap();
+
+        let unconfigured = ControlResponse::Success(SuccessResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(10),
+            result: ControlSuccess::Operation(BoundResult {
+                request_sha256: "e".repeat(64),
+                result: ControlResult::Configuration(ConfigurationSnapshot {
+                    runner_instance_id: "runner-1".into(),
+                    generation: Revision(5),
+                    configured: false,
+                    agent_ids: Vec::new(),
+                    provider_id: None,
+                    model_id: None,
+                    auth_method: None,
+                    credential_reference_sha256: None,
+                }),
+            }),
+        });
+        let status = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(10),
+            timeout_ms: 1000,
+            call: ControlCall::ConfigurationStatus(ConfigurationStatusRequest {
+                runner_instance_id: "runner-1".into(),
+            }),
+        };
+        unconfigured
+            .validate_for(&status, ControlLimits::default())
+            .unwrap();
+    }
+
+    #[test]
+    fn setup_validation_rejects_credential_and_campaign_drift() {
+        let mut selection = ConfigurationSelection {
+            agent_ids: vec!["codex".into()],
+            provider_id: "openai".into(),
+            model_id: "gpt-5.2-2025-12-11".into(),
+            auth_method: ProviderAuthMethod::CredentialReference,
+            credential_reference_sha256: None,
+        };
+        let request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(11),
+            timeout_ms: 1000,
+            call: ControlCall::ConfigurationApply(ConfigurationApplyParams {
+                idempotency_key: "apply-2".into(),
+                expected_generation: Revision(1),
+                selection: selection.clone(),
+            }),
+        };
+        assert_eq!(
+            request.validate(ControlLimits::default()),
+            Err(CodecError::InvalidValue("credential_reference_sha256"))
+        );
+        selection.auth_method = ProviderAuthMethod::None;
+        selection.credential_reference_sha256 = Some("f".repeat(64));
+        let invalid = ControlRequest {
+            call: ControlCall::ConfigurationApply(ConfigurationApplyParams {
+                idempotency_key: "apply-3".into(),
+                expected_generation: Revision(1),
+                selection,
+            }),
+            ..request
+        };
+        assert_eq!(
+            invalid.validate(ControlLimits::default()),
+            Err(CodecError::InvalidValue("credential_reference_sha256"))
+        );
+
+        let mut plan = RecordingCampaignPlan {
+            runner_instance_id: "runner-1".into(),
+            generation: Revision(1),
+            campaign_id: "campaign-1".into(),
+            provider_id: "openai".into(),
+            model_id: "gpt-5.2-2025-12-11".into(),
+            agent_ids: vec!["codex".into()],
+            workload_ids: vec!["workload-1".into()],
+            tuple_count: 1,
+            state: "planned".into(),
+            offline_ready: false,
+            unavailable_reason: Some("recording-required".into()),
+        };
+        let request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(12),
+            timeout_ms: 1000,
+            call: ControlCall::RecordingCampaignStatus(RecordingCampaignStatusRequest {
+                runner_instance_id: "runner-1".into(),
+            }),
+        };
+        plan.offline_ready = true;
+        let response = ControlResponse::Success(SuccessResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(12),
+            result: ControlSuccess::Operation(BoundResult {
+                request_sha256: "1".repeat(64),
+                result: ControlResult::RecordingCampaignStatus(RecordingCampaignStatus {
+                    runner_instance_id: "runner-1".into(),
+                    generation: Revision(1),
+                    campaign: Some(plan),
+                }),
+            }),
+        });
+        assert_eq!(
+            response.validate_for(&request, ControlLimits::default()),
+            Err(CodecError::InvalidValue("campaign plan"))
+        );
+    }
+
+    #[test]
+    fn setup_validator_rejects_malformed_catalogs_and_states() {
+        let model = ProviderModel {
+            model_id: "model".into(),
+            revision: "rev".into(),
+            availability: ProviderAvailability::Unavailable("offline".into()),
+        };
+        let entry = ProviderCatalogEntry {
+            provider_id: "provider".into(),
+            display_name: "Provider".into(),
+            auth_methods: vec![ProviderAuthMethod::None],
+            models: vec![model],
+            availability: ProviderAvailability::Unavailable("offline".into()),
+        };
+        let mut catalog = ProviderCatalog {
+            runner_instance_id: "runner".into(),
+            generation: Revision(1),
+            catalog_sha256: "a".repeat(64),
+            providers: vec![entry],
+            refreshed: false,
+        };
+        catalog.providers[0].provider_id = "bad\nprovider".into();
+        assert_eq!(
+            validate_provider_catalog(&catalog),
+            Err(CodecError::InvalidValue("identity"))
+        );
+        catalog.providers[0].provider_id = "provider".into();
+        catalog.providers[0].models.clear();
+        assert_eq!(
+            validate_provider_catalog(&catalog),
+            Err(CodecError::InvalidValue("provider entry"))
+        );
+        catalog.providers[0].models.push(ProviderModel {
+            model_id: "bad\nmodel".into(),
+            revision: "rev".into(),
+            availability: ProviderAvailability::Available,
+        });
+        assert_eq!(
+            validate_provider_catalog(&catalog),
+            Err(CodecError::InvalidValue("identity"))
+        );
+        catalog.providers[0].models[0].model_id = "model".into();
+        catalog.providers[0].auth_methods.clear();
+        assert_eq!(
+            validate_provider_catalog(&catalog),
+            Err(CodecError::InvalidValue("provider entry"))
+        );
+        catalog.providers[0]
+            .auth_methods
+            .push(ProviderAuthMethod::None);
+        catalog.generation = Revision(0);
+        assert_eq!(
+            validate_provider_catalog(&catalog),
+            Err(CodecError::InvalidValue("provider catalog"))
+        );
+        catalog.generation = Revision(1);
+        catalog.providers[0].models[0].revision = "bad\nrevision".into();
+        assert_eq!(
+            validate_provider_catalog(&catalog),
+            Err(CodecError::InvalidValue("identity"))
+        );
+        catalog.providers[0].models[0].revision = "rev".into();
+        catalog.providers.push(catalog.providers[0].clone());
+        assert_eq!(
+            validate_provider_catalog(&catalog),
+            Err(CodecError::InvalidValue("provider ordering"))
+        );
+        catalog.providers.pop();
+        catalog.catalog_sha256 = "not-a-digest".into();
+        assert_eq!(
+            validate_provider_catalog(&catalog),
+            Err(CodecError::InvalidValue("sha256"))
+        );
+
+        let mut configuration = ConfigurationSnapshot {
+            runner_instance_id: "runner".into(),
+            generation: Revision(1),
+            configured: false,
+            agent_ids: Vec::new(),
+            provider_id: None,
+            model_id: None,
+            auth_method: None,
+            credential_reference_sha256: None,
+        };
+        configuration.generation = Revision(0);
+        assert_eq!(
+            validate_configuration(&configuration),
+            Err(CodecError::InvalidValue("configuration generation"))
+        );
+        configuration.generation = Revision(1);
+        configuration.provider_id = Some("provider".into());
+        assert_eq!(
+            validate_configuration(&configuration),
+            Err(CodecError::InvalidValue("unconfigured state"))
+        );
+        configuration.configured = true;
+        configuration.agent_ids = vec!["agent".into()];
+        configuration.provider_id = None;
+        assert_eq!(
+            validate_configuration(&configuration),
+            Err(CodecError::InvalidValue("provider_id"))
+        );
+        configuration.provider_id = Some("provider".into());
+        assert_eq!(
+            validate_configuration(&configuration),
+            Err(CodecError::InvalidValue("model_id"))
+        );
+        configuration.model_id = Some("model".into());
+        assert_eq!(
+            validate_configuration(&configuration),
+            Err(CodecError::InvalidValue("auth_method"))
+        );
+        configuration.auth_method = Some(ProviderAuthMethod::None);
+        configuration.credential_reference_sha256 = Some("not-a-digest".into());
+        assert_eq!(
+            validate_configuration(&configuration),
+            Err(CodecError::InvalidValue("sha256"))
+        );
+
+        let status = RecordingCampaignStatus {
+            runner_instance_id: "runner".into(),
+            generation: Revision(1),
+            campaign: None,
+        };
+        validate_campaign_status(&status).unwrap();
+        let mut bad_status = status;
+        bad_status.generation = Revision(0);
+        assert_eq!(
+            validate_campaign_status(&bad_status),
+            Err(CodecError::InvalidValue("campaign status generation"))
+        );
+        let mut identity_status = RecordingCampaignStatus {
+            runner_instance_id: "runner".into(),
+            generation: Revision(1),
+            campaign: Some(RecordingCampaignPlan {
+                runner_instance_id: "other-runner".into(),
+                generation: Revision(1),
+                campaign_id: "campaign-1".into(),
+                provider_id: "provider".into(),
+                model_id: "model".into(),
+                agent_ids: vec!["agent".into()],
+                workload_ids: vec!["workload".into()],
+                tuple_count: 1,
+                state: "planned".into(),
+                offline_ready: false,
+                unavailable_reason: Some("recording-required".into()),
+            }),
+        };
+        assert_eq!(
+            validate_campaign_status(&identity_status),
+            Err(CodecError::InvalidValue("campaign status identity"))
+        );
+        identity_status
+            .campaign
+            .as_mut()
+            .unwrap()
+            .runner_instance_id = "runner".into();
+        identity_status.campaign.as_mut().unwrap().generation = Revision(2);
+        assert_eq!(
+            validate_campaign_status(&identity_status),
+            Err(CodecError::InvalidValue("campaign status identity"))
+        );
+
+        let valid_selection = ConfigurationSelection {
+            agent_ids: vec!["agent".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: None,
+        };
+        validate_selection(&valid_selection).unwrap();
+        let mut bad_selection = valid_selection.clone();
+        bad_selection.agent_ids = vec!["agent".into(), "agent".into()];
+        assert_eq!(
+            validate_selection(&bad_selection),
+            Err(CodecError::InvalidValue("ids"))
+        );
+        bad_selection.agent_ids = vec!["agent".into()];
+        bad_selection.auth_method = ProviderAuthMethod::CredentialReference;
+        assert_eq!(
+            validate_selection(&bad_selection),
+            Err(CodecError::InvalidValue("credential_reference_sha256"))
+        );
+        bad_selection.auth_method = ProviderAuthMethod::None;
+        bad_selection.credential_reference_sha256 = None;
+        bad_selection.agent_ids = vec!["z".into(), "a".into()];
+        assert_eq!(
+            validate_selection(&bad_selection),
+            Err(CodecError::InvalidValue("ids"))
+        );
+        let mut campaign = RecordingCampaignPlan {
+            runner_instance_id: "runner".into(),
+            generation: Revision(1),
+            campaign_id: "campaign".into(),
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            tuple_count: 1,
+            state: "planned".into(),
+            offline_ready: false,
+            unavailable_reason: Some("recording-required".into()),
+        };
+        validate_campaign_plan(&campaign).unwrap();
+        campaign.tuple_count = 2;
+        assert_eq!(
+            validate_campaign_plan(&campaign),
+            Err(CodecError::InvalidValue("campaign plan"))
+        );
+        campaign.tuple_count = 1;
+        campaign.state = "recording".into();
+        assert_eq!(
+            validate_campaign_plan(&campaign),
+            Err(CodecError::InvalidValue("campaign plan"))
+        );
+    }
+
+    #[test]
+    fn framing_and_error_envelopes_reject_invalid_bounds() {
+        let mut request = req(30);
+        request.jsonrpc = "1.0".into();
+        assert_eq!(
+            request.validate(ControlLimits::default()),
+            Err(CodecError::InvalidVersion)
+        );
+        request.jsonrpc = JSONRPC_VERSION.into();
+        request.timeout_ms = 0;
+        assert_eq!(
+            request.validate(ControlLimits::default()),
+            Err(CodecError::InvalidLimit("timeout_ms"))
+        );
+        let failure = ControlResponse::Failure(FailureResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(30),
+            error: RpcError {
+                code: -1,
+                message: "bad\nmessage".into(),
+            },
+        });
+        assert_eq!(
+            failure.validate(ControlLimits::default()),
+            Err(CodecError::InvalidValue("error.message"))
+        );
+        assert_eq!(
+            decode::<ControlRequest>(&[0, 0, 0], MAX_FRAME_BYTES),
+            Err(CodecError::TruncatedFrame)
+        );
+        assert_eq!(
+            decode::<ControlRequest>(&[0, 0, 0, 2, 1], MAX_FRAME_BYTES),
+            Err(CodecError::TruncatedFrame)
+        );
+        assert_eq!(
+            decode::<ControlRequest>(&[0, 0, 0, 1, b'x'], MAX_FRAME_BYTES),
+            Err(CodecError::MalformedFrame)
+        );
+    }
 }
