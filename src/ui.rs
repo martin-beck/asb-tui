@@ -13,7 +13,7 @@ use crate::{
     startup::{self, StartupInput},
     terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
     wizard::{self, FormalEvent, Wizard, WizardFormalState},
-    wizard_catalog::WizardCatalog,
+    wizard_catalog::{WizardCatalog, WizardOption},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -426,6 +426,27 @@ impl WorkspaceState {
             self.selection = Some(selection);
             self.sync_measure_projection();
         }
+        // Populate a first-run wizard from the authenticated control-plane
+        // catalog so users select supported identifiers instead of typing
+        // opaque values. Do not replace an in-progress draft during refresh.
+        if self.wizard.catalog().is_none()
+            && let Some(catalog) = wizard_catalog_from_snapshot(&snapshot)
+        {
+            self.wizard = Wizard::with_catalog(catalog.clone());
+            self.wizard_formal = WizardFormalState::new_with_catalog(catalog)
+                .expect("validated live wizard catalog must satisfy the state model");
+        }
+        // An authoritative, valid-but-unconfigured runner is the explicit
+        // first-run signal. Route it into the wizard after the initial
+        // authenticated refresh; disconnected or malformed states never open
+        // a setup flow here.
+        if snapshot
+            .configuration
+            .as_ref()
+            .is_some_and(|configuration| !configuration.configured)
+        {
+            self.open_wizard();
+        }
         self.live = Some(snapshot);
         self.report_cursor = 0;
         self.clamp_measure_cursor();
@@ -802,6 +823,80 @@ const fn catalog_step(step: wizard::Step) -> bool {
         step,
         wizard::Step::Agent | wizard::Step::Provider | wizard::Step::Model
     )
+}
+
+/// Adapt validated live agent/provider/model data to the renderer-neutral
+/// wizard catalog. The protocol currently exposes provider availability but
+/// not per-agent provider compatibility, so available providers are offered
+/// for every available agent. Duplicate model IDs are merged and retain all
+/// provider compatibility references.
+fn wizard_catalog_from_snapshot(snapshot: &LiveSnapshot) -> Option<WizardCatalog> {
+    let agents = snapshot.agent_catalog.as_ref()?.agents.as_slice();
+    let providers = snapshot.provider_catalog.as_ref()?.providers.as_slice();
+    if agents.is_empty() || providers.is_empty() {
+        return None;
+    }
+    let agent_ids: Vec<String> = agents.iter().map(|entry| entry.agent_id.clone()).collect();
+    let agent_options = agents
+        .iter()
+        .map(|entry| {
+            WizardOption::new(
+                entry.agent_id.clone(),
+                entry.agent_id.clone(),
+                matches!(
+                    entry.availability,
+                    crate::agent_catalog::AgentAvailability::Available
+                ),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let provider_options = providers
+        .iter()
+        .map(|entry| {
+            WizardOption::new(
+                entry.provider_id.clone(),
+                entry.display_name.clone(),
+                matches!(
+                    entry.availability,
+                    crate::control_codec::ProviderAvailability::Available
+                ),
+            )
+            .and_then(|option| option.compatible_with(agent_ids.clone()))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let mut model_providers = std::collections::BTreeMap::<String, Vec<String>>::new();
+    let mut model_available = std::collections::BTreeMap::<String, bool>::new();
+    for provider in providers {
+        for model in &provider.models {
+            model_providers
+                .entry(model.model_id.clone())
+                .or_default()
+                .push(provider.provider_id.clone());
+            let available = matches!(
+                provider.availability,
+                crate::control_codec::ProviderAvailability::Available
+            ) && matches!(
+                model.availability,
+                crate::control_codec::ProviderAvailability::Available
+            );
+            model_available
+                .entry(model.model_id.clone())
+                .and_modify(|current| *current |= available)
+                .or_insert(available);
+        }
+    }
+    let model_options = model_providers
+        .into_iter()
+        .map(|(model_id, provider_ids)| {
+            let available = model_available.get(&model_id).copied().unwrap_or(false);
+            WizardOption::new(model_id.clone(), model_id, available)
+                .and_then(|option| option.compatible_with(provider_ids))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    WizardCatalog::new(agent_options, provider_options, model_options).ok()
 }
 
 fn selection_from_catalog(
@@ -1445,6 +1540,103 @@ mod tests {
     }
 
     #[test]
+    fn live_setup_catalog_populates_wizard_choices_without_secrets() {
+        let agent = crate::agent_catalog::AgentCatalogEntry {
+            agent_id: "codex".into(),
+            target: crate::agent_catalog::AgentTarget {
+                operating_system: "linux".into(),
+                architecture: "x86_64".into(),
+                libc: "glibc".into(),
+                libc_version: "2.39".into(),
+            },
+            package: crate::agent_catalog::AgentPackage {
+                package_id: "codex-package".into(),
+                version: "1".into(),
+                sha256: "a".repeat(64),
+                signature_sha256: "b".repeat(64),
+            },
+            provenance: crate::agent_catalog::AgentProvenance {
+                source_revision: "source".into(),
+                manifest_sha256: "c".repeat(64),
+            },
+            capabilities: vec!["coding".into()],
+            availability: crate::agent_catalog::AgentAvailability::Available,
+        };
+        let snapshot = LiveSnapshot {
+            connection: Connection::Negotiated,
+            runner_instance_id: Some("runner".into()),
+            latest_revision: Some(Revision(1)),
+            capabilities: None,
+            measurement_catalog: None,
+            agent_catalog: Some(crate::agent_catalog::AgentCatalog {
+                runner_instance_id: "runner".into(),
+                generation: 1,
+                catalog_sha256: "d".repeat(64),
+                target: agent.target.clone(),
+                agents: vec![agent],
+                refreshed: true,
+            }),
+            agent_lifecycle: None,
+            provider_catalog: Some(crate::control_codec::ProviderCatalog {
+                runner_instance_id: "runner".into(),
+                generation: Revision(1),
+                catalog_sha256: "e".repeat(64),
+                providers: vec![crate::control_codec::ProviderCatalogEntry {
+                    provider_id: "openai".into(),
+                    display_name: "OpenAI".into(),
+                    auth_methods: vec![ProviderAuthMethod::CredentialReference],
+                    models: vec![crate::control_codec::ProviderModel {
+                        model_id: "gpt-test".into(),
+                        revision: "pinned".into(),
+                        availability: crate::control_codec::ProviderAvailability::Available,
+                    }],
+                    availability: crate::control_codec::ProviderAvailability::Available,
+                }],
+                refreshed: true,
+            }),
+            configuration: None,
+            recording_campaign: None,
+            runs: Vec::new(),
+        };
+        let mut state = WorkspaceState::default();
+        state.apply_live_snapshot(snapshot);
+        let catalog = state.wizard.catalog().expect("live catalog attached");
+        assert_eq!(
+            catalog
+                .catalog()
+                .options(crate::wizard_catalog::OptionKind::Agent)
+                .len(),
+            1
+        );
+        assert_eq!(
+            catalog
+                .catalog()
+                .options(crate::wizard_catalog::OptionKind::Provider)
+                .len(),
+            1
+        );
+        assert_eq!(
+            catalog
+                .catalog()
+                .options(crate::wizard_catalog::OptionKind::Model)
+                .len(),
+            1
+        );
+        assert!(
+            WorkspaceState::wizard_configuration_selection(&[
+                "codex".into(),
+                "openai".into(),
+                "gpt-test".into(),
+                "".into(),
+                "none".into(),
+                "".into(),
+                "".into(),
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn startup_and_manual_wizard_route_are_local_and_one_shot() {
         let mut state = WorkspaceState::for_startup(false);
         assert_eq!(state.screen, Screen::Wizard);
@@ -1460,6 +1652,34 @@ mod tests {
         assert_eq!(state.wizard.step(), crate::wizard::Step::Agent);
         let configured = WorkspaceState::for_startup(true);
         assert_eq!(configured.screen, Screen::Landing);
+    }
+
+    #[test]
+    fn authoritative_unconfigured_runner_opens_first_run_wizard() {
+        let mut state = WorkspaceState::default();
+        state.apply_live_snapshot(LiveSnapshot {
+            connection: Connection::Negotiated,
+            runner_instance_id: Some("runner".into()),
+            latest_revision: Some(Revision(1)),
+            capabilities: None,
+            measurement_catalog: None,
+            agent_catalog: None,
+            agent_lifecycle: None,
+            provider_catalog: None,
+            configuration: Some(crate::control_codec::ConfigurationSnapshot {
+                runner_instance_id: "runner".into(),
+                generation: Revision(1),
+                configured: false,
+                agent_ids: Vec::new(),
+                provider_id: None,
+                model_id: None,
+                auth_method: None,
+                credential_reference_sha256: None,
+            }),
+            recording_campaign: None,
+            runs: Vec::new(),
+        });
+        assert_eq!(state.screen, Screen::Wizard);
     }
 
     #[test]

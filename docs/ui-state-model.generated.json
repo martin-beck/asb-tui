@@ -17,6 +17,7 @@
     "connection",
     "capabilities",
     "provider_catalog",
+    "live_setup_catalog",
     "configuration",
     "recording_campaign",
     "startup_wizard_opened",

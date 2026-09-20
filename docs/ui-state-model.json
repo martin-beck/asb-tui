@@ -3,7 +3,7 @@
   "model": "asb-tui.ui-state",
   "initial": "landing",
   "layouts": ["wide", "compact", "tiny"],
-  "state_fields": ["route", "focus", "hover", "query", "selection", "measurement_catalog", "connection", "capabilities", "provider_catalog", "configuration", "recording_campaign", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "configuration_persistence"],
+  "state_fields": ["route", "focus", "hover", "query", "selection", "measurement_catalog", "connection", "capabilities", "provider_catalog", "live_setup_catalog", "configuration", "recording_campaign", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "configuration_persistence"],
   "bindings": [
     {"action":"quit","element":"navigation","key":"q"},
     {"action":"open_measurement_selection","element":"landing.primary","key":"2"},

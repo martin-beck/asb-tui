@@ -68,6 +68,10 @@ class UiStateModelTests(unittest.TestCase):
     def test_wizard_catalog_state_is_formally_declared(self):
         self.assertIn("wizard_catalog", self.model["state_fields"])
 
+    def test_live_setup_catalog_projection_is_formally_declared(self):
+        self.assertIn("live_setup_catalog", self.model["state_fields"])
+        self.assertIn("wizard_catalog", self.model["state_fields"])
+
     def test_wizard_completion_state_is_formally_declared(self):
         self.assertIn("wizard_completion", self.model["state_fields"])
         transitions = {(item["event"], item["from"], item["to"]) for item in self.model["transitions"]}
