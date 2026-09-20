@@ -93,6 +93,40 @@ fn formal_wizard_flow_checks_documented_route_and_step_effects() {
 }
 
 #[test]
+fn formal_wizard_model_checks_typed_multi_agent_and_all_agent_actions() {
+    let catalog = WizardCatalog::new(
+        vec![
+            WizardOption::new("agent-a", "Agent A", true).unwrap(),
+            WizardOption::new("agent-b", "Agent B", true).unwrap(),
+        ],
+        vec![
+            WizardOption::new("shared", "Shared provider", true)
+                .unwrap()
+                .compatible_with(vec!["agent-a".into(), "agent-b".into()])
+                .unwrap(),
+        ],
+        vec![
+            WizardOption::new("model", "Model", true)
+                .unwrap()
+                .compatible_with(vec!["shared".into()])
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut state = WizardFormalState::new_with_catalog(catalog).unwrap();
+    state.apply(FormalEvent::OpenWizard).unwrap();
+    state.apply(FormalEvent::CatalogSelect).unwrap();
+    assert_eq!(state.wizard().values()[0], "agent-a");
+    state.apply(FormalEvent::CatalogSelectAllAgents).unwrap();
+    assert_eq!(state.wizard().values()[0], "agent-a,agent-b");
+    state.apply(FormalEvent::Next).unwrap();
+    assert_eq!(
+        state.wizard().catalog().unwrap().visible_options()[0].id,
+        "shared"
+    );
+}
+
+#[test]
 fn automatic_startup_open_is_a_formal_transition() {
     let mut state = WizardFormalState::new().unwrap();
     state.apply(FormalEvent::AutoOpenWizard).unwrap();
