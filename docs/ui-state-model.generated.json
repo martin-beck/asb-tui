@@ -21,6 +21,8 @@
     "configuration",
     "auth_status",
     "recording_campaign",
+    "recording_estimate",
+    "recording_campaign_lifecycle",
     "startup_wizard_opened",
     "responsive_layout",
     "contextual_help",

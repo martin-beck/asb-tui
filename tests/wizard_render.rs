@@ -41,6 +41,8 @@ fn ui_model_declares_runner_setup_and_recording_projection_state() {
         "configuration",
         "auth_status",
         "recording_campaign",
+        "recording_estimate",
+        "recording_campaign_lifecycle",
     ] {
         assert!(fields.iter().any(|value| value == field));
     }

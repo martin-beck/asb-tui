@@ -10,7 +10,8 @@
 use crate::control_codec::{
     AuthStatusResponse, ConfigurationSnapshot, ControlCall, ControlLimits, ControlRequest,
     ControlResponse, ControlResult, ControlSuccess, MeasurementCatalog, Negotiated,
-    ProviderCatalog, RecordingCampaignPlan, Revision, RunSummary,
+    ProviderCatalog, RecordingCampaignEstimate, RecordingCampaignLifecycle, RecordingCampaignPlan,
+    Revision, RunSummary,
 };
 use std::{collections::BTreeMap, fmt};
 
@@ -38,6 +39,8 @@ pub struct LiveSnapshot {
     /// absence means unavailable, not unauthorized or connected.
     pub auth_status: Option<AuthStatusResponse>,
     pub recording_campaign: Option<RecordingCampaignPlan>,
+    pub recording_estimate: Option<RecordingCampaignEstimate>,
+    pub recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
     pub runs: Vec<RunSummary>,
 }
 
@@ -74,6 +77,8 @@ pub struct ControlProjection {
     configuration: Option<ConfigurationSnapshot>,
     auth_status: Option<AuthStatusResponse>,
     recording_campaign: Option<RecordingCampaignPlan>,
+    recording_estimate: Option<RecordingCampaignEstimate>,
+    recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
     runs: BTreeMap<String, RunSummary>,
 }
 
@@ -189,14 +194,63 @@ impl ControlProjection {
                 self.auth_status = Some(value.clone());
             }
             (ControlCall::RecordingCampaignPlan(_), ControlResult::RecordingCampaign(value)) => {
-                if self
-                    .negotiated
-                    .as_ref()
-                    .is_none_or(|session| session.version < crate::control_codec::V1_7)
-                {
+                self.require_recording_version(crate::control_codec::V1_7)?;
+                self.require_runner(&value.runner_instance_id)?;
+                self.require_monotonic_generation(value.generation)?;
+                self.recording_campaign = Some(value.clone());
+            }
+            (
+                ControlCall::RecordingCampaignEstimate(_),
+                ControlResult::RecordingCampaignEstimate(value),
+            ) => {
+                self.require_recording_version(crate::control_codec::V1_7)?;
+                self.require_runner(&value.runner_instance_id)?;
+                self.require_monotonic_generation(value.generation)?;
+                self.recording_estimate = Some(value.clone());
+            }
+            (
+                ControlCall::RecordingCampaignExecute(_)
+                | ControlCall::RecordingCampaignProgress(_)
+                | ControlCall::RecordingCampaignCancel(_)
+                | ControlCall::RecordingCampaignReconcile(_)
+                | ControlCall::RecordingCampaignOfflineDefault(_),
+                ControlResult::RecordingCampaignLifecycle(value),
+            ) => {
+                self.require_recording_version(crate::control_codec::V1_8)?;
+                self.require_runner(&value.runner_instance_id)?;
+                let campaign_id = match call {
+                    ControlCall::RecordingCampaignExecute(params) => {
+                        if value.generation < params.expected_generation {
+                            return Err(ProjectionError::StaleRun);
+                        }
+                        &params.campaign_id
+                    }
+                    ControlCall::RecordingCampaignCancel(params) => {
+                        if value.generation < params.expected_generation {
+                            return Err(ProjectionError::StaleRun);
+                        }
+                        &params.campaign_id
+                    }
+                    ControlCall::RecordingCampaignReconcile(params) => {
+                        if value.generation < params.expected_generation {
+                            return Err(ProjectionError::StaleRun);
+                        }
+                        &params.campaign_id
+                    }
+                    ControlCall::RecordingCampaignOfflineDefault(params) => {
+                        if value.generation < params.expected_generation {
+                            return Err(ProjectionError::StaleRun);
+                        }
+                        &params.campaign_id
+                    }
+                    ControlCall::RecordingCampaignProgress(params) => &params.campaign_id,
+                    _ => return Err(ProjectionError::UnexpectedResult),
+                };
+                if value.campaign_id != *campaign_id {
                     return Err(ProjectionError::UnexpectedResult);
                 }
-                self.recording_campaign = Some(value.clone());
+                self.require_monotonic_generation(value.generation)?;
+                self.recording_campaign_lifecycle = Some(value.clone());
             }
             (ControlCall::History(_), ControlResult::History(page)) => {
                 if self.runs.len() + page.items.len() > MAX_PROJECTED_RUNS {
@@ -211,6 +265,52 @@ impl ControlProjection {
                 self.insert_run(run.clone())?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn require_recording_version(
+        &self,
+        minimum: crate::control_codec::ControlVersion,
+    ) -> Result<(), ProjectionError> {
+        if self
+            .negotiated
+            .as_ref()
+            .is_none_or(|session| session.version < minimum)
+        {
+            return Err(ProjectionError::UnexpectedResult);
+        }
+        Ok(())
+    }
+
+    fn require_runner(&self, runner_instance_id: &str) -> Result<(), ProjectionError> {
+        if self
+            .negotiated
+            .as_ref()
+            .is_none_or(|session| session.runner_instance_id != runner_instance_id)
+        {
+            return Err(ProjectionError::UnexpectedResult);
+        }
+        Ok(())
+    }
+
+    fn require_monotonic_generation(&self, generation: Revision) -> Result<(), ProjectionError> {
+        let previous = self
+            .recording_campaign_lifecycle
+            .as_ref()
+            .map(|value| value.generation)
+            .or_else(|| {
+                self.recording_estimate
+                    .as_ref()
+                    .map(|value| value.generation)
+            })
+            .or_else(|| {
+                self.recording_campaign
+                    .as_ref()
+                    .map(|value| value.generation)
+            });
+        if previous.is_some_and(|previous| generation < previous) {
+            return Err(ProjectionError::StaleRun);
         }
         Ok(())
     }
@@ -257,6 +357,8 @@ impl ControlProjection {
             configuration: self.configuration.clone(),
             auth_status: self.auth_status.clone(),
             recording_campaign: self.recording_campaign.clone(),
+            recording_estimate: self.recording_estimate.clone(),
+            recording_campaign_lifecycle: self.recording_campaign_lifecycle.clone(),
             runs,
         }
     }
@@ -647,6 +749,70 @@ mod tests {
                 ControlLimits::default()
             ),
             Err(ProjectionError::InvalidResponse)
+        );
+    }
+
+    #[test]
+    fn recording_lifecycle_rejects_stale_generation_and_campaign_identity() {
+        use crate::control_codec::{RecordingCampaignLifecycle, RecordingCampaignProgressRequest};
+        let mut projection = connected_projection_at(crate::control_codec::V1_8);
+        let call = ControlCall::RecordingCampaignProgress(RecordingCampaignProgressRequest {
+            runner_instance_id: "runner".into(),
+            campaign_id: "campaign".into(),
+        });
+        let lifecycle = |generation: u64, campaign_id: &str| RecordingCampaignLifecycle {
+            runner_instance_id: "runner".into(),
+            generation: Revision(generation),
+            campaign_id: campaign_id.into(),
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            tuple_count: 1,
+            covered_tuple_count: 0,
+            state: "recording".into(),
+            offline_ready: false,
+            unavailable_reason: Some("recording".into()),
+        };
+        projection
+            .apply(
+                &request(call.clone(), 1),
+                &response(
+                    1,
+                    ControlResult::RecordingCampaignLifecycle(lifecycle(5, "campaign")),
+                ),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            projection.apply(
+                &request(call.clone(), 2),
+                &response(
+                    2,
+                    ControlResult::RecordingCampaignLifecycle(lifecycle(4, "campaign")),
+                ),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::StaleRun)
+        );
+        assert_eq!(
+            projection.apply(
+                &request(call, 3),
+                &response(
+                    3,
+                    ControlResult::RecordingCampaignLifecycle(lifecycle(6, "other")),
+                ),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::UnexpectedResult)
+        );
+        assert_eq!(
+            projection
+                .snapshot()
+                .recording_campaign_lifecycle
+                .unwrap()
+                .generation,
+            Revision(5)
         );
     }
 }
