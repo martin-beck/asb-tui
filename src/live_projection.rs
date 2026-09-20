@@ -10,8 +10,8 @@
 use crate::control_codec::{
     AuthStatusResponse, ConfigurationSnapshot, ControlCall, ControlLimits, ControlRequest,
     ControlResponse, ControlResult, ControlSuccess, MeasurementCatalog, Negotiated,
-    RecordingCampaignEstimate, RecordingCampaignLifecycle, RecordingCampaignPlan, Revision,
-    RunSummary,
+    ProviderCatalog, RecordingCampaignEstimate, RecordingCampaignLifecycle, RecordingCampaignPlan,
+    Revision, RunSummary,
 };
 use std::{collections::BTreeMap, fmt};
 
