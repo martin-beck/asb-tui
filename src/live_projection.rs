@@ -8,9 +8,9 @@
 //! bounded, renderer-safe state.  It cannot launch, retry, or cancel work.
 
 use crate::control_codec::{
-    ConfigurationSnapshot, ControlCall, ControlLimits, ControlRequest, ControlResponse,
-    ControlResult, ControlSuccess, MeasurementCatalog, Negotiated, ProviderCatalog,
-    RecordingCampaignPlan, Revision, RunSummary,
+    AuthStatusResponse, ConfigurationSnapshot, ControlCall, ControlLimits, ControlRequest,
+    ControlResponse, ControlResult, ControlSuccess, MeasurementCatalog, Negotiated,
+    ProviderCatalog, RecordingCampaignPlan, Revision, RunSummary,
 };
 use std::{collections::BTreeMap, fmt};
 
@@ -34,6 +34,9 @@ pub struct LiveSnapshot {
     pub agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     pub provider_catalog: Option<ProviderCatalog>,
     pub configuration: Option<ConfigurationSnapshot>,
+    /// Last public provider enrollment status. This contains digests only;
+    /// absence means unavailable, not unauthorized or connected.
+    pub auth_status: Option<AuthStatusResponse>,
     pub recording_campaign: Option<RecordingCampaignPlan>,
     pub runs: Vec<RunSummary>,
 }
@@ -69,6 +72,7 @@ pub struct ControlProjection {
     agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     provider_catalog: Option<ProviderCatalog>,
     configuration: Option<ConfigurationSnapshot>,
+    auth_status: Option<AuthStatusResponse>,
     recording_campaign: Option<RecordingCampaignPlan>,
     runs: BTreeMap<String, RunSummary>,
 }
@@ -174,6 +178,16 @@ impl ControlProjection {
                 }
                 self.configuration = Some(value.clone());
             }
+            (ControlCall::AuthStatus(_), ControlResult::AuthStatus(value)) => {
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_none_or(|session| session.version < crate::control_codec::CONTROL_AUTH_V1)
+                {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.auth_status = Some(value.clone());
+            }
             (ControlCall::RecordingCampaignPlan(_), ControlResult::RecordingCampaign(value)) => {
                 if self
                     .negotiated
@@ -241,6 +255,7 @@ impl ControlProjection {
             agent_lifecycle: self.agent_lifecycle.clone(),
             provider_catalog: self.provider_catalog.clone(),
             configuration: self.configuration.clone(),
+            auth_status: self.auth_status.clone(),
             recording_campaign: self.recording_campaign.clone(),
             runs,
         }
@@ -404,6 +419,38 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn auth_status_is_projected_only_after_auth_version_and_contains_digests() {
+        use crate::control_codec::*;
+        let call = ControlCall::AuthStatus(AuthStatusParams {
+            provider: "openai".into(),
+        });
+        let response = response(
+            2,
+            ControlResult::AuthStatus(AuthStatusResponse {
+                provider: "openai".into(),
+                endpoint_identity_sha256: "a".repeat(64),
+                credential_locator_sha256: "b".repeat(64),
+                generation: Revision(1),
+                status: "active".into(),
+            }),
+        );
+        let mut old = connected_projection_at(V1_5);
+        assert_eq!(
+            old.apply(
+                &request(call.clone(), 2),
+                &response,
+                ControlLimits::default()
+            ),
+            Err(ProjectionError::UnexpectedResult)
+        );
+        let mut current = connected_projection_at(CONTROL_AUTH_V1);
+        current
+            .apply(&request(call, 2), &response, ControlLimits::default())
+            .unwrap();
+        assert_eq!(current.snapshot().auth_status.unwrap().status, "active");
     }
 
     fn catalog() -> crate::control_codec::MeasurementCatalogPublication {

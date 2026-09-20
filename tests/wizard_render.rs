@@ -36,7 +36,12 @@ fn ui_model_declares_runner_setup_and_recording_projection_state() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
     let fields = model["state_fields"].as_array().unwrap();
-    for field in ["provider_catalog", "configuration", "recording_campaign"] {
+    for field in [
+        "provider_catalog",
+        "configuration",
+        "auth_status",
+        "recording_campaign",
+    ] {
         assert!(fields.iter().any(|value| value == field));
     }
     assert!(
@@ -45,6 +50,15 @@ fn ui_model_declares_runner_setup_and_recording_projection_state() {
             .unwrap()
             .iter()
             .any(|value| value["id"] == "configuration.control_status")
+    );
+    assert_eq!(
+        model["help"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|value| value["id"] == "configuration.control_status")
+            .unwrap()["text"],
+        "Inspect provider model, credential-free authentication status, and recording readiness reported by the authenticated runner."
     );
 }
 

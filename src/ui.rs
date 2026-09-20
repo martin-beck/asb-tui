@@ -1224,6 +1224,14 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
             } else {
                 lines.push(Line::from("Configuration status unavailable"));
             }
+            if let Some(auth) = &snapshot.auth_status {
+                lines.push(Line::from(format!(
+                    "Authentication: {} (provider {})",
+                    auth.status, auth.provider
+                )));
+            } else {
+                lines.push(Line::from("Authentication: unavailable"));
+            }
             if let Some(campaign) = &snapshot.recording_campaign {
                 lines.push(Line::from(format!(
                     "Recording: {} ({} tuples)",
@@ -1558,6 +1566,7 @@ mod tests {
                 groups: Vec::new(),
                 measurements: Vec::new(),
             }),
+            auth_status: None,
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,
@@ -1599,6 +1608,7 @@ mod tests {
             latest_revision: Some(Revision(1)),
             capabilities: None,
             measurement_catalog: None,
+            auth_status: None,
             agent_catalog: Some(crate::agent_catalog::AgentCatalog {
                 runner_instance_id: "runner".into(),
                 generation: 1,
@@ -1707,6 +1717,7 @@ mod tests {
                 auth_method: None,
                 credential_reference_sha256: None,
             }),
+            auth_status: None,
             recording_campaign: None,
             runs: Vec::new(),
         });
@@ -1885,6 +1896,7 @@ mod tests {
             agent_lifecycle: None,
             provider_catalog: None,
             configuration: None,
+            auth_status: None,
             recording_campaign: None,
             runs: vec![RunSummary {
                 run_id: RunId("run-7".into()),

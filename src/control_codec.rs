@@ -16,6 +16,9 @@ pub const V1_2: ControlVersion = ControlVersion { major: 1, minor: 2 };
 pub const V1_3: ControlVersion = ControlVersion { major: 1, minor: 3 };
 pub const V1_4: ControlVersion = ControlVersion { major: 1, minor: 4 };
 pub const V1_5: ControlVersion = ControlVersion { major: 1, minor: 5 };
+/// Minimum negotiated version that exposes credential-free authentication
+/// lifecycle calls. Authentication values never appear on this wire.
+pub const V1_6: ControlVersion = ControlVersion { major: 1, minor: 6 };
 pub const V1_7: ControlVersion = ControlVersion { major: 1, minor: 7 };
 /// Minimum negotiated version that exposes recording campaign lifecycle calls.
 pub const V1_8: ControlVersion = ControlVersion { major: 1, minor: 8 };
@@ -129,16 +132,33 @@ pub enum ControlCall {
     AgentCancel(crate::asb_lifecycle::AgentCancelRequest),
     AgentRetry(crate::asb_lifecycle::AgentRetryRequest),
     AgentRemove(crate::asb_lifecycle::AgentRemoveRequest),
-    ValidateSettings { settings: Value },
+    /// Enroll a provider using endpoint and resolver reference digests only.
+    AuthEnroll(AuthEnrollParams),
+    /// Read public, credential-free enrollment status.
+    AuthStatus(AuthStatusParams),
+    /// Rotate a provider's resolver reference without transporting its value.
+    AuthRotate(AuthRotateParams),
+    /// Revoke a provider enrollment.
+    AuthRevoke(AuthRevokeParams),
+    ValidateSettings {
+        settings: Value,
+    },
     CreatePlan(MutationParams),
     Launch(LaunchParams),
-    Status { run_id: RunId },
+    Status {
+        run_id: RunId,
+    },
     Cancel(CancelParams),
     History(PageParams),
     Repeat(RepeatParams),
-    Analyze { run_ids: Vec<RunId> },
+    Analyze {
+        run_ids: Vec<RunId>,
+    },
     Events(PageParams),
-    ArtifactMetadata { run_id: RunId, digest: String },
+    ArtifactMetadata {
+        run_id: RunId,
+        digest: String,
+    },
     ProviderCatalog(ProviderCatalogRequest),
     ConfigurationStatus(ConfigurationStatusRequest),
     ConfigurationApply(ConfigurationApplyParams),
@@ -174,9 +194,59 @@ impl ControlCall {
             | Self::AgentCancel(_)
             | Self::AgentRetry(_)
             | Self::AgentRemove(_) => Some(CONTROL_AGENT_LIFECYCLE_V1),
+            Self::AuthEnroll(_)
+            | Self::AuthStatus(_)
+            | Self::AuthRotate(_)
+            | Self::AuthRevoke(_) => Some(CONTROL_AUTH_V1),
             _ => None,
         }
     }
+}
+
+/// Earliest protocol version exposing authenticated provider lifecycle.
+pub const CONTROL_AUTH_V1: ControlVersion = V1_6;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthEnrollParams {
+    pub provider: String,
+    pub endpoint_identity_sha256: String,
+    pub credential_locator_sha256: String,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthStatusParams {
+    pub provider: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthRotateParams {
+    pub provider: String,
+    pub credential_locator_sha256: String,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthRevokeParams {
+    pub provider: String,
+    pub idempotency_key: String,
+}
+
+/// Public enrollment state. The lifecycle label is closed by the ASB
+/// contract; it does not imply that a provider request was authorized or
+/// reachable.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthStatusResponse {
+    pub provider: String,
+    pub endpoint_identity_sha256: String,
+    pub credential_locator_sha256: String,
+    pub generation: Revision,
+    pub status: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -941,6 +1011,7 @@ pub enum ControlResult {
     Launch(RunSummary),
     Status(RunSummary),
     Acknowledged(MutationAcknowledgement),
+    AuthStatus(AuthStatusResponse),
     History(Page<RunSummary>),
     Events(Page<ControlEvent>),
     Analysis(AnalysisSummary),
@@ -1052,7 +1123,7 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
             if v.versions.is_empty()
                 || v.versions
                     .iter()
-                    .any(|v| !matches!(*v, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_7 | V1_8))
+                    .any(|v| !matches!(*v, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8))
             {
                 return Err(CodecError::UnsupportedVersion);
             }
@@ -1117,6 +1188,22 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
         ControlCall::AgentRemove(v) => v
             .validate()
             .map_err(|_| CodecError::InvalidValue("agent_remove"))?,
+        ControlCall::AuthEnroll(v) => {
+            validate_id(&v.provider)?;
+            validate_digest(&v.endpoint_identity_sha256)?;
+            validate_digest(&v.credential_locator_sha256)?;
+            validate_id(&v.idempotency_key)?;
+        }
+        ControlCall::AuthStatus(v) => validate_id(&v.provider)?,
+        ControlCall::AuthRotate(v) => {
+            validate_id(&v.provider)?;
+            validate_digest(&v.credential_locator_sha256)?;
+            validate_id(&v.idempotency_key)?;
+        }
+        ControlCall::AuthRevoke(v) => {
+            validate_id(&v.provider)?;
+            validate_id(&v.idempotency_key)?;
+        }
         ControlCall::ProviderCatalog(v) => validate_id(&v.runner_instance_id)?,
         ControlCall::ConfigurationStatus(v) => validate_id(&v.runner_instance_id)?,
         ControlCall::ConfigurationApply(v) => {
@@ -1182,8 +1269,10 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
 fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(), CodecError> {
     match success {
         ControlSuccess::Negotiated(v) => {
-            if !matches!(v.version, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_7 | V1_8)
-                || v.oldest_revision > v.latest_revision
+            if !matches!(
+                v.version,
+                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8
+            ) || v.oldest_revision > v.latest_revision
             {
                 return Err(CodecError::InvalidVersion);
             }
@@ -1223,6 +1312,15 @@ fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), 
         ControlResult::Acknowledged(v) => {
             if !v.accepted {
                 return Err(CodecError::InvalidValue("accepted"));
+            }
+        }
+        ControlResult::AuthStatus(v) => {
+            validate_id(&v.provider)?;
+            validate_digest(&v.endpoint_identity_sha256)?;
+            validate_digest(&v.credential_locator_sha256)?;
+            if v.generation.0 == 0 || !matches!(v.status.as_str(), "active" | "revoked" | "pending")
+            {
+                return Err(CodecError::InvalidValue("auth status"));
             }
         }
         ControlResult::History(v) => {
@@ -1537,6 +1635,10 @@ impl ControlResult {
                 | (ControlCall::AgentCancel(_), Self::AgentLifecycle(_))
                 | (ControlCall::AgentRetry(_), Self::AgentLifecycle(_))
                 | (ControlCall::AgentRemove(_), Self::AgentLifecycle(_))
+                | (ControlCall::AuthEnroll(_), Self::Acknowledged(_))
+                | (ControlCall::AuthRotate(_), Self::Acknowledged(_))
+                | (ControlCall::AuthRevoke(_), Self::Acknowledged(_))
+                | (ControlCall::AuthStatus(_), Self::AuthStatus(_))
                 | (
                     ControlCall::ValidateSettings { .. },
                     Self::SettingsValidation(_)
@@ -2442,5 +2544,59 @@ mod tests {
             validate_campaign_lifecycle(&invalid),
             Err(CodecError::InvalidValue("campaign lifecycle"))
         );
+    }
+
+    #[test]
+    fn auth_lifecycle_is_digest_only_and_version_bound() {
+        let enroll = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(41),
+            timeout_ms: 1_000,
+            call: ControlCall::AuthEnroll(AuthEnrollParams {
+                provider: "openai".into(),
+                endpoint_identity_sha256: "a".repeat(64),
+                credential_locator_sha256: "b".repeat(64),
+                idempotency_key: "enroll-1".into(),
+            }),
+        };
+        enroll.validate(ControlLimits::default()).unwrap();
+        assert_eq!(enroll.call.minimum_version(), Some(CONTROL_AUTH_V1));
+        let status = ControlResponse::Success(SuccessResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: enroll.id,
+            result: ControlSuccess::Operation(BoundResult {
+                request_sha256: "c".repeat(64),
+                result: ControlResult::AuthStatus(AuthStatusResponse {
+                    provider: "openai".into(),
+                    endpoint_identity_sha256: "a".repeat(64),
+                    credential_locator_sha256: "b".repeat(64),
+                    generation: Revision(2),
+                    status: "active".into(),
+                }),
+            }),
+        });
+        let status_request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(41),
+            timeout_ms: 1_000,
+            call: ControlCall::AuthStatus(AuthStatusParams {
+                provider: "openai".into(),
+            }),
+        };
+        status
+            .validate_for(&status_request, ControlLimits::default())
+            .unwrap();
+
+        let raw_key = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "timeout_ms": 1000,
+            "method": "auth_enroll", "params": {
+                "provider": "openai", "api_key": "sk-secret",
+                "endpoint_identity_sha256": "a".repeat(64),
+                "credential_locator_sha256": "b".repeat(64),
+                "idempotency_key": "enroll-1"
+            }
+        });
+        assert!(serde_json::from_value::<ControlRequest>(raw_key).is_err());
+        assert_eq!(V1_6, CONTROL_AUTH_V1);
     }
 }

@@ -19,6 +19,7 @@
     "provider_catalog",
     "live_setup_catalog",
     "configuration",
+    "auth_status",
     "recording_campaign",
     "startup_wizard_opened",
     "responsive_layout",
@@ -845,7 +846,7 @@
     },
     {
       "id": "configuration.control_status",
-      "text": "Inspect provider model and recording readiness reported by the authenticated runner."
+      "text": "Inspect provider model, credential-free authentication status, and recording readiness reported by the authenticated runner."
     },
     {
       "id": "run.status",
