@@ -1572,6 +1572,8 @@ mod tests {
             provider_catalog: None,
             configuration: None,
             recording_campaign: None,
+            recording_estimate: None,
+            recording_campaign_lifecycle: None,
             runs: Vec::new(),
         };
         state.apply_live_snapshot(snapshot);
@@ -1637,6 +1639,8 @@ mod tests {
             }),
             configuration: None,
             recording_campaign: None,
+            recording_estimate: None,
+            recording_campaign_lifecycle: None,
             runs: Vec::new(),
         };
         let mut state = WorkspaceState::default();
@@ -1719,6 +1723,8 @@ mod tests {
             }),
             auth_status: None,
             recording_campaign: None,
+            recording_estimate: None,
+            recording_campaign_lifecycle: None,
             runs: Vec::new(),
         });
         assert_eq!(state.screen, Screen::Wizard);
@@ -1898,6 +1904,8 @@ mod tests {
             configuration: None,
             auth_status: None,
             recording_campaign: None,
+            recording_estimate: None,
+            recording_campaign_lifecycle: None,
             runs: vec![RunSummary {
                 run_id: RunId("run-7".into()),
                 attempt_id: AttemptId("attempt-7".into()),

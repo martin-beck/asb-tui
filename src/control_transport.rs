@@ -245,6 +245,14 @@ fn minimum_version_for_call(
     call.minimum_version()
 }
 
+#[derive(Clone, Copy)]
+enum RecordingMutation {
+    Execute,
+    Cancel,
+    Reconcile,
+    OfflineDefault,
+}
+
 /// Continuity evidence carried by a broker handoff. Epoch and sequence are
 /// retained as opaque broker evidence; they are never converted to a service
 /// generation or used as an identity substitute.
@@ -521,6 +529,212 @@ impl AuthenticatedBrokerSession {
         projection
             .apply(&request, &response, self.negotiated.limits)
             .map_err(|_| TransportError::Projection)
+    }
+
+    /// Ask the authenticated runner for a bounded estimate of a recording
+    /// matrix.  This is read-only: no campaign is created and no provider is
+    /// contacted by the frontend.  The runner remains authoritative for
+    /// availability and completeness.
+    pub fn estimate_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        provider_id: String,
+        model_id: String,
+        agent_ids: Vec<String>,
+        workload_ids: Vec<String>,
+    ) -> Result<(), TransportError> {
+        self.require_version(control_codec::V1_7)?;
+        let request = self.recording_request(
+            RequestId(9_000_000_002),
+            ControlCall::RecordingCampaignEstimate(
+                control_codec::RecordingCampaignEstimateRequest {
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    provider_id,
+                    model_id,
+                    agent_ids,
+                    workload_ids,
+                },
+            ),
+        );
+        self.apply_recording_response(projection, &request)
+    }
+
+    /// Execute a previously projected campaign.  `idempotency_key` must be
+    /// stable for retries of this logical operation; it is sent unchanged to
+    /// ASB and is never generated from UI state or credentials.
+    pub fn execute_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.recording_mutation(
+            projection,
+            campaign_id,
+            idempotency_key,
+            RecordingMutation::Execute,
+            RequestId(9_000_000_003),
+        )
+    }
+
+    /// Read the authoritative progress of a campaign.  A progress response
+    /// for another campaign is rejected before it can alter the projection.
+    pub fn progress_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+    ) -> Result<(), TransportError> {
+        self.require_version(control_codec::V1_8)?;
+        let request = self.recording_request(
+            RequestId(9_000_000_004),
+            ControlCall::RecordingCampaignProgress(
+                control_codec::RecordingCampaignProgressRequest {
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                },
+            ),
+        );
+        self.apply_recording_response(projection, &request)
+    }
+
+    pub fn cancel_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.recording_mutation(
+            projection,
+            campaign_id,
+            idempotency_key,
+            RecordingMutation::Cancel,
+            RequestId(9_000_000_005),
+        )
+    }
+
+    pub fn reconcile_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.recording_mutation(
+            projection,
+            campaign_id,
+            idempotency_key,
+            RecordingMutation::Reconcile,
+            RequestId(9_000_000_006),
+        )
+    }
+
+    pub fn set_recording_campaign_offline_default(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.recording_mutation(
+            projection,
+            campaign_id,
+            idempotency_key,
+            RecordingMutation::OfflineDefault,
+            RequestId(9_000_000_007),
+        )
+    }
+
+    fn require_version(
+        &self,
+        minimum: control_codec::ControlVersion,
+    ) -> Result<(), TransportError> {
+        if self.negotiated.version < minimum {
+            return Err(TransportError::NotNegotiated);
+        }
+        Ok(())
+    }
+
+    fn recording_request(&self, id: RequestId, call: ControlCall) -> ControlRequest {
+        ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id,
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call,
+        }
+    }
+
+    fn apply_recording_response(
+        &mut self,
+        projection: &mut ControlProjection,
+        request: &ControlRequest,
+    ) -> Result<(), TransportError> {
+        let response = self.transport.round_trip(request)?;
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
+        projection
+            .apply(request, &response, self.negotiated.limits)
+            .map_err(|_| TransportError::Projection)
+    }
+
+    fn recording_mutation(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+        idempotency_key: String,
+        mutation: RecordingMutation,
+        request_id: RequestId,
+    ) -> Result<(), TransportError> {
+        let expected_generation = projection
+            .snapshot()
+            .recording_campaign_lifecycle
+            .as_ref()
+            .filter(|campaign| campaign.campaign_id == campaign_id)
+            .map(|campaign| campaign.generation)
+            .or_else(|| {
+                projection
+                    .snapshot()
+                    .recording_campaign
+                    .as_ref()
+                    .filter(|campaign| campaign.campaign_id == campaign_id)
+                    .map(|campaign| campaign.generation)
+            })
+            .ok_or(TransportError::Projection)?;
+        self.require_version(control_codec::V1_8)?;
+        let call = match mutation {
+            RecordingMutation::Execute => ControlCall::RecordingCampaignExecute(
+                control_codec::RecordingCampaignExecuteParams {
+                    idempotency_key,
+                    expected_generation,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                },
+            ),
+            RecordingMutation::Cancel => {
+                ControlCall::RecordingCampaignCancel(control_codec::RecordingCampaignCancelParams {
+                    idempotency_key,
+                    expected_generation,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                })
+            }
+            RecordingMutation::Reconcile => ControlCall::RecordingCampaignReconcile(
+                control_codec::RecordingCampaignReconcileParams {
+                    idempotency_key,
+                    expected_generation,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                },
+            ),
+            RecordingMutation::OfflineDefault => ControlCall::RecordingCampaignOfflineDefault(
+                control_codec::RecordingCampaignOfflineDefaultParams {
+                    idempotency_key,
+                    expected_generation,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                },
+            ),
+        };
+        let request = self.recording_request(request_id, call);
+        self.apply_recording_response(projection, &request)
     }
 
     /// Poll the bounded read-only bootstrap state used by the workspace.
@@ -943,6 +1157,219 @@ mod tests {
         assert_eq!(
             projection.snapshot().configuration.unwrap().generation,
             Revision(2)
+        );
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn recording_control_session_round_trips_all_operations_with_generation_fencing() {
+        use crate::control_codec::{
+            ControlResult, RecordingCampaignEstimate, RecordingCampaignLifecycle,
+            RecordingCampaignPlan,
+        };
+        let (server, client) = UnixStream::pair().unwrap();
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_8,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner-7".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(2),
+        };
+        let join = thread::spawn(move || {
+            let mut server = server;
+            for expected in 0..6_u64 {
+                let mut header = [0_u8; 4];
+                server.read_exact(&mut header).unwrap();
+                let size = u32::from_be_bytes(header) as usize;
+                let mut body = vec![0_u8; size];
+                server.read_exact(&mut body).unwrap();
+                let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+                assert_eq!(request.id, RequestId(9_000_000_002 + expected));
+                let (result, generation) = match &request.call {
+                    ControlCall::RecordingCampaignEstimate(_) => (
+                        ControlResult::RecordingCampaignEstimate(RecordingCampaignEstimate {
+                            runner_instance_id: "runner-7".into(),
+                            generation: Revision(2),
+                            tuple_count: 1,
+                            complete_coverage: true,
+                            offline_ready: true,
+                            unavailable_reason: None,
+                        }),
+                        2,
+                    ),
+                    ControlCall::RecordingCampaignExecute(params) => {
+                        assert_eq!(params.idempotency_key, "execute-key");
+                        assert_eq!(params.expected_generation, Revision(2));
+                        (lifecycle("recording", 0, Some("recording"), 2), 2)
+                    }
+                    ControlCall::RecordingCampaignProgress(params) => {
+                        assert_eq!(params.campaign_id, "campaign-1");
+                        (lifecycle("recording", 0, Some("recording"), 3), 3)
+                    }
+                    ControlCall::RecordingCampaignCancel(params) => {
+                        assert_eq!(params.idempotency_key, "cancel-key");
+                        assert_eq!(params.expected_generation, Revision(3));
+                        (lifecycle("cancelled", 1, Some("cancelled"), 4), 4)
+                    }
+                    ControlCall::RecordingCampaignReconcile(params) => {
+                        assert_eq!(params.idempotency_key, "reconcile-key");
+                        assert_eq!(params.expected_generation, Revision(4));
+                        (lifecycle("complete", 1, None, 5), 5)
+                    }
+                    ControlCall::RecordingCampaignOfflineDefault(params) => {
+                        assert_eq!(params.idempotency_key, "offline-key");
+                        assert_eq!(params.expected_generation, Revision(5));
+                        (lifecycle("complete", 1, None, 5), 5)
+                    }
+                    call => panic!("unexpected call: {call:?}"),
+                };
+                assert_eq!(
+                    generation,
+                    match &result {
+                        ControlResult::RecordingCampaignEstimate(value) => value.generation.0,
+                        ControlResult::RecordingCampaignLifecycle(value) => value.generation.0,
+                        _ => 0,
+                    }
+                );
+                let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                    jsonrpc: "2.0".into(),
+                    id: request.id,
+                    result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                        request_sha256: "a".repeat(64),
+                        result,
+                    }),
+                });
+                server
+                    .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                    .unwrap();
+            }
+
+            fn lifecycle(
+                state: &str,
+                covered: u16,
+                reason: Option<&str>,
+                generation: u64,
+            ) -> ControlResult {
+                ControlResult::RecordingCampaignLifecycle(RecordingCampaignLifecycle {
+                    runner_instance_id: "runner-7".into(),
+                    generation: Revision(generation),
+                    campaign_id: "campaign-1".into(),
+                    provider_id: "provider".into(),
+                    model_id: "model".into(),
+                    agent_ids: vec!["agent".into()],
+                    workload_ids: vec!["workload".into()],
+                    tuple_count: 1,
+                    covered_tuple_count: covered,
+                    state: state.into(),
+                    offline_ready: state == "complete" && covered == 1,
+                    unavailable_reason: reason.map(str::to_owned),
+                })
+            }
+        });
+        let mut transport =
+            FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_8);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [9; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated).unwrap();
+        session
+            .estimate_recording_campaign(
+                &mut projection,
+                "provider".into(),
+                "model".into(),
+                vec!["agent".into()],
+                vec!["workload".into()],
+            )
+            .unwrap();
+        projection
+            .apply(
+                &ControlRequest {
+                    jsonrpc: "2.0".into(),
+                    id: RequestId(100),
+                    timeout_ms: 1_000,
+                    call: ControlCall::RecordingCampaignPlan(
+                        crate::control_codec::RecordingCampaignPlanParams {
+                            idempotency_key: "plan".into(),
+                            expected_generation: Revision(2),
+                            runner_instance_id: "runner-7".into(),
+                            provider_id: "provider".into(),
+                            model_id: "model".into(),
+                            agent_ids: vec!["agent".into()],
+                            workload_ids: vec!["workload".into()],
+                        },
+                    ),
+                },
+                &ControlResponse::Success(crate::control_codec::SuccessResponse {
+                    jsonrpc: "2.0".into(),
+                    id: RequestId(100),
+                    result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                        request_sha256: "a".repeat(64),
+                        result: ControlResult::RecordingCampaign(RecordingCampaignPlan {
+                            runner_instance_id: "runner-7".into(),
+                            generation: Revision(2),
+                            campaign_id: "campaign-1".into(),
+                            provider_id: "provider".into(),
+                            model_id: "model".into(),
+                            agent_ids: vec!["agent".into()],
+                            workload_ids: vec!["workload".into()],
+                            tuple_count: 1,
+                            state: "planned".into(),
+                            offline_ready: false,
+                            unavailable_reason: Some("recording-required".into()),
+                        }),
+                    }),
+                }),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        session
+            .execute_recording_campaign(&mut projection, "campaign-1".into(), "execute-key".into())
+            .unwrap();
+        session
+            .progress_recording_campaign(&mut projection, "campaign-1".into())
+            .unwrap();
+        session
+            .cancel_recording_campaign(&mut projection, "campaign-1".into(), "cancel-key".into())
+            .unwrap();
+        session
+            .reconcile_recording_campaign(
+                &mut projection,
+                "campaign-1".into(),
+                "reconcile-key".into(),
+            )
+            .unwrap();
+        session
+            .set_recording_campaign_offline_default(
+                &mut projection,
+                "campaign-1".into(),
+                "offline-key".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            projection
+                .snapshot()
+                .recording_campaign_lifecycle
+                .unwrap()
+                .generation,
+            Revision(5)
+        );
+        assert!(
+            projection
+                .snapshot()
+                .recording_estimate
+                .unwrap()
+                .offline_ready
         );
         join.join().unwrap();
     }
