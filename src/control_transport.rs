@@ -118,6 +118,7 @@ impl FramedControlStream {
             timeout_ms: self.limits.max_timeout_ms,
             call: control_codec::ControlCall::Negotiate(NegotiateParams {
                 versions: [
+                    control_codec::V1_8,
                     control_codec::V1_7,
                     control_codec::V1_5,
                     control_codec::V1_4,
@@ -141,6 +142,7 @@ impl FramedControlStream {
         if (!self.expected_peer.runner_instance_id.is_empty()
             && session.runner_instance_id != self.expected_peer.runner_instance_id)
             || ![
+                control_codec::V1_8,
                 control_codec::V1_7,
                 control_codec::V1_5,
                 control_codec::V1_4,
@@ -238,19 +240,7 @@ impl FramedControlStream {
 fn minimum_version_for_call(
     call: &control_codec::ControlCall,
 ) -> Option<control_codec::ControlVersion> {
-    match call {
-        control_codec::ControlCall::AgentCatalog(_) => {
-            Some(control_codec::CONTROL_AGENT_CATALOG_V1)
-        }
-        control_codec::ControlCall::AgentInstall(_)
-        | control_codec::ControlCall::AgentStatus(_)
-        | control_codec::ControlCall::AgentCancel(_)
-        | control_codec::ControlCall::AgentRetry(_)
-        | control_codec::ControlCall::AgentRemove(_) => {
-            Some(control_codec::CONTROL_AGENT_LIFECYCLE_V1)
-        }
-        _ => None,
-    }
+    call.minimum_version()
 }
 
 /// Continuity evidence carried by a broker handoff. Epoch and sequence are
@@ -871,6 +861,31 @@ mod tests {
         assert_eq!(
             minimum_version_for_call(&agent_call),
             Some(crate::control_codec::CONTROL_AGENT_CATALOG_V1)
+        );
+        let lifecycle_call = ControlCall::RecordingCampaignOfflineDefault(
+            crate::control_codec::RecordingCampaignOfflineDefaultParams {
+                idempotency_key: "offline".into(),
+                expected_generation: Revision(1),
+                runner_instance_id: "runner-7".into(),
+                campaign_id: "campaign-1".into(),
+            },
+        );
+        assert_eq!(
+            minimum_version_for_call(&lifecycle_call),
+            Some(crate::control_codec::CONTROL_RECORDING_LIFECYCLE_V1)
+        );
+        let estimate_call = ControlCall::RecordingCampaignEstimate(
+            crate::control_codec::RecordingCampaignEstimateRequest {
+                runner_instance_id: "runner-7".into(),
+                provider_id: "provider".into(),
+                model_id: "model".into(),
+                agent_ids: vec!["agent".into()],
+                workload_ids: vec!["workload".into()],
+            },
+        );
+        assert_eq!(
+            minimum_version_for_call(&estimate_call),
+            Some(crate::control_codec::V1_7)
         );
         assert_eq!(minimum_version_for_call(&ControlCall::Capabilities), None);
 

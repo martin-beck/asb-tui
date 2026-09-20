@@ -17,13 +17,17 @@ pub const V1_3: ControlVersion = ControlVersion { major: 1, minor: 3 };
 pub const V1_4: ControlVersion = ControlVersion { major: 1, minor: 4 };
 pub const V1_5: ControlVersion = ControlVersion { major: 1, minor: 5 };
 pub const V1_7: ControlVersion = ControlVersion { major: 1, minor: 7 };
+/// Minimum negotiated version that exposes recording campaign lifecycle calls.
+pub const V1_8: ControlVersion = ControlVersion { major: 1, minor: 8 };
 /// Minimum negotiated version that exposes the authenticated agent catalog.
 pub const CONTROL_AGENT_CATALOG_V1: ControlVersion = V1_4;
 /// Minimum negotiated version that exposes verified local-agent lifecycle calls.
 pub const CONTROL_AGENT_LIFECYCLE_V1: ControlVersion = V1_5;
+pub const CONTROL_RECORDING_LIFECYCLE_V1: ControlVersion = V1_8;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_PUBLIC_STRING_BYTES: usize = 4096;
 pub const MAX_ID_BYTES: usize = 128;
+pub const MAX_CATALOG_STRING_BYTES: usize = 128;
 pub const MAX_PAGE_ITEMS: u16 = 256;
 pub const MAX_ANALYSIS_RUNS: usize = 256;
 pub const MAX_JSON_NODES: usize = 4096;
@@ -140,6 +144,39 @@ pub enum ControlCall {
     ConfigurationApply(ConfigurationApplyParams),
     RecordingCampaignPlan(RecordingCampaignPlanParams),
     RecordingCampaignStatus(RecordingCampaignStatusRequest),
+    RecordingCampaignEstimate(RecordingCampaignEstimateRequest),
+    RecordingCampaignExecute(RecordingCampaignExecuteParams),
+    RecordingCampaignProgress(RecordingCampaignProgressRequest),
+    RecordingCampaignCancel(RecordingCampaignCancelParams),
+    RecordingCampaignReconcile(RecordingCampaignReconcileParams),
+    RecordingCampaignOfflineDefault(RecordingCampaignOfflineDefaultParams),
+}
+
+impl ControlCall {
+    /// Earliest exact wire version that defines this operation.
+    #[must_use]
+    pub const fn minimum_version(&self) -> Option<ControlVersion> {
+        match self {
+            Self::ProviderCatalog(_)
+            | Self::ConfigurationStatus(_)
+            | Self::ConfigurationApply(_)
+            | Self::RecordingCampaignEstimate(_)
+            | Self::RecordingCampaignPlan(_)
+            | Self::RecordingCampaignStatus(_) => Some(V1_7),
+            Self::RecordingCampaignExecute(_)
+            | Self::RecordingCampaignProgress(_)
+            | Self::RecordingCampaignCancel(_)
+            | Self::RecordingCampaignReconcile(_)
+            | Self::RecordingCampaignOfflineDefault(_) => Some(V1_8),
+            Self::AgentCatalog(_) => Some(CONTROL_AGENT_CATALOG_V1),
+            Self::AgentInstall(_)
+            | Self::AgentStatus(_)
+            | Self::AgentCancel(_)
+            | Self::AgentRetry(_)
+            | Self::AgentRemove(_) => Some(CONTROL_AGENT_LIFECYCLE_V1),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -282,6 +319,88 @@ pub struct RecordingCampaignStatus {
     pub runner_instance_id: String,
     pub generation: Revision,
     pub campaign: Option<RecordingCampaignPlan>,
+}
+
+/// Read-only estimate for an exact recording matrix.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignEstimateRequest {
+    pub runner_instance_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub agent_ids: Vec<String>,
+    pub workload_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignEstimate {
+    pub runner_instance_id: String,
+    pub generation: Revision,
+    pub tuple_count: u16,
+    pub complete_coverage: bool,
+    pub offline_ready: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignExecuteParams {
+    pub idempotency_key: String,
+    pub expected_generation: Revision,
+    pub runner_instance_id: String,
+    pub campaign_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignProgressRequest {
+    pub runner_instance_id: String,
+    pub campaign_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignCancelParams {
+    pub idempotency_key: String,
+    pub expected_generation: Revision,
+    pub runner_instance_id: String,
+    pub campaign_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignReconcileParams {
+    pub idempotency_key: String,
+    pub expected_generation: Revision,
+    pub runner_instance_id: String,
+    pub campaign_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignOfflineDefaultParams {
+    pub idempotency_key: String,
+    pub expected_generation: Revision,
+    pub runner_instance_id: String,
+    pub campaign_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignLifecycle {
+    pub runner_instance_id: String,
+    pub generation: Revision,
+    pub campaign_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub agent_ids: Vec<String>,
+    pub workload_ids: Vec<String>,
+    pub tuple_count: u16,
+    pub covered_tuple_count: u16,
+    pub state: String,
+    pub offline_ready: bool,
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -830,6 +949,8 @@ pub enum ControlResult {
     Configuration(ConfigurationSnapshot),
     RecordingCampaign(RecordingCampaignPlan),
     RecordingCampaignStatus(RecordingCampaignStatus),
+    RecordingCampaignEstimate(RecordingCampaignEstimate),
+    RecordingCampaignLifecycle(RecordingCampaignLifecycle),
 }
 
 impl ControlRequest {
@@ -931,7 +1052,7 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
             if v.versions.is_empty()
                 || v.versions
                     .iter()
-                    .any(|v| !matches!(*v, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_7))
+                    .any(|v| !matches!(*v, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_7 | V1_8))
             {
                 return Err(CodecError::UnsupportedVersion);
             }
@@ -1021,13 +1142,47 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
             }
         }
         ControlCall::RecordingCampaignStatus(v) => validate_id(&v.runner_instance_id)?,
+        ControlCall::RecordingCampaignEstimate(v) => {
+            validate_id(&v.runner_instance_id)?;
+            validate_catalog_string(&v.provider_id)?;
+            validate_catalog_string(&v.model_id)?;
+            validate_sorted_ids(&v.agent_ids)?;
+            validate_sorted_ids(&v.workload_ids)?;
+        }
+        ControlCall::RecordingCampaignExecute(v) => validate_campaign_mutation(
+            &v.idempotency_key,
+            v.expected_generation,
+            &v.runner_instance_id,
+            &v.campaign_id,
+        )?,
+        ControlCall::RecordingCampaignCancel(v) => validate_campaign_mutation(
+            &v.idempotency_key,
+            v.expected_generation,
+            &v.runner_instance_id,
+            &v.campaign_id,
+        )?,
+        ControlCall::RecordingCampaignReconcile(v) => validate_campaign_mutation(
+            &v.idempotency_key,
+            v.expected_generation,
+            &v.runner_instance_id,
+            &v.campaign_id,
+        )?,
+        ControlCall::RecordingCampaignOfflineDefault(v) => validate_campaign_mutation(
+            &v.idempotency_key,
+            v.expected_generation,
+            &v.runner_instance_id,
+            &v.campaign_id,
+        )?,
+        ControlCall::RecordingCampaignProgress(v) => {
+            validate_campaign_read(&v.runner_instance_id, &v.campaign_id)?;
+        }
     }
     Ok(())
 }
 fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(), CodecError> {
     match success {
         ControlSuccess::Negotiated(v) => {
-            if !matches!(v.version, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_7)
+            if !matches!(v.version, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_7 | V1_8)
                 || v.oldest_revision > v.latest_revision
             {
                 return Err(CodecError::InvalidVersion);
@@ -1097,6 +1252,8 @@ fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), 
         ControlResult::Configuration(v) => validate_configuration(v)?,
         ControlResult::RecordingCampaign(v) => validate_campaign_plan(v)?,
         ControlResult::RecordingCampaignStatus(v) => validate_campaign_status(v)?,
+        ControlResult::RecordingCampaignEstimate(v) => validate_campaign_estimate(v)?,
+        ControlResult::RecordingCampaignLifecycle(v) => validate_campaign_lifecycle(v)?,
     }
     Ok(())
 }
@@ -1124,8 +1281,8 @@ fn validate_sorted_ids(values: &[String]) -> Result<(), CodecError> {
 
 fn validate_selection(v: &ConfigurationSelection) -> Result<(), CodecError> {
     validate_sorted_ids(&v.agent_ids)?;
-    validate_id(&v.provider_id)?;
-    validate_id(&v.model_id)?;
+    validate_catalog_string(&v.provider_id)?;
+    validate_catalog_string(&v.model_id)?;
     match (v.auth_method, v.credential_reference_sha256.as_deref()) {
         (ProviderAuthMethod::CredentialReference, Some(value)) => validate_digest(value)?,
         (ProviderAuthMethod::CredentialReference, None) => {
@@ -1231,6 +1388,68 @@ fn validate_campaign_status(v: &RecordingCampaignStatus) -> Result<(), CodecErro
     }
     Ok(())
 }
+
+fn validate_campaign_read(runner_instance_id: &str, campaign_id: &str) -> Result<(), CodecError> {
+    validate_id(runner_instance_id)?;
+    validate_id(campaign_id)
+}
+
+fn validate_campaign_mutation(
+    idempotency_key: &str,
+    expected_generation: Revision,
+    runner_instance_id: &str,
+    campaign_id: &str,
+) -> Result<(), CodecError> {
+    validate_id(idempotency_key)?;
+    if expected_generation.0 == 0 {
+        return Err(CodecError::InvalidValue("expected_generation"));
+    }
+    validate_campaign_read(runner_instance_id, campaign_id)
+}
+
+fn validate_campaign_estimate(v: &RecordingCampaignEstimate) -> Result<(), CodecError> {
+    validate_id(&v.runner_instance_id)?;
+    if v.generation.0 == 0 || v.tuple_count == 0 {
+        return Err(CodecError::InvalidValue("campaign estimate"));
+    }
+    if v.offline_ready && (!v.complete_coverage || v.unavailable_reason.is_some()) {
+        return Err(CodecError::InvalidValue("campaign estimate"));
+    }
+    if !v.offline_ready && v.unavailable_reason.is_none() {
+        return Err(CodecError::InvalidValue("campaign estimate"));
+    }
+    if let Some(reason) = &v.unavailable_reason {
+        validate_catalog_string(reason)?;
+    }
+    Ok(())
+}
+
+fn validate_campaign_lifecycle(v: &RecordingCampaignLifecycle) -> Result<(), CodecError> {
+    validate_id(&v.runner_instance_id)?;
+    validate_id(&v.campaign_id)?;
+    validate_catalog_string(&v.provider_id)?;
+    validate_catalog_string(&v.model_id)?;
+    validate_sorted_ids(&v.agent_ids)?;
+    validate_sorted_ids(&v.workload_ids)?;
+    let tuples = v.agent_ids.len().saturating_mul(v.workload_ids.len());
+    if v.generation.0 == 0
+        || v.tuple_count as usize != tuples
+        || v.covered_tuple_count > v.tuple_count
+        || !matches!(
+            v.state.as_str(),
+            "planned" | "recording" | "needs_reconciliation" | "complete" | "cancelled" | "failed"
+        )
+        || v.offline_ready != (v.state == "complete" && v.covered_tuple_count == v.tuple_count)
+        || v.offline_ready != v.unavailable_reason.is_none()
+        || (!v.offline_ready && v.unavailable_reason.is_none())
+    {
+        return Err(CodecError::InvalidValue("campaign lifecycle"));
+    }
+    if let Some(reason) = &v.unavailable_reason {
+        validate_catalog_string(reason)?;
+    }
+    Ok(())
+}
 fn validate_event(v: &ControlEvent) -> Result<(), CodecError> {
     let associated = v.run_id.is_some() && v.attempt_id.is_some();
     match v.kind {
@@ -1265,6 +1484,18 @@ fn validate_id(value: &str) -> Result<(), CodecError> {
         || value.chars().any(char::is_control)
     {
         Err(CodecError::InvalidValue("identity"))
+    } else {
+        Ok(())
+    }
+}
+fn validate_catalog_string(value: &str) -> Result<(), CodecError> {
+    if value.is_empty()
+        || value.len() > MAX_CATALOG_STRING_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-/".contains(&byte))
+    {
+        Err(CodecError::InvalidValue("catalog string"))
     } else {
         Ok(())
     }
@@ -1332,6 +1563,30 @@ impl ControlResult {
                 | (
                     ControlCall::RecordingCampaignStatus(_),
                     Self::RecordingCampaignStatus(_)
+                )
+                | (
+                    ControlCall::RecordingCampaignEstimate(_),
+                    Self::RecordingCampaignEstimate(_)
+                )
+                | (
+                    ControlCall::RecordingCampaignExecute(_),
+                    Self::RecordingCampaignLifecycle(_)
+                )
+                | (
+                    ControlCall::RecordingCampaignProgress(_),
+                    Self::RecordingCampaignLifecycle(_)
+                )
+                | (
+                    ControlCall::RecordingCampaignCancel(_),
+                    Self::RecordingCampaignLifecycle(_)
+                )
+                | (
+                    ControlCall::RecordingCampaignReconcile(_),
+                    Self::RecordingCampaignLifecycle(_)
+                )
+                | (
+                    ControlCall::RecordingCampaignOfflineDefault(_),
+                    Self::RecordingCampaignLifecycle(_)
                 )
         )
     }
@@ -2032,6 +2287,160 @@ mod tests {
         assert_eq!(
             decode::<ControlRequest>(&[0, 0, 0, 1, b'x'], MAX_FRAME_BYTES),
             Err(CodecError::MalformedFrame)
+        );
+    }
+
+    #[test]
+    fn recording_v18_calls_and_results_round_trip_asb_shapes() {
+        let lifecycle = RecordingCampaignLifecycle {
+            runner_instance_id: "runner".into(),
+            generation: Revision(4),
+            campaign_id: "campaign".into(),
+            provider_id: "provider".into(),
+            model_id: "vendor/model:v1".into(),
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            tuple_count: 1,
+            covered_tuple_count: 1,
+            state: "complete".into(),
+            offline_ready: true,
+            unavailable_reason: None,
+        };
+        validate_campaign_lifecycle(&lifecycle).unwrap();
+        let calls = vec![
+            ControlCall::RecordingCampaignExecute(RecordingCampaignExecuteParams {
+                idempotency_key: "execute".into(),
+                expected_generation: Revision(4),
+                runner_instance_id: "runner".into(),
+                campaign_id: "campaign".into(),
+            }),
+            ControlCall::RecordingCampaignProgress(RecordingCampaignProgressRequest {
+                runner_instance_id: "runner".into(),
+                campaign_id: "campaign".into(),
+            }),
+            ControlCall::RecordingCampaignCancel(RecordingCampaignCancelParams {
+                idempotency_key: "cancel".into(),
+                expected_generation: Revision(4),
+                runner_instance_id: "runner".into(),
+                campaign_id: "campaign".into(),
+            }),
+            ControlCall::RecordingCampaignReconcile(RecordingCampaignReconcileParams {
+                idempotency_key: "reconcile".into(),
+                expected_generation: Revision(4),
+                runner_instance_id: "runner".into(),
+                campaign_id: "campaign".into(),
+            }),
+            ControlCall::RecordingCampaignOfflineDefault(RecordingCampaignOfflineDefaultParams {
+                idempotency_key: "offline-default".into(),
+                expected_generation: Revision(4),
+                runner_instance_id: "runner".into(),
+                campaign_id: "campaign".into(),
+            }),
+        ];
+        for (id, call) in calls.into_iter().enumerate() {
+            let request = ControlRequest {
+                jsonrpc: JSONRPC_VERSION.into(),
+                id: RequestId(id as u64 + 1),
+                timeout_ms: 1_000,
+                call,
+            };
+            request.validate(ControlLimits::default()).unwrap();
+            assert_eq!(request.call.minimum_version(), Some(V1_8));
+            let response = ControlResponse::Success(SuccessResponse {
+                jsonrpc: JSONRPC_VERSION.into(),
+                id: request.id,
+                result: ControlSuccess::Operation(BoundResult {
+                    request_sha256: "a".repeat(64),
+                    result: ControlResult::RecordingCampaignLifecycle(lifecycle.clone()),
+                }),
+            });
+            response
+                .validate_for(&request, ControlLimits::default())
+                .unwrap();
+            let encoded = encode(&response, MAX_FRAME_BYTES).unwrap();
+            assert_eq!(
+                decode::<ControlResponse>(&encoded, MAX_FRAME_BYTES).unwrap(),
+                response
+            );
+        }
+
+        let estimate_request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(9),
+            timeout_ms: 1_000,
+            call: ControlCall::RecordingCampaignEstimate(RecordingCampaignEstimateRequest {
+                runner_instance_id: "runner".into(),
+                provider_id: "provider".into(),
+                model_id: "vendor/model:v1".into(),
+                agent_ids: vec!["agent".into()],
+                workload_ids: vec!["workload".into()],
+            }),
+        };
+        estimate_request.validate(ControlLimits::default()).unwrap();
+        assert_eq!(estimate_request.call.minimum_version(), Some(V1_7));
+        let estimate_response = ControlResponse::Success(SuccessResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: estimate_request.id,
+            result: ControlSuccess::Operation(BoundResult {
+                request_sha256: "b".repeat(64),
+                result: ControlResult::RecordingCampaignEstimate(RecordingCampaignEstimate {
+                    runner_instance_id: "runner".into(),
+                    generation: Revision(4),
+                    tuple_count: 1,
+                    complete_coverage: true,
+                    offline_ready: true,
+                    unavailable_reason: None,
+                }),
+            }),
+        });
+        estimate_response
+            .validate_for(&estimate_request, ControlLimits::default())
+            .unwrap();
+    }
+
+    #[test]
+    fn recording_v18_rejects_unknown_fields_stale_generation_and_invalid_coverage() {
+        let unknown = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "timeout_ms": 1000,
+            "method": "recording_campaign_progress",
+            "params": {
+                "runner_instance_id": "runner",
+                "campaign_id": "campaign",
+                "secret": "must-not-cross-wire"
+            }
+        });
+        assert!(serde_json::from_value::<ControlRequest>(unknown).is_err());
+
+        let stale = ControlCall::RecordingCampaignExecute(RecordingCampaignExecuteParams {
+            idempotency_key: "execute".into(),
+            expected_generation: Revision(0),
+            runner_instance_id: "runner".into(),
+            campaign_id: "campaign".into(),
+        });
+        assert_eq!(
+            validate_call(&stale),
+            Err(CodecError::InvalidValue("expected_generation"))
+        );
+
+        let invalid = RecordingCampaignLifecycle {
+            runner_instance_id: "runner".into(),
+            generation: Revision(4),
+            campaign_id: "campaign".into(),
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            tuple_count: 1,
+            covered_tuple_count: 0,
+            state: "complete".into(),
+            offline_ready: true,
+            unavailable_reason: None,
+        };
+        assert_eq!(
+            validate_campaign_lifecycle(&invalid),
+            Err(CodecError::InvalidValue("campaign lifecycle"))
         );
     }
 }
