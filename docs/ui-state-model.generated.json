@@ -17,6 +17,7 @@
     "connection",
     "capabilities",
     "provider_catalog",
+    "provider_catalog_generation",
     "live_setup_catalog",
     "configuration",
     "auth_status",
