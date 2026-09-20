@@ -1468,4 +1468,62 @@ mod tests {
         );
         join.join().unwrap();
     }
+
+    #[test]
+    fn coverage_auth_and_recording_version_gates_fail_before_io() {
+        let (_server, client) = UnixStream::pair().unwrap();
+        let transport =
+            FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_5,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner-7".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(1),
+        };
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated,
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [9; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        let mut projection = ControlProjection::default();
+        assert_eq!(
+            session.auth_status(&mut projection, "provider".into()),
+            Err(TransportError::NotNegotiated)
+        );
+        assert_eq!(
+            session.enroll_auth(
+                &mut projection,
+                "provider".into(),
+                "a".repeat(64),
+                "b".repeat(64),
+                "key".into(),
+            ),
+            Err(TransportError::NotNegotiated)
+        );
+        assert_eq!(
+            session.estimate_recording_campaign(
+                &mut projection,
+                "provider".into(),
+                "model".into(),
+                vec!["agent".into()],
+                vec!["workload".into()],
+            ),
+            Err(TransportError::NotNegotiated)
+        );
+        assert_eq!(
+            session.progress_recording_campaign(&mut projection, "campaign".into()),
+            Err(TransportError::NotNegotiated)
+        );
+        assert_eq!(
+            session.execute_recording_campaign(&mut projection, "campaign".into(), "key".into(),),
+            Err(TransportError::Projection)
+        );
+    }
 }
