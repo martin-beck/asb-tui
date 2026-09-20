@@ -468,8 +468,16 @@ impl WorkspaceState {
         if self.screen == Screen::Wizard {
             return match key.code {
                 KeyCode::Enter => {
+                    let agent_selected = self.wizard.catalog().is_some_and(|catalog| {
+                        catalog.kind() == crate::wizard_catalog::OptionKind::Agent
+                            && !catalog
+                                .selected_ids(crate::wizard_catalog::OptionKind::Agent)
+                                .is_empty()
+                    });
                     let event = if self.wizard.step() == wizard::Step::Review {
                         FormalEvent::Complete
+                    } else if agent_selected {
+                        FormalEvent::Next
                     } else if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) {
                         FormalEvent::CatalogSelect
                     } else {
@@ -478,6 +486,7 @@ impl WorkspaceState {
                     if self.wizard_formal.apply(event.clone()).is_ok() {
                         self.wizard = self.wizard_formal.wizard().clone();
                         if matches!(event, FormalEvent::CatalogSelect)
+                            && !agent_selected
                             && self.wizard_formal.apply(FormalEvent::Next).is_ok()
                         {
                             self.wizard = self.wizard_formal.wizard().clone();
@@ -501,6 +510,28 @@ impl WorkspaceState {
                 {
                     let _ = self.wizard_formal.apply(FormalEvent::CatalogMove(1));
                     self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char(' ')
+                    if self.wizard.step() == wizard::Step::Agent
+                        && self.wizard.catalog().is_some() =>
+                {
+                    if self.wizard_formal.apply(FormalEvent::CatalogSelect).is_ok() {
+                        self.wizard = self.wizard_formal.wizard().clone();
+                    }
+                    UiAction::None
+                }
+                KeyCode::Char('a')
+                    if self.wizard.step() == wizard::Step::Agent
+                        && self.wizard.catalog().is_some() =>
+                {
+                    if self
+                        .wizard_formal
+                        .apply(FormalEvent::CatalogSelectAllAgents)
+                        .is_ok()
+                    {
+                        self.wizard = self.wizard_formal.wizard().clone();
+                    }
                     UiAction::None
                 }
                 KeyCode::Esc => {

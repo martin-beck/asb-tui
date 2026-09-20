@@ -123,6 +123,8 @@ pub struct WizardCatalogState {
     kind: OptionKind,
     cursor: usize,
     query: String,
+    selected_agents: Vec<String>,
+    all_agents: bool,
     selected_agent: Option<String>,
     selected_provider: Option<String>,
     selected_model: Option<String>,
@@ -135,6 +137,8 @@ impl WizardCatalogState {
             kind,
             cursor: 0,
             query: String::new(),
+            selected_agents: Vec::new(),
+            all_agents: false,
             selected_agent: None,
             selected_provider: None,
             selected_model: None,
@@ -173,6 +177,20 @@ impl WizardCatalogState {
             OptionKind::Model => self.selected_model.as_deref(),
         }
     }
+    /// IDs selected for a catalog section. Agent selection may contain more
+    /// than one entry; provider and model selections remain single-valued.
+    #[must_use]
+    pub fn selected_ids(&self, kind: OptionKind) -> Vec<&str> {
+        match kind {
+            OptionKind::Agent => self.selected_agents.iter().map(String::as_str).collect(),
+            OptionKind::Provider => self.selected_provider.as_deref().into_iter().collect(),
+            OptionKind::Model => self.selected_model.as_deref().into_iter().collect(),
+        }
+    }
+    #[must_use]
+    pub const fn all_agents_selected(&self) -> bool {
+        self.all_agents
+    }
     #[must_use]
     pub fn visible_options(&self) -> Vec<&WizardOption> {
         let query = self.query.to_ascii_lowercase();
@@ -182,12 +200,15 @@ impl WizardCatalogState {
             .filter(|option| {
                 let compatible = match self.kind {
                     OptionKind::Agent => true,
-                    OptionKind::Provider => self.selected_agent.as_deref().is_some_and(|id| {
-                        option
-                            .compatible_ids
-                            .iter()
-                            .any(|candidate| candidate == id)
-                    }),
+                    OptionKind::Provider => {
+                        !self.selected_agents.is_empty()
+                            && self.selected_agents.iter().all(|id| {
+                                option
+                                    .compatible_ids
+                                    .iter()
+                                    .any(|candidate| candidate == id)
+                            })
+                    }
                     OptionKind::Model => self.selected_provider.as_deref().is_some_and(|id| {
                         option
                             .compatible_ids
@@ -239,6 +260,57 @@ impl WizardCatalogState {
         Ok(())
     }
 
+    /// Toggle the focused agent without changing provider/model choices. A
+    /// provider is shown only when it supports every selected agent.
+    pub fn toggle_agent_cursor(&mut self) -> Result<(), String> {
+        if self.kind != OptionKind::Agent {
+            return Err("agent multi-selection is only available on the agent step".into());
+        }
+        let option_id = self
+            .visible_options()
+            .get(self.cursor)
+            .copied()
+            .ok_or_else(|| "no wizard catalog option is visible".to_owned())?;
+        if !option_id.available {
+            return Err("wizard catalog option is unavailable".into());
+        }
+        let option_id = option_id.id.clone();
+        self.all_agents = false;
+        if let Some(index) = self.selected_agents.iter().position(|id| id == &option_id) {
+            self.selected_agents.remove(index);
+        } else {
+            self.selected_agents.push(option_id);
+            self.selected_agents.sort();
+        }
+        self.selected_agent = self.selected_agents.first().cloned();
+        self.selected_provider = None;
+        self.selected_model = None;
+        Ok(())
+    }
+
+    /// Select every available agent in the authenticated catalog. This keeps
+    /// the meaning of “all agents” explicit and bounded to the catalog.
+    pub fn select_all_agents(&mut self) -> Result<(), String> {
+        if self.kind != OptionKind::Agent {
+            return Err("all-agent selection is only available on the agent step".into());
+        }
+        self.selected_agents = self
+            .catalog
+            .options(OptionKind::Agent)
+            .iter()
+            .filter(|option| option.available)
+            .map(|option| option.id.clone())
+            .collect();
+        if self.selected_agents.is_empty() {
+            return Err("no available agents are present in the catalog".into());
+        }
+        self.all_agents = true;
+        self.selected_agent = self.selected_agents.first().cloned();
+        self.selected_provider = None;
+        self.selected_model = None;
+        Ok(())
+    }
+
     #[must_use]
     pub fn selected_for_active_kind(&self) -> Option<&str> {
         self.selected(self.kind)
@@ -247,6 +319,8 @@ impl WizardCatalogState {
     fn set_selected(&mut self, id: String) {
         match self.kind {
             OptionKind::Agent => {
+                self.selected_agents = vec![id.clone()];
+                self.all_agents = false;
                 self.selected_agent = Some(id);
                 self.selected_provider = None;
                 self.selected_model = None;
@@ -403,5 +477,43 @@ mod tests {
         state.select_cursor().unwrap();
         state.set_kind(OptionKind::Model);
         assert_eq!(state.visible_options()[0].id, "model-a");
+    }
+
+    #[test]
+    fn agent_picker_supports_explicit_multi_and_all_selection() {
+        let agents = vec![
+            WizardOption::new("agent-a", "Agent A", true).unwrap(),
+            WizardOption::new("agent-b", "Agent B", true).unwrap(),
+        ];
+        let providers = vec![
+            WizardOption::new("shared", "Shared", true)
+                .unwrap()
+                .compatible_with(vec!["agent-a".into(), "agent-b".into()])
+                .unwrap(),
+            WizardOption::new("agent-a-only", "Agent A only", true)
+                .unwrap()
+                .compatible_with(vec!["agent-a".into()])
+                .unwrap(),
+        ];
+        let mut state = WizardCatalogState::new(
+            WizardCatalog::new(agents, providers, vec![]).unwrap(),
+            OptionKind::Agent,
+        );
+        state.toggle_agent_cursor().unwrap();
+        state.move_cursor(1);
+        state.toggle_agent_cursor().unwrap();
+        assert_eq!(
+            state.selected_ids(OptionKind::Agent),
+            ["agent-a", "agent-b"]
+        );
+        state.set_kind(OptionKind::Provider);
+        assert_eq!(state.visible_options()[0].id, "shared");
+        state.set_kind(OptionKind::Agent);
+        state.select_all_agents().unwrap();
+        assert!(state.all_agents_selected());
+        assert_eq!(
+            state.selected_ids(OptionKind::Agent),
+            ["agent-a", "agent-b"]
+        );
     }
 }

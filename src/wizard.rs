@@ -151,11 +151,38 @@ impl Wizard {
             .catalog
             .as_mut()
             .ok_or_else(|| WizardError::Catalog("wizard catalog is unavailable".into()))?;
+        if catalog.kind() == OptionKind::Agent {
+            catalog
+                .toggle_agent_cursor()
+                .map_err(WizardError::Catalog)?;
+            let value = catalog
+                .selected_ids(OptionKind::Agent)
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(",");
+            return self.set_value(value);
+        }
         catalog.select_cursor().map_err(WizardError::Catalog)?;
         let value = catalog
             .selected_for_active_kind()
             .unwrap_or_default()
             .to_owned();
+        self.set_value(value)
+    }
+
+    /// Select every available agent in the authenticated catalog and mirror
+    /// the canonical IDs into the backend-facing draft field.
+    pub fn select_all_agents(&mut self) -> Result<(), WizardError> {
+        let catalog = self
+            .catalog
+            .as_mut()
+            .ok_or_else(|| WizardError::Catalog("wizard catalog is unavailable".into()))?;
+        catalog.select_all_agents().map_err(WizardError::Catalog)?;
+        let value = catalog
+            .selected_ids(OptionKind::Agent)
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(",");
         self.set_value(value)
     }
 
@@ -248,6 +275,7 @@ pub enum FormalEvent {
     CatalogQuery(String),
     CatalogMove(isize),
     CatalogSelect,
+    CatalogSelectAllAgents,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -286,6 +314,7 @@ impl WizardFormalState {
             FormalEvent::CatalogQuery(_) => ("wizard_catalog_query", "wizard"),
             FormalEvent::CatalogMove(_) => ("wizard_catalog_move", "wizard"),
             FormalEvent::CatalogSelect => ("wizard_catalog_select", "wizard"),
+            FormalEvent::CatalogSelectAllAgents => ("wizard_catalog_select_all_agents", "wizard"),
         };
         let from = match next.route {
             StartupRoute::Wizard => "wizard",
@@ -305,6 +334,12 @@ impl WizardFormalState {
                 ["wizard_catalog_changed", "focus_reset"].as_slice()
             }
             "wizard_catalog_select" => [
+                "wizard_catalog_changed",
+                "wizard_draft_changed",
+                "focus_reset",
+            ]
+            .as_slice(),
+            "wizard_catalog_select_all_agents" => [
                 "wizard_catalog_changed",
                 "wizard_draft_changed",
                 "focus_reset",
@@ -338,6 +373,9 @@ impl WizardFormalState {
             }
             FormalEvent::CatalogSelect if next.route == StartupRoute::Wizard => {
                 next.wizard.select_catalog_cursor()?
+            }
+            FormalEvent::CatalogSelectAllAgents if next.route == StartupRoute::Wizard => {
+                next.wizard.select_all_agents()?
             }
             FormalEvent::Next if next.route == StartupRoute::Wizard => next.wizard.advance()?,
             FormalEvent::Back if next.route == StartupRoute::Wizard => next.wizard.back()?,
@@ -449,11 +487,26 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
             )),
             Line::from(step_prompt(wizard.step)),
             Line::from(format!("Search: {}", catalog.query())),
+            Line::from(if catalog.kind() == OptionKind::Agent {
+                format!(
+                    "Agents selected: {}{}",
+                    catalog.selected_ids(OptionKind::Agent).len(),
+                    if catalog.all_agents_selected() {
+                        " (all)"
+                    } else {
+                        ""
+                    }
+                )
+            } else {
+                "Choose one compatible option".into()
+            }),
             Line::from(format!("Element: {}", element_id(wizard.step))),
         ];
         for (index, option) in catalog.visible_options().into_iter().take(8).enumerate() {
             let cursor = catalog.cursor() == index;
-            let selected = catalog.selected_for_active_kind() == Some(option.id.as_str());
+            let selected = catalog
+                .selected_ids(catalog.kind())
+                .contains(&option.id.as_str());
             lines.push(Line::from(format!(
                 "{}{} {}",
                 if cursor { ">" } else { " " },
@@ -482,7 +535,12 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         regions[1],
     );
     frame.render_widget(
-        Paragraph::new("Enter next | Esc back | ? help | q cancel").style(accent),
+        Paragraph::new(if wizard.step == Step::Agent {
+            "Space select/unselect | a all agents | Enter continue | Esc back | q cancel"
+        } else {
+            "Enter select/continue | Esc back | ? help | q cancel"
+        })
+        .style(accent),
         regions[2],
     );
 }
