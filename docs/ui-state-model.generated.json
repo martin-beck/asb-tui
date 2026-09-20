@@ -96,6 +96,11 @@
       "key": "Enter"
     },
     {
+      "action": "wizard_catalog_select_all_agents",
+      "element": "wizard.agent",
+      "key": "a"
+    },
+    {
       "action": "wizard_back",
       "element": "navigation",
       "key": "Esc"
@@ -538,6 +543,16 @@
     },
     {
       "event": "wizard_catalog_select",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_catalog_changed",
+        "wizard_draft_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "wizard_catalog_select_all_agents",
       "from": "wizard",
       "to": "wizard",
       "effects": [
