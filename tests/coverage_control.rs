@@ -112,6 +112,24 @@ fn response_validation_rejects_public_failure_and_mismatch_shapes() {
 }
 
 #[test]
+fn response_validation_covers_simple_operation_results() {
+    let limits = ControlLimits::default();
+    let cases = [
+        json!({"kind":"acknowledged","value":{"accepted":true}}),
+        json!({"kind":"plan","value":{"plan_id":"plan","plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}),
+        json!({"kind":"analysis","value":{"run_count":1,"analysis_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}),
+        json!({"kind":"artifact_metadata","value":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size_bytes":1,"sensitivity":"public"}}),
+        json!({"kind":"capabilities","value":{"validate_settings":true,"run_control":true,"repeat":true,"analysis":true,"events":true}}),
+    ];
+    for result in cases {
+        let response: ControlResponse = serde_json::from_value(json!({
+            "jsonrpc":"2.0", "id":7, "result":{"kind":"operation","value":{"request_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","result":result}}
+        })).unwrap();
+        assert!(response.validate(limits).is_ok());
+    }
+}
+
+#[test]
 fn client_limits_versions_identity_and_frame_boundaries_are_closed() {
     let bad = ClientLimits {
         max_frame_bytes: 0,
