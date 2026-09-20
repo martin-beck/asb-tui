@@ -3,7 +3,7 @@
   "model": "asb-tui.ui-state",
   "initial": "landing",
   "layouts": ["wide", "compact", "tiny"],
-  "state_fields": ["route", "focus", "hover", "query", "selection", "measurement_catalog", "connection", "capabilities", "provider_catalog", "live_setup_catalog", "configuration", "recording_campaign", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "configuration_persistence"],
+  "state_fields": ["route", "focus", "hover", "query", "selection", "measurement_catalog", "connection", "capabilities", "provider_catalog", "live_setup_catalog", "configuration", "auth_status", "recording_campaign", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "configuration_persistence"],
   "bindings": [
     {"action":"quit","element":"navigation","key":"q"},
     {"action":"open_measurement_selection","element":"landing.primary","key":"2"},
@@ -121,7 +121,7 @@
     {"id":"measures.group_toggle","text":"Select or clear every visible measure in this group."},
     {"id":"configuration.entry","text":"Edit this setting and press Ctrl-S to apply the validated local draft through the local configuration store."},
     {"id":"configuration.search","text":"Type to find a configuration setting by name or description."},
-    {"id":"configuration.control_status","text":"Inspect provider model and recording readiness reported by the authenticated runner."},
+    {"id":"configuration.control_status","text":"Inspect provider model, credential-free authentication status, and recording readiness reported by the authenticated runner."},
     {"id":"run.status","text":"Shows whether the benchmark is idle, running, complete, or failed."},
     {"id":"run.start","text":"Start a benchmark using the current configuration and measures."},
     {"id":"run.cancel","text":"Stop the active benchmark while preserving its partial record."},

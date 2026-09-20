@@ -8,9 +8,9 @@
 //! typed JSON-RPC boundary.
 
 use crate::control_codec::{
-    self, CodecError, ConfigurationApplyParams, ConfigurationSelection, ControlCall, ControlLimits,
-    ControlRequest, ControlResponse, ControlSuccess, NegotiateParams, PageParams, RequestId,
-    Revision,
+    self, AuthEnrollParams, AuthRevokeParams, AuthRotateParams, AuthStatusParams, CodecError,
+    ConfigurationApplyParams, ConfigurationSelection, ControlCall, ControlLimits, ControlRequest,
+    ControlResponse, ControlSuccess, NegotiateParams, PageParams, RequestId, Revision,
 };
 use crate::{
     broker_adoption::{AdoptionError, BrokerGeneration, ReceivedChannel},
@@ -120,6 +120,7 @@ impl FramedControlStream {
                 versions: [
                     control_codec::V1_8,
                     control_codec::V1_7,
+                    control_codec::V1_6,
                     control_codec::V1_5,
                     control_codec::V1_4,
                     control_codec::V1_3,
@@ -144,6 +145,7 @@ impl FramedControlStream {
             || ![
                 control_codec::V1_8,
                 control_codec::V1_7,
+                control_codec::V1_6,
                 control_codec::V1_5,
                 control_codec::V1_4,
                 control_codec::V1_3,
@@ -417,6 +419,110 @@ impl AuthenticatedBrokerSession {
             .map_err(|_| TransportError::Projection)
     }
 
+    /// Enroll a provider through the runner-owned credential resolver. The
+    /// frontend accepts only endpoint and locator digests; a raw API key has
+    /// no representable type and therefore cannot cross this boundary.
+    pub fn enroll_auth(
+        &mut self,
+        projection: &mut ControlProjection,
+        provider: String,
+        endpoint_identity_sha256: String,
+        credential_locator_sha256: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.auth_mutation(
+            projection,
+            ControlCall::AuthEnroll(AuthEnrollParams {
+                provider,
+                endpoint_identity_sha256,
+                credential_locator_sha256,
+                idempotency_key,
+            }),
+            9_000_000_101,
+        )
+    }
+
+    /// Rotate the provider's resolver reference without receiving or sending
+    /// the underlying credential value.
+    pub fn rotate_auth(
+        &mut self,
+        projection: &mut ControlProjection,
+        provider: String,
+        credential_locator_sha256: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.auth_mutation(
+            projection,
+            ControlCall::AuthRotate(AuthRotateParams {
+                provider,
+                credential_locator_sha256,
+                idempotency_key,
+            }),
+            9_000_000_102,
+        )
+    }
+
+    /// Revoke enrollment. This only changes runner-owned enrollment state and
+    /// does not claim that a provider request was authorized.
+    pub fn revoke_auth(
+        &mut self,
+        projection: &mut ControlProjection,
+        provider: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.auth_mutation(
+            projection,
+            ControlCall::AuthRevoke(AuthRevokeParams {
+                provider,
+                idempotency_key,
+            }),
+            9_000_000_103,
+        )
+    }
+
+    /// Read public enrollment state for a provider. A returned status is
+    /// intentionally not interpreted as endpoint reachability or authorization.
+    pub fn auth_status(
+        &mut self,
+        projection: &mut ControlProjection,
+        provider: String,
+    ) -> Result<(), TransportError> {
+        if self.negotiated.version < control_codec::CONTROL_AUTH_V1 {
+            return Err(TransportError::NotNegotiated);
+        }
+        let request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: RequestId(9_000_000_104),
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call: ControlCall::AuthStatus(AuthStatusParams { provider }),
+        };
+        let response = self.transport.round_trip(&request)?;
+        projection
+            .apply(&request, &response, self.negotiated.limits)
+            .map_err(|_| TransportError::Projection)
+    }
+
+    fn auth_mutation(
+        &mut self,
+        projection: &mut ControlProjection,
+        call: ControlCall,
+        id: u64,
+    ) -> Result<(), TransportError> {
+        if self.negotiated.version < control_codec::CONTROL_AUTH_V1 {
+            return Err(TransportError::NotNegotiated);
+        }
+        let request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: RequestId(id),
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call,
+        };
+        let response = self.transport.round_trip(&request)?;
+        projection
+            .apply(&request, &response, self.negotiated.limits)
+            .map_err(|_| TransportError::Projection)
+    }
+
     /// Poll the bounded read-only bootstrap state used by the workspace.
     /// Projection happens on a clone and is committed only after all three
     /// responses validate, so a malformed, stale, or failed response cannot
@@ -538,6 +644,26 @@ impl AuthenticatedBrokerSession {
                 next.apply(&request, &response, limits)
                     .map_err(|_| TransportError::Projection)?;
             }
+        }
+        // Authentication status is a separate, credential-free read. Only
+        // ask for it after configuration has named a provider; an absent
+        // status is deliberately represented as unavailable in the UI.
+        if self.negotiated.version >= control_codec::CONTROL_AUTH_V1
+            && let Some(provider) = next
+                .snapshot()
+                .configuration
+                .and_then(|configuration| configuration.provider_id)
+        {
+            let id = 9_000_000_104;
+            let request = ControlRequest {
+                jsonrpc: control_codec::JSONRPC_VERSION.into(),
+                id: RequestId(id),
+                timeout_ms: limits.max_timeout_ms,
+                call: ControlCall::AuthStatus(control_codec::AuthStatusParams { provider }),
+            };
+            let response = self.transport.round_trip(&request)?;
+            next.apply(&request, &response, limits)
+                .map_err(|_| TransportError::Projection)?;
         }
         *projection = next;
         Ok(())
