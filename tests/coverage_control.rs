@@ -113,14 +113,18 @@ fn response_validation_rejects_public_failure_and_mismatch_shapes() {
 
 #[test]
 fn client_limits_versions_identity_and_frame_boundaries_are_closed() {
-    let mut bad = ClientLimits::default();
-    bad.max_frame_bytes = 0;
+    let bad = ClientLimits {
+        max_frame_bytes: 0,
+        ..ClientLimits::default()
+    };
     assert_eq!(
         bad.validate(),
         Err(ClientError::InvalidLimit("max_frame_bytes"))
     );
-    bad = ClientLimits::default();
-    bad.max_timeout_ms = 0;
+    let bad = ClientLimits {
+        max_timeout_ms: 0,
+        ..ClientLimits::default()
+    };
     assert!(bad.validate().is_err());
     assert!(
         ClientLimits::default()
