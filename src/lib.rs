@@ -23,6 +23,7 @@ pub mod identity_adapter;
 pub mod landing;
 pub mod lifecycle;
 pub mod live_projection;
+pub mod provider_catalog;
 pub mod release_channel;
 pub mod renderer;
 pub mod reports;
