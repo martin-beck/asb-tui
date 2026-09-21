@@ -483,6 +483,24 @@ impl AuthenticatedBrokerSession {
         )
     }
 
+    /// Submit a digest-only receipt returned by the approved local helper.
+    /// The helper output is parsed before this method is called, so the raw
+    /// credential never enters TUI state or the control frame.
+    pub fn enroll_auth_receipt(
+        &mut self,
+        projection: &mut ControlProjection,
+        receipt: crate::credential_helper::CredentialEnrollmentReceipt,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.enroll_auth(
+            projection,
+            receipt.provider,
+            receipt.endpoint_identity_sha256,
+            receipt.credential_locator_sha256,
+            idempotency_key,
+        )
+    }
+
     /// Rotate the provider's resolver reference without receiving or sending
     /// the underlying credential value.
     pub fn rotate_auth(
