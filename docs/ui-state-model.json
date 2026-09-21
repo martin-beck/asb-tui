@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "model": "asb-tui.ui-state",
+  "authentication_handoff": "Provider secrets are enrolled through an approved external keychain/helper; the wizard accepts only credential_reference:<sha256>.",
   "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable.",
   "initial": "landing",
   "layouts": ["wide", "compact", "tiny"],

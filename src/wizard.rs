@@ -563,7 +563,9 @@ const fn step_prompt(step: Step) -> &'static str {
         Step::Provider => "Choose the model provider.",
         Step::Model => "Choose the provider model.",
         Step::Configuration => "Review benchmark configuration defaults.",
-        Step::Authentication => "Select an existing authentication reference.",
+        Step::Authentication => {
+            "Use the provider's approved keychain/helper, then enter credential_reference:<sha256>; never paste an API key here."
+        }
         Step::Recording => "Choose whether to record benchmark activity.",
         Step::Replay => "Choose the offline replay policy.",
         Step::Review => "Review all choices before continuing.",
@@ -593,5 +595,13 @@ mod tests {
     fn startup_route_is_fail_closed_and_manual_ready() {
         assert_eq!(startup_route(false), StartupRoute::Wizard);
         assert_eq!(startup_route(true), StartupRoute::Landing);
+    }
+
+    #[test]
+    fn authentication_step_explains_secure_external_enrollment() {
+        let prompt = step_prompt(Step::Authentication);
+        assert!(prompt.contains("approved keychain/helper"));
+        assert!(prompt.contains("credential_reference:<sha256>"));
+        assert!(prompt.contains("never paste an API key"));
     }
 }
