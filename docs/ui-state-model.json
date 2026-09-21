@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "model": "asb-tui.ui-state",
+  "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable.",
   "initial": "landing",
   "layouts": ["wide", "compact", "tiny"],
   "state_fields": ["route", "focus", "hover", "query", "selection", "measurement_catalog", "connection", "capabilities", "provider_catalog", "provider_catalog_generation", "live_setup_catalog", "configuration", "auth_status", "recording_campaign", "recording_estimate", "recording_campaign_lifecycle", "recording_dispatch_action", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "configuration_persistence"],
