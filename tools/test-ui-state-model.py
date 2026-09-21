@@ -151,6 +151,10 @@ class UiStateModelTests(unittest.TestCase):
         generated = json.loads(MODULE.GENERATED.read_text(encoding="utf-8"))
         self.assertEqual(MODULE.canonical(generated), MODULE.canonical(self.model))
 
+    def test_auth_status_is_read_before_wizard_configuration_apply(self):
+        self.assertIn("auth_status_after_enrollment", self.model)
+        self.assertIn("runner-authored status", self.model["auth_status_after_enrollment"])
+
     def test_change_ownership_requires_model_and_focused_tests(self):
         self.assertTrue({"src/startup.rs", "src/wizard.rs"}.issubset(MODULE.UI_OWNERS))
         for owner in MODULE.UI_OWNERS:
