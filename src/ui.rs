@@ -294,6 +294,29 @@ impl WorkspaceState {
                     Some(value["credential_reference:".len()..].to_owned()),
                 )
             }
+            value
+                if value
+                    .strip_prefix("credential_helper:")
+                    .is_some_and(|payload| {
+                        let parts: Vec<_> = payload.split(':').collect();
+                        parts.len() == 2
+                            && parts.iter().all(|digest| {
+                                digest.len() == 64
+                                    && digest
+                                        .chars()
+                                        .all(|character| character.is_ascii_hexdigit())
+                            })
+                    }) =>
+            {
+                let locator = value
+                    .strip_prefix("credential_helper:")
+                    .and_then(|payload| payload.split(':').nth(1))
+                    .expect("validated helper receipt");
+                (
+                    ProviderAuthMethod::CredentialReference,
+                    Some(locator.to_owned()),
+                )
+            }
             _ => {
                 return Err(
                     "authentication must be none, local_daemon, or a credential reference digest",
@@ -307,6 +330,28 @@ impl WorkspaceState {
             auth_method,
             credential_reference_sha256,
         })
+    }
+
+    /// Decode the optional digest-only helper receipt embedded in the wizard
+    /// auth field. Raw credentials cannot match this syntax.
+    pub fn wizard_credential_helper_receipt(
+        values: &[String; 7],
+    ) -> Result<Option<crate::credential_helper::CredentialEnrollmentReceipt>, &'static str> {
+        let value = values[4].trim();
+        let Some(payload) = value.strip_prefix("credential_helper:") else {
+            return Ok(None);
+        };
+        let Some((endpoint, locator)) = payload.split_once(':') else {
+            return Err("credential helper receipt must contain endpoint and locator digests");
+        };
+        let json = serde_json::json!({
+            "provider": values[1].trim(),
+            "endpoint_identity_sha256": endpoint,
+            "credential_locator_sha256": locator,
+        });
+        crate::credential_helper::CredentialEnrollmentReceipt::decode(json.to_string().as_bytes())
+            .map(Some)
+            .map_err(|_| "credential helper receipt is invalid")
     }
 
     /// The bounded text currently visible in the focused configuration editor.
@@ -2143,6 +2188,25 @@ mod tests {
         let mut invalid = values;
         invalid[4] = "sk-live-secret".into();
         assert!(WorkspaceState::wizard_configuration_selection(&invalid).is_err());
+    }
+
+    #[test]
+    fn wizard_helper_receipt_enrolls_only_digest_metadata() {
+        let values = [
+            "codex".into(),
+            "openai".into(),
+            "gpt-5.2".into(),
+            "shared".into(),
+            format!("credential_helper:{}:{}", "a".repeat(64), "b".repeat(64)),
+            "record".into(),
+            "offline".into(),
+        ];
+        let receipt = WorkspaceState::wizard_credential_helper_receipt(&values)
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.provider, "openai");
+        assert_eq!(receipt.endpoint_identity_sha256, "a".repeat(64));
+        assert_eq!(receipt.credential_locator_sha256, "b".repeat(64));
     }
 
     #[test]

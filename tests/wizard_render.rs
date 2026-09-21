@@ -87,7 +87,7 @@ fn wizard_render_has_stable_context_and_tiny_fallback() {
 fn authentication_handoff_is_explicitly_credential_free() {
     let source = std::fs::read_to_string("src/wizard.rs").expect("wizard source");
     assert!(source.contains("approved keychain/helper"));
-    assert!(source.contains("credential_reference:<sha256>"));
+    assert!(source.contains("credential_helper:<endpoint_sha256>:<locator_sha256>"));
     assert!(source.contains("never paste an API key"));
 }
 

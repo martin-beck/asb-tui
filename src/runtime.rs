@@ -445,6 +445,18 @@ fn run_interactive_loop(
                     ) {
                         let selection = ui::WorkspaceState::wizard_configuration_selection(&values)
                             .map_err(|reason| RuntimeError(io::Error::other(reason)))?;
+                        if let Some(receipt) =
+                            ui::WorkspaceState::wizard_credential_helper_receipt(&values)
+                                .map_err(|reason| RuntimeError(io::Error::other(reason)))?
+                        {
+                            control
+                                .enroll_auth_receipt(
+                                    projection,
+                                    receipt,
+                                    format!("asb-tui-auth-{}", selection.provider_id),
+                                )
+                                .map_err(|error| RuntimeError(io::Error::other(error)))?;
+                        }
                         control
                             .apply_configuration(projection, selection)
                             .map_err(|error| RuntimeError(io::Error::other(error)))?;
