@@ -68,7 +68,11 @@ fn recording_dispatch_actions_are_declared_in_the_formal_model() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
     let fields = model["state_fields"].as_array().unwrap();
-    assert!(fields.iter().any(|field| field == "recording_dispatch_action"));
+    assert!(
+        fields
+            .iter()
+            .any(|field| field == "recording_dispatch_action")
+    );
     let bindings = model["bindings"].as_array().unwrap();
     for action in [
         "refresh_provider_catalog",
