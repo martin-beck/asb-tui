@@ -427,6 +427,39 @@ impl AuthenticatedBrokerSession {
             .map_err(|_| TransportError::Projection)
     }
 
+    /// Refresh the runner-owned provider/model catalog. The known generation
+    /// is sent as a cache fence; projection rejects an older response.
+    pub fn refresh_provider_catalog(
+        &mut self,
+        projection: &mut ControlProjection,
+    ) -> Result<(), TransportError> {
+        if self.negotiated.version < control_codec::V1_7 {
+            return Err(TransportError::NotNegotiated);
+        }
+        let known_generation = projection
+            .snapshot()
+            .provider_catalog
+            .as_ref()
+            .map(|catalog| catalog.generation);
+        let request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: RequestId(9_000_000_002),
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call: ControlCall::ProviderCatalog(control_codec::ProviderCatalogRequest {
+                action: control_codec::ProviderCatalogAction::Refresh,
+                runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                known_generation,
+            }),
+        };
+        let response = self.transport.round_trip(&request)?;
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
+        projection
+            .apply(&request, &response, self.negotiated.limits)
+            .map_err(|_| TransportError::Projection)
+    }
+
     /// Enroll a provider through the runner-owned credential resolver. The
     /// frontend accepts only endpoint and locator digests; a raw API key has
     /// no representable type and therefore cannot cross this boundary.

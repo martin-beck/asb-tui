@@ -32,6 +32,7 @@
     {"path":"src/control_transport.rs","reason":"Authenticated transport, bounded framing, protocol-version gating, credential-free setup/auth mutations, recording lifecycle mutations, generation fencing, status reads, and round-trip tests only; it has no renderer ownership.","expires":"2027-12-31"},
     {"path":"src/delegated.rs","reason":"Lifecycle delegation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/identity_adapter.rs","reason":"Identity validation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/provider_catalog.rs","reason":"Renderer-neutral provider catalog refresh, scoped-default validation, and credential-reference-only option mapping; it has no renderer ownership.","expires":"2027-12-31"},
     {"path":"src/lib.rs","reason":"Module exports only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/lifecycle.rs","reason":"Install lifecycle only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/main.rs","reason":"CLI bootstrap only; it has no UI state or projection ownership.","expires":"2027-12-31"},

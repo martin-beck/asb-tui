@@ -48,6 +48,7 @@ pub struct LiveSnapshot {
 pub enum ProjectionError {
     InvalidResponse,
     UnexpectedResult,
+    StaleProviderCatalog,
     StaleRun,
     TooManyRuns,
 }
@@ -57,6 +58,7 @@ impl fmt::Display for ProjectionError {
         f.write_str(match self {
             Self::InvalidResponse => "invalid control response",
             Self::UnexpectedResult => "response does not match projection request",
+            Self::StaleProviderCatalog => "provider catalog revision moved backwards",
             Self::StaleRun => "run revision moved backwards",
             Self::TooManyRuns => "projected run limit exceeded",
         })
@@ -167,6 +169,20 @@ impl ControlProjection {
                     .negotiated
                     .as_ref()
                     .is_none_or(|session| session.version < crate::control_codec::V1_7)
+                {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                if self
+                    .provider_catalog
+                    .as_ref()
+                    .is_some_and(|current| value.generation.0 < current.generation.0)
+                {
+                    return Err(ProjectionError::StaleProviderCatalog);
+                }
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_some_and(|session| value.runner_instance_id != session.runner_instance_id)
                 {
                     return Err(ProjectionError::UnexpectedResult);
                 }
@@ -490,7 +506,7 @@ mod tests {
         });
         let catalog = ProviderCatalog {
             runner_instance_id: "runner-1".into(),
-            generation: Revision(1),
+            generation: Revision(2),
             catalog_sha256: "a".repeat(64),
             providers: vec![ProviderCatalogEntry {
                 provider_id: "openai".into(),
@@ -508,7 +524,7 @@ mod tests {
         projection
             .apply(
                 &request(catalog_call, 2),
-                &response(2, ControlResult::ProviderCatalog(catalog)),
+                &response(2, ControlResult::ProviderCatalog(catalog.clone())),
                 ControlLimits::default(),
             )
             .unwrap();
@@ -520,6 +536,23 @@ mod tests {
                 .providers
                 .len(),
             1
+        );
+        let mut stale_catalog = catalog;
+        stale_catalog.generation = Revision(1);
+        assert_eq!(
+            projection.apply(
+                &request(
+                    ControlCall::ProviderCatalog(ProviderCatalogRequest {
+                        action: ProviderCatalogAction::Refresh,
+                        runner_instance_id: "runner-1".into(),
+                        known_generation: Some(Revision(1)),
+                    }),
+                    3,
+                ),
+                &response(3, ControlResult::ProviderCatalog(stale_catalog)),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::StaleProviderCatalog)
         );
     }
 
