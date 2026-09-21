@@ -456,6 +456,9 @@ fn run_interactive_loop(
                                     format!("asb-tui-auth-{}", selection.provider_id),
                                 )
                                 .map_err(|error| RuntimeError(io::Error::other(error)))?;
+                            control
+                                .auth_status(projection, selection.provider_id.clone())
+                                .map_err(|error| RuntimeError(io::Error::other(error)))?;
                         }
                         control
                             .apply_configuration(projection, selection)
