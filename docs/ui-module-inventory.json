@@ -10,7 +10,7 @@
     {"path":"src/live_projection.rs","kind":"projection","responsibility":"Authenticated run, agent, provider, configuration, credential-free auth status, recording estimate, and recording-campaign lifecycle projection with generation fencing"},
     {"path":"src/renderer.rs","kind":"rendering"},
     {"path":"src/reports.rs","kind":"projection"},
-    {"path":"src/runtime.rs","kind":"terminal","responsibility":"Terminal lifecycle, digest-only helper receipt enrollment, and authenticated wizard-configuration mutation dispatch"},
+    {"path":"src/runtime.rs","kind":"terminal","responsibility":"Terminal lifecycle, digest-only helper receipt enrollment, runner-authored auth-status projection, and authenticated wizard-configuration mutation dispatch"},
     {"path":"src/selection.rs","kind":"state"},
     {"path":"src/shell.rs","kind":"state"},
     {"path":"src/startup.rs","kind":"startup"},
