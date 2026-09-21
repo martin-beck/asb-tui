@@ -149,8 +149,14 @@ pub fn dispatch_control_action(
     projection: &mut ControlProjection,
     idempotency_key: String,
 ) -> Result<crate::recording_dispatch::RecordingDispatchOutcome, RuntimeError> {
-    crate::recording_dispatch::dispatch(action, recording, session, projection, idempotency_key)
-        .map_err(|_| RuntimeError(io::Error::other("control action failed")))
+    crate::recording_dispatch::dispatch_with_backend(
+        action,
+        recording,
+        session,
+        projection,
+        idempotency_key,
+    )
+    .map_err(|_| RuntimeError(io::Error::other("control action failed")))
 }
 
 /// Run the interactive loop after one authenticated control refresh. The

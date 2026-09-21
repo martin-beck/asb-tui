@@ -168,6 +168,7 @@ pub enum HelpError {
 #[cfg(test)]
 mod tests {
     use super::document_help_text;
+    use crate::actions::UiAction;
 
     #[test]
     fn document_catalog_resolves_known_elements_and_rejects_unknown_ids() {
@@ -203,6 +204,15 @@ mod tests {
         ] {
             let text = document_help_text(id).expect("authored help entry");
             assert!(text.split_whitespace().count() >= 4);
+        }
+    }
+
+    #[test]
+    fn document_catalog_covers_every_registered_action() {
+        for action in UiAction::ALL {
+            let id = format!("action.{}", action.id());
+            let text = document_help_text(&id).expect("registered action help entry");
+            assert!(text.split_whitespace().count() >= 4, "short help for {id}");
         }
     }
 }

@@ -95,6 +95,7 @@ impl TryFrom<&crate::control_codec::RecordingCampaignLifecycle> for CampaignObse
         lifecycle: &crate::control_codec::RecordingCampaignLifecycle,
     ) -> Result<Self, Self::Error> {
         let phase = match lifecycle.state.as_str() {
+            "planned" => CampaignPhase::Planned,
             "recording" => CampaignPhase::Recording,
             "needs_reconciliation" => CampaignPhase::NeedsReconciliation,
             "complete" => CampaignPhase::Complete,
