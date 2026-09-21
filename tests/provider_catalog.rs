@@ -31,7 +31,7 @@ fn agents() -> AgentCatalog {
         agents: vec![AgentCatalogEntry {
             agent_id: "agent-a".into(),
             target: target(),
-            package: AgentPackage {
+            package: Some(AgentPackage {
                 package_id: "pkg".into(),
                 version: "1.0.0".into(),
                 sha256: "b".repeat(64),
@@ -40,13 +40,13 @@ fn agents() -> AgentCatalog {
                     key_id: "key-1".into(),
                     principal: "asb-release".into(),
                 },
-            },
-            provenance: AgentProvenance {
+            }),
+            provenance: Some(AgentProvenance {
                 source_revision: "d".repeat(40),
                 manifest_sha256: "e".repeat(64),
                 sbom_sha256: "f".repeat(64),
                 license_ref: "MIT".into(),
-            },
+            }),
             capabilities: vec!["bench".into()],
             availability: AgentAvailability::Available,
         }],

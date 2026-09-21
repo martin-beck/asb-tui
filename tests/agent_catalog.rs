@@ -117,7 +117,7 @@ fn catalog_validation_rejects_bounds_and_noncanonical_metadata() {
     let entry = |id: &str| AgentCatalogEntry {
         agent_id: id.into(),
         target: target.clone(),
-        package: AgentPackage {
+        package: Some(AgentPackage {
             package_id: "pkg".into(),
             version: "1.0".into(),
             sha256: "a".repeat(64),
@@ -126,13 +126,13 @@ fn catalog_validation_rejects_bounds_and_noncanonical_metadata() {
                 key_id: "release-key-1".into(),
                 principal: "asb-release".into(),
             },
-        },
-        provenance: AgentProvenance {
+        }),
+        provenance: Some(AgentProvenance {
             source_revision: "c".repeat(40),
             manifest_sha256: "d".repeat(64),
             sbom_sha256: "e".repeat(64),
             license_ref: "MIT".into(),
-        },
+        }),
         capabilities: vec!["bench".into()],
         availability: AgentAvailability::Unavailable(
             asb_tui::agent_catalog::AgentUnavailableReason::PolicyDenied,
@@ -159,7 +159,11 @@ fn catalog_validation_rejects_bounds_and_noncanonical_metadata() {
     assert!(catalog.validate().is_err());
     catalog.agents[0].capabilities = vec![];
     assert!(catalog.validate().is_err());
-    catalog.agents[0].provenance.source_revision = "C".repeat(40);
+    catalog.agents[0]
+        .provenance
+        .as_mut()
+        .unwrap()
+        .source_revision = "C".repeat(40);
     assert!(catalog.validate().is_err());
 }
 
