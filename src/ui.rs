@@ -40,6 +40,7 @@ pub enum UiAction {
     None,
     Quit,
     Resize(u16, u16),
+    Control(crate::actions::UiAction),
 }
 
 /// Result of the local configuration save action.  A failed save never clears
@@ -621,6 +622,22 @@ impl WorkspaceState {
             return UiAction::None;
         }
         match key.code {
+            KeyCode::Char('f') if self.screen == Screen::Configuration => {
+                UiAction::Control(crate::actions::UiAction::RefreshProviderCatalog)
+            }
+            KeyCode::Char('e') if self.screen == Screen::Reports => {
+                UiAction::Control(crate::actions::UiAction::EstimateRecording)
+            }
+            KeyCode::Char('P') => UiAction::Control(crate::actions::UiAction::PlanRecording),
+            KeyCode::Char('C') => {
+                UiAction::Control(crate::actions::UiAction::ConfirmRecordingCapture)
+            }
+            KeyCode::Char('G') => UiAction::Control(crate::actions::UiAction::ProgressRecording),
+            KeyCode::Char('X') => UiAction::Control(crate::actions::UiAction::CancelRecording),
+            KeyCode::Char('Y') => UiAction::Control(crate::actions::UiAction::ReconcileRecording),
+            KeyCode::Char('o') => {
+                UiAction::Control(crate::actions::UiAction::ActivateOfflineDefault)
+            }
             KeyCode::Char('q') => UiAction::Quit,
             KeyCode::Char('?') | KeyCode::Char('h') => {
                 self.help = true;

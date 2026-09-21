@@ -32,11 +32,19 @@ pub enum UiAction {
     CancelRun,
     RefreshRuns,
     CompareRuns,
+    RefreshProviderCatalog,
+    EstimateRecording,
+    PlanRecording,
+    ConfirmRecordingCapture,
+    ProgressRecording,
+    CancelRecording,
+    ReconcileRecording,
+    ActivateOfflineDefault,
 }
 
 impl UiAction {
     /// Every action, in stable display order.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 25] = [
         Self::Quit,
         Self::GoBack,
         Self::OpenLanding,
@@ -54,6 +62,14 @@ impl UiAction {
         Self::CancelRun,
         Self::RefreshRuns,
         Self::CompareRuns,
+        Self::RefreshProviderCatalog,
+        Self::EstimateRecording,
+        Self::PlanRecording,
+        Self::ConfirmRecordingCapture,
+        Self::ProgressRecording,
+        Self::CancelRecording,
+        Self::ReconcileRecording,
+        Self::ActivateOfflineDefault,
     ];
 
     /// Stable machine-readable action identifier for recordings and help
@@ -77,6 +93,14 @@ impl UiAction {
             Self::CancelRun => "cancel_run",
             Self::RefreshRuns => "refresh_runs",
             Self::CompareRuns => "compare_runs",
+            Self::RefreshProviderCatalog => "refresh_provider_catalog",
+            Self::EstimateRecording => "estimate_recording",
+            Self::PlanRecording => "plan_recording",
+            Self::ConfirmRecordingCapture => "confirm_recording_capture",
+            Self::ProgressRecording => "progress_recording",
+            Self::CancelRecording => "cancel_recording",
+            Self::ReconcileRecording => "reconcile_recording",
+            Self::ActivateOfflineDefault => "activate_offline_default",
         }
     }
 }
@@ -209,6 +233,14 @@ const fn action_context_route(action: UiAction) -> Route {
         UiAction::FocusSearch => Route::Help,
         UiAction::ToggleAllMeasures | UiAction::ToggleMeasure => Route::MeasurementSelection,
         UiAction::StartRun | UiAction::CancelRun => Route::RunControl,
+        UiAction::EstimateRecording
+        | UiAction::PlanRecording
+        | UiAction::ConfirmRecordingCapture
+        | UiAction::ProgressRecording
+        | UiAction::CancelRecording
+        | UiAction::ReconcileRecording
+        | UiAction::ActivateOfflineDefault => Route::RunControl,
+        UiAction::RefreshProviderCatalog => Route::Configuration,
         UiAction::RefreshRuns => Route::RecentRuns,
         UiAction::CompareRuns => Route::Reports,
         _ => Route::Landing,
@@ -340,6 +372,62 @@ fn descriptor(
             ActionContext::Route(Route::Reports),
             None,
         ),
+        UiAction::RefreshProviderCatalog => (
+            KeyChord::Char('f'),
+            "Refresh providers",
+            "Refresh connected provider and model catalog",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
+        UiAction::EstimateRecording => (
+            KeyChord::Char('e'),
+            "Estimate capture",
+            "Estimate the selected recording workload matrix",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::PlanRecording => (
+            KeyChord::Char('P'),
+            "Plan capture",
+            "Create a bounded recording campaign plan",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::ConfirmRecordingCapture => (
+            KeyChord::Char('C'),
+            "Confirm capture",
+            "Explicitly authorize provider response capture",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::ProgressRecording => (
+            KeyChord::Char('G'),
+            "Capture progress",
+            "Refresh recording campaign progress",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::CancelRecording => (
+            KeyChord::Char('X'),
+            "Cancel capture",
+            "Cancel the active recording campaign",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::ReconcileRecording => (
+            KeyChord::Char('Y'),
+            "Reconcile capture",
+            "Reconcile an interrupted recording campaign",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::ActivateOfflineDefault => (
+            KeyChord::Char('o'),
+            "Use offline capture",
+            "Activate offline defaults after complete coverage",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
     };
     let relevant = match context {
         ActionContext::Global => true,
@@ -398,6 +486,18 @@ fn action_backend_status(
             Some(ActionDisabledReason::History)
         }
         UiAction::CompareRuns if !caps.analysis => Some(ActionDisabledReason::Analysis),
+        UiAction::RefreshProviderCatalog
+        | UiAction::EstimateRecording
+        | UiAction::PlanRecording
+        | UiAction::ConfirmRecordingCapture
+        | UiAction::ProgressRecording
+        | UiAction::CancelRecording
+        | UiAction::ReconcileRecording
+        | UiAction::ActivateOfflineDefault
+            if !caps.planning =>
+        {
+            Some(ActionDisabledReason::Planning)
+        }
         UiAction::ToggleAllMeasures | UiAction::ToggleMeasure if !caps.planning => {
             Some(ActionDisabledReason::Planning)
         }
@@ -438,7 +538,7 @@ mod tests {
                 .any(|d| d.action == UiAction::ToggleMeasure)
         );
         assert!(!descriptors.iter().any(|d| d.action == UiAction::StartRun));
-        assert_eq!(UiAction::ALL.len(), 17);
+        assert_eq!(UiAction::ALL.len(), 25);
         for action in UiAction::ALL {
             assert!(
                 ActionRegistry::search(action.id())

@@ -139,6 +139,20 @@ pub fn poll_authenticated_workspace(
     Ok(())
 }
 
+/// Dispatch a renderer-neutral provider/recording action through the
+/// authenticated control seam. The action model performs local fail-closed
+/// gating; transport remains authoritative for every resulting state.
+pub fn dispatch_control_action(
+    action: crate::actions::UiAction,
+    recording: &mut crate::recording_dispatch::RecordingDispatchState,
+    session: &mut AuthenticatedBrokerSession,
+    projection: &mut ControlProjection,
+    idempotency_key: String,
+) -> Result<crate::recording_dispatch::RecordingDispatchOutcome, RuntimeError> {
+    crate::recording_dispatch::dispatch(action, recording, session, projection, idempotency_key)
+        .map_err(|_| RuntimeError(io::Error::other("control action failed")))
+}
+
 /// Run the interactive loop after one authenticated control refresh. The
 /// mutable session is borrowed by the entry seam for the full loop lifetime;
 /// it is never replaced by a second connection and remains available to a
@@ -371,6 +385,7 @@ fn run_interactive_loop(
     let mut session = TerminalSession::enter(policy)?;
     let backend = BoundedBackend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
+    let mut recording_state: Option<crate::recording_dispatch::RecordingDispatchState> = None;
     while !state.should_quit() {
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
         terminal.draw(|frame| ui::render(frame, &workspace, policy))?;
@@ -383,8 +398,39 @@ fn run_interactive_loop(
                     workspace.apply_resize(columns, lines);
                 }
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if matches!(workspace.handle_key(key), ui::UiAction::Quit) {
+                    let ui_action = workspace.handle_key(key);
+                    if matches!(ui_action, ui::UiAction::Quit) {
                         state.apply(Action::Quit)?;
+                    }
+                    if let ui::UiAction::Control(control_action) = ui_action
+                        && let (Some(control), Some(projection)) =
+                            (control.as_deref_mut(), projection.as_deref_mut())
+                    {
+                        if recording_state.is_none()
+                            && let Some(configuration) = workspace
+                                .live
+                                .as_ref()
+                                .and_then(|live| live.configuration.as_ref())
+                        {
+                            recording_state =
+                                crate::recording_dispatch::RecordingDispatchState::new(
+                                    configuration.provider_id.clone().unwrap_or_default(),
+                                    configuration.model_id.clone().unwrap_or_default(),
+                                    configuration.agent_ids.clone(),
+                                    crate::recording_campaign::WorkloadScope::All,
+                                )
+                                .ok();
+                        }
+                        if let Some(recording) = recording_state.as_mut() {
+                            dispatch_control_action(
+                                control_action,
+                                recording,
+                                control,
+                                projection,
+                                format!("asb-tui-{}", control_action.id()),
+                            )?;
+                            workspace.apply_live_snapshot(projection.snapshot());
+                        }
                     }
                     if let (Some(control), Some(projection), Some(values)) = (
                         control.as_deref_mut(),
