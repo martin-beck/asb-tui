@@ -25,6 +25,7 @@ pub mod lifecycle;
 pub mod live_projection;
 pub mod provider_catalog;
 pub mod recording_campaign;
+pub mod recording_dispatch;
 pub mod release_channel;
 pub mod renderer;
 pub mod reports;

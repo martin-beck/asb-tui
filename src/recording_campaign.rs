@@ -95,6 +95,7 @@ impl TryFrom<&crate::control_codec::RecordingCampaignLifecycle> for CampaignObse
         lifecycle: &crate::control_codec::RecordingCampaignLifecycle,
     ) -> Result<Self, Self::Error> {
         let phase = match lifecycle.state.as_str() {
+            "planned" => CampaignPhase::Planned,
             "recording" => CampaignPhase::Recording,
             "needs_reconciliation" => CampaignPhase::NeedsReconciliation,
             "complete" => CampaignPhase::Complete,
@@ -111,6 +112,30 @@ impl TryFrom<&crate::control_codec::RecordingCampaignLifecycle> for CampaignObse
                 complete: lifecycle.covered_tuple_count,
             },
             offline_ready: lifecycle.offline_ready,
+        };
+        observation.validate()?;
+        Ok(observation)
+    }
+}
+
+impl TryFrom<&crate::control_codec::RecordingCampaignPlan> for CampaignObservation {
+    type Error = RecordingModelError;
+
+    fn try_from(plan: &crate::control_codec::RecordingCampaignPlan) -> Result<Self, Self::Error> {
+        let observation = Self {
+            generation: plan.generation.0,
+            campaign_id: Some(plan.campaign_id.clone()),
+            phase: match plan.state.as_str() {
+                "planned" => CampaignPhase::Planned,
+                "cancelled" => CampaignPhase::Cancelled,
+                "failed" => CampaignPhase::Failed,
+                _ => return Err(RecordingModelError::InvalidObservation),
+            },
+            coverage: Coverage {
+                requested: plan.tuple_count,
+                complete: 0,
+            },
+            offline_ready: plan.offline_ready,
         };
         observation.validate()?;
         Ok(observation)

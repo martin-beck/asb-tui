@@ -62,3 +62,31 @@ fn focus_and_resize_are_bounded_and_atomic() {
     );
     assert_eq!(state.size(), before);
 }
+
+#[test]
+fn recording_dispatch_actions_are_declared_in_the_formal_model() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    let fields = model["state_fields"].as_array().unwrap();
+    assert!(
+        fields
+            .iter()
+            .any(|field| field == "recording_dispatch_action")
+    );
+    let bindings = model["bindings"].as_array().unwrap();
+    for action in [
+        "refresh_provider_catalog",
+        "estimate_recording",
+        "plan_recording",
+        "confirm_recording_capture",
+        "progress_recording",
+        "cancel_recording",
+        "reconcile_recording",
+        "activate_offline_default",
+    ] {
+        assert!(
+            bindings.iter().any(|binding| binding["action"] == action),
+            "missing formal binding for {action}"
+        );
+    }
+}

@@ -592,6 +592,39 @@ impl AuthenticatedBrokerSession {
         self.apply_recording_response(projection, &request)
     }
 
+    /// Create a recording campaign plan from the exact selected matrix. The
+    /// runner validates provider connectivity and workload support; the TUI
+    /// only transports identifiers and never handles credentials.
+    pub fn plan_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        provider_id: String,
+        model_id: String,
+        agent_ids: Vec<String>,
+        workload_ids: Vec<String>,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.require_version(control_codec::V1_7)?;
+        let expected_generation = projection
+            .snapshot()
+            .recording_campaign
+            .as_ref()
+            .map_or(crate::control_codec::Revision(1), |plan| plan.generation);
+        let request = self.recording_request(
+            RequestId(9_000_000_008),
+            ControlCall::RecordingCampaignPlan(control_codec::RecordingCampaignPlanParams {
+                idempotency_key,
+                expected_generation,
+                runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                provider_id,
+                model_id,
+                agent_ids,
+                workload_ids,
+            }),
+        );
+        self.apply_recording_response(projection, &request)
+    }
+
     /// Execute a previously projected campaign.  `idempotency_key` must be
     /// stable for retries of this logical operation; it is sent unchanged to
     /// ASB and is never generated from UI state or credentials.

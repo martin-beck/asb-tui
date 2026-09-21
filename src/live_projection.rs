@@ -85,6 +85,24 @@ pub struct ControlProjection {
 }
 
 impl ControlProjection {
+    #[cfg(test)]
+    pub(crate) fn test_recording_lifecycle(lifecycle: RecordingCampaignLifecycle) -> Self {
+        Self {
+            connection: Connection::Negotiated,
+            recording_campaign_lifecycle: Some(lifecycle),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_recording_plan(plan: RecordingCampaignPlan) -> Self {
+        Self {
+            connection: Connection::Negotiated,
+            recording_campaign: Some(plan),
+            ..Self::default()
+        }
+    }
+
     /// Seed the projection from the already authenticated negotiation result.
     /// This avoids fabricating a wire response while keeping all subsequent
     /// operations behind the same negotiated connection gate.

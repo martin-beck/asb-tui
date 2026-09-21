@@ -38,6 +38,7 @@
     {"path":"src/main.rs","reason":"CLI bootstrap only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/release_channel.rs","reason":"Release policy only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/recording_campaign.rs","reason":"Renderer-neutral recording campaign intent and observation policy only; it has no route, widget, terminal, or formal UI-model ownership. Presentation integration consumes this model from the existing recording screen.","expires":"2027-12-31"},
+    {"path":"src/recording_dispatch.rs","reason":"Renderer-neutral provider refresh and recording action dispatch policy only; it carries identifiers through the authenticated transport and owns no route, widget, terminal, credential, or readiness state.","expires":"2027-12-31"},
     {"path":"src/sha256.rs","reason":"Digest primitive only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/system_probe.rs","reason":"Host probing and environment-independent coverage tests only; it has no UI state or projection ownership.","expires":"2027-12-31"}
   ]

@@ -24,6 +24,7 @@
     "recording_campaign",
     "recording_estimate",
     "recording_campaign_lifecycle",
+    "recording_dispatch_action",
     "startup_wizard_opened",
     "responsive_layout",
     "contextual_help",
@@ -158,6 +159,46 @@
       "action": "commit_configuration_edit",
       "element": "configuration.entry",
       "key": "Enter"
+    },
+    {
+      "action": "refresh_provider_catalog",
+      "element": "configuration.control_status",
+      "key": "f"
+    },
+    {
+      "action": "estimate_recording",
+      "element": "run.status",
+      "key": "e"
+    },
+    {
+      "action": "plan_recording",
+      "element": "run.status",
+      "key": "P"
+    },
+    {
+      "action": "confirm_recording_capture",
+      "element": "run.status",
+      "key": "C"
+    },
+    {
+      "action": "progress_recording",
+      "element": "run.status",
+      "key": "G"
+    },
+    {
+      "action": "cancel_recording",
+      "element": "run.cancel",
+      "key": "X"
+    },
+    {
+      "action": "reconcile_recording",
+      "element": "run.status",
+      "key": "Y"
+    },
+    {
+      "action": "activate_offline_default",
+      "element": "run.status",
+      "key": "o"
     }
   ],
   "routes": [
