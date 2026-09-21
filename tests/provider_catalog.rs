@@ -36,10 +36,16 @@ fn agents() -> AgentCatalog {
                 version: "1.0.0".into(),
                 sha256: "b".repeat(64),
                 signature_sha256: "c".repeat(64),
+                signer: asb_tui::agent_catalog::AgentSigner {
+                    key_id: "key-1".into(),
+                    principal: "asb-release".into(),
+                },
             },
             provenance: AgentProvenance {
                 source_revision: "d".repeat(40),
                 manifest_sha256: "e".repeat(64),
+                sbom_sha256: "f".repeat(64),
+                license_ref: "MIT".into(),
             },
             capabilities: vec!["bench".into()],
             availability: AgentAvailability::Available,

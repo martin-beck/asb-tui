@@ -90,6 +90,14 @@ pub struct AgentPackage {
     pub version: String,
     pub sha256: String,
     pub signature_sha256: String,
+    pub signer: AgentSigner,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSigner {
+    pub key_id: String,
+    pub principal: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -97,6 +105,8 @@ pub struct AgentPackage {
 pub struct AgentProvenance {
     pub source_revision: String,
     pub manifest_sha256: String,
+    pub sbom_sha256: String,
+    pub license_ref: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -138,6 +148,9 @@ impl AgentCatalog {
             .as_object_mut()
             .ok_or_else(|| "catalog is not an object".to_string())?;
         object.remove("catalog_sha256");
+        // `refreshed` describes this response operation, not catalog identity.
+        // Excluding it keeps Status and Refresh bound to the same snapshot.
+        object.remove("refreshed");
         let value = canonical_value(value)?;
         serde_json::to_vec(&value).map_err(|_| "cannot serialize canonical catalog".into())
     }
@@ -234,6 +247,8 @@ fn validate_catalog(catalog: AgentCatalog) -> Result<AgentCatalog, String> {
         validate_token(&entry.package.version, "package version")?;
         validate_digest(&entry.package.sha256)?;
         validate_digest(&entry.package.signature_sha256)?;
+        validate_token(&entry.package.signer.key_id, "signer key id")?;
+        validate_token(&entry.package.signer.principal, "signer principal")?;
         if entry.provenance.source_revision.len() != 40
             || !entry
                 .provenance
@@ -244,6 +259,8 @@ fn validate_catalog(catalog: AgentCatalog) -> Result<AgentCatalog, String> {
             return Err("invalid source revision".into());
         }
         validate_digest(&entry.provenance.manifest_sha256)?;
+        validate_digest(&entry.provenance.sbom_sha256)?;
+        validate_token(&entry.provenance.license_ref, "license reference")?;
         if entry.capabilities.is_empty() || entry.capabilities.len() > MAX_CAPABILITIES {
             return Err("invalid agent capability count".into());
         }

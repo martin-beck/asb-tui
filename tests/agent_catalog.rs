@@ -10,11 +10,11 @@ fn valid() -> String {
     serde_json::json!({
         "jsonrpc":"2.0", "id":7,
         "result":{"kind":"operation","value":{"request_sha256":"f".repeat(64),"result":{"kind":"agent_catalog","value":{
-            "runner_instance_id":"runner-1", "generation":3, "catalog_sha256":"e24007b09d9f6b112269689a535ba00968300c9653d71e349f37835d0d8c5e92",
+            "runner_instance_id":"runner-1", "generation":3, "catalog_sha256":"decf62e9642eace3ac2e03cfe04da24e44f3504f9f8e96e1ff9fa925b7d3e590",
             "target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
             "agents":[{"agent_id":"agent-a","target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
-              "package":{"package_id":"agent-package","version":"1.2.3","sha256":"a".repeat(64),"signature_sha256":"b".repeat(64)},
-              "provenance":{"source_revision":"c".repeat(40),"manifest_sha256":"d".repeat(64)},"capabilities":["chat","tools"],"availability":{"status":"available"}}],"refreshed":false
+              "package":{"package_id":"agent-package","version":"1.2.3","sha256":"a".repeat(64),"signature_sha256":"b".repeat(64),"signer":{"key_id":"release-key-1","principal":"asb-release"}},
+              "provenance":{"source_revision":"c".repeat(40),"manifest_sha256":"d".repeat(64),"sbom_sha256":"e".repeat(64),"license_ref":"MIT"},"capabilities":["chat","tools"],"availability":{"status":"available"}}],"refreshed":false
         }}}}
     }).to_string()
 }
@@ -35,7 +35,7 @@ fn consumes_the_checked_in_asb_v14_fixture() {
     .unwrap();
     assert_eq!(
         catalog.catalog_sha256,
-        "e24007b09d9f6b112269689a535ba00968300c9653d71e349f37835d0d8c5e92"
+        "decf62e9642eace3ac2e03cfe04da24e44f3504f9f8e96e1ff9fa925b7d3e590"
     );
     assert_eq!(catalog.target.libc, "glibc");
 }
@@ -56,7 +56,7 @@ fn rejects_unsorted_duplicate_incomplete_and_wrong_target_catalogs() {
     let duplicate = valid().replace("\"agent-a\"", "\"agent-b\",\"agent_id\":\"agent-a\"");
     assert!(parse_agent_catalog_response(&duplicate).is_err());
     let missing = valid().replace(
-        "\"catalog_sha256\":\"e24007b09d9f6b112269689a535ba00968300c9653d71e349f37835d0d8c5e92\",",
+        "\"catalog_sha256\":\"decf62e9642eace3ac2e03cfe04da24e44f3504f9f8e96e1ff9fa925b7d3e590\",",
         "",
     );
     assert!(parse_agent_catalog_response(&missing).is_err());
@@ -122,10 +122,16 @@ fn catalog_validation_rejects_bounds_and_noncanonical_metadata() {
             version: "1.0".into(),
             sha256: "a".repeat(64),
             signature_sha256: "b".repeat(64),
+            signer: asb_tui::agent_catalog::AgentSigner {
+                key_id: "release-key-1".into(),
+                principal: "asb-release".into(),
+            },
         },
         provenance: AgentProvenance {
             source_revision: "c".repeat(40),
             manifest_sha256: "d".repeat(64),
+            sbom_sha256: "e".repeat(64),
+            license_ref: "MIT".into(),
         },
         capabilities: vec!["bench".into()],
         availability: AgentAvailability::Unavailable(
@@ -177,7 +183,7 @@ fn catalog_digest_matches_asb_vector_and_rejects_content_tampering() {
     assert_eq!(catalog.computed_digest().unwrap(), catalog.catalog_sha256);
     assert_eq!(
         catalog.catalog_sha256,
-        "e24007b09d9f6b112269689a535ba00968300c9653d71e349f37835d0d8c5e92"
+        "decf62e9642eace3ac2e03cfe04da24e44f3504f9f8e96e1ff9fa925b7d3e590"
     );
 
     let mut tampered: serde_json::Value = serde_json::from_str(&valid()).unwrap();
@@ -209,6 +215,18 @@ fn catalog_digest_is_independent_of_object_member_order_but_not_arrays() {
     let entry = agents[0].clone();
     agents[0] = serde_json::json!({"agent_id":"agent-b", "target":entry["target"].clone(), "package":entry["package"].clone(), "provenance":entry["provenance"].clone(), "capabilities":entry["capabilities"].clone(), "availability":entry["availability"].clone()});
     assert!(parse_agent_catalog_response(&value.to_string()).is_err());
+}
+
+#[test]
+fn catalog_digest_ignores_response_only_refresh_flag() {
+    let refreshed = valid().replace("\"refreshed\":false", "\"refreshed\":true");
+    let catalog = parse_agent_catalog_response(&valid()).unwrap();
+    let refreshed_catalog = parse_agent_catalog_response(&refreshed).unwrap();
+    assert_eq!(
+        catalog.computed_digest().unwrap(),
+        refreshed_catalog.computed_digest().unwrap()
+    );
+    assert_eq!(catalog.catalog_sha256, refreshed_catalog.catalog_sha256);
 }
 
 #[test]

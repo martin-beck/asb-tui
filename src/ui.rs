@@ -1613,10 +1613,16 @@ mod tests {
                 version: "1".into(),
                 sha256: "a".repeat(64),
                 signature_sha256: "b".repeat(64),
+                signer: crate::agent_catalog::AgentSigner {
+                    key_id: "key-1".into(),
+                    principal: "asb-release".into(),
+                },
             },
             provenance: crate::agent_catalog::AgentProvenance {
                 source_revision: "source".into(),
                 manifest_sha256: "c".repeat(64),
+                sbom_sha256: "d".repeat(64),
+                license_ref: "MIT".into(),
             },
             capabilities: vec!["coding".into()],
             availability: crate::agent_catalog::AgentAvailability::Available,
