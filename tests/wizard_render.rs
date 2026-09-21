@@ -84,6 +84,14 @@ fn wizard_render_has_stable_context_and_tiny_fallback() {
 }
 
 #[test]
+fn authentication_handoff_is_explicitly_credential_free() {
+    let source = std::fs::read_to_string("src/wizard.rs").expect("wizard source");
+    assert!(source.contains("approved keychain/helper"));
+    assert!(source.contains("credential_reference:<sha256>"));
+    assert!(source.contains("never paste an API key"));
+}
+
+#[test]
 fn formal_wizard_flow_checks_documented_route_and_step_effects() {
     let mut state = WizardFormalState::new().unwrap();
     assert_eq!(
