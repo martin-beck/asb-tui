@@ -564,7 +564,7 @@ const fn step_prompt(step: Step) -> &'static str {
         Step::Model => "Choose the provider model.",
         Step::Configuration => "Review benchmark configuration defaults.",
         Step::Authentication => {
-            "Use the provider's approved keychain/helper, then enter credential_reference:<sha256>; never paste an API key here."
+            "Use the provider's approved keychain/helper, then enter credential_helper:<endpoint_sha256>:<locator_sha256>; never paste an API key here."
         }
         Step::Recording => "Choose whether to record benchmark activity.",
         Step::Replay => "Choose the offline replay policy.",
@@ -601,7 +601,7 @@ mod tests {
     fn authentication_step_explains_secure_external_enrollment() {
         let prompt = step_prompt(Step::Authentication);
         assert!(prompt.contains("approved keychain/helper"));
-        assert!(prompt.contains("credential_reference:<sha256>"));
+        assert!(prompt.contains("credential_helper:<endpoint_sha256>:<locator_sha256>"));
         assert!(prompt.contains("never paste an API key"));
     }
 }
