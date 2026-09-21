@@ -9,8 +9,8 @@ fn catalog(generation: u64) -> asb_tui::agent_catalog::AgentCatalog {
     "runner_instance_id":"runner-1", "generation":generation, "catalog_sha256":"a".repeat(64),
     "target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
     "agents":[{"agent_id":"local-echo","target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
-      "package":{"package_id":"pkg","version":"1.0.0","sha256":"b".repeat(64),"signature_sha256":"c".repeat(64)},
-      "provenance":{"source_revision":"d".repeat(40),"manifest_sha256":"e".repeat(64)},
+      "package":{"package_id":"pkg","version":"1.0.0","sha256":"b".repeat(64),"signature_sha256":"c".repeat(64),"signer":{"key_id":"key-1","principal":"asb-release"}},
+      "provenance":{"source_revision":"d".repeat(40),"manifest_sha256":"e".repeat(64),"sbom_sha256":"f".repeat(64),"license_ref":"MIT"},
       "capabilities":["benchmark"],"availability":{"status":"available"}}],"refreshed":false
     }}}}});
     let raw = value["result"]["value"]["result"]["value"].clone();
@@ -237,7 +237,7 @@ fn unavailable_agents_and_reconnect_paths_are_fail_closed() {
     "jsonrpc":"2.0", "id":7, "result":{"kind":"operation","value":{"request_sha256":"f".repeat(64),"result":{"kind":"agent_catalog","value":{
         "runner_instance_id":"runner-1", "generation":1, "catalog_sha256":"a".repeat(64),
         "target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},
-        "agents":[{"agent_id":"local-echo","target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},"package":{"package_id":"pkg","version":"1.0","sha256":"b".repeat(64),"signature_sha256":"c".repeat(64)},"provenance":{"source_revision":"d".repeat(40),"manifest_sha256":"e".repeat(64)},"capabilities":["benchmark"],"availability":{"status":"unavailable","reason":"policy_denied"}}],"refreshed":false
+        "agents":[{"agent_id":"local-echo","target":{"operating_system":"linux","architecture":"x86_64","libc":"glibc","libc_version":"2.35"},"package":{"package_id":"pkg","version":"1.0","sha256":"b".repeat(64),"signature_sha256":"c".repeat(64),"signer":{"key_id":"key-1","principal":"asb-release"}},"provenance":{"source_revision":"d".repeat(40),"manifest_sha256":"e".repeat(64),"sbom_sha256":"f".repeat(64),"license_ref":"MIT"},"capabilities":["benchmark"],"availability":{"status":"unavailable","reason":"policy_denied"}}],"refreshed":false
     }}}}});
     let unavailable_raw = unavailable_value["result"]["value"]["result"]["value"].clone();
     let mut unavailable_catalog: asb_tui::agent_catalog::AgentCatalog =

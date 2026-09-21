@@ -90,6 +90,14 @@ pub struct AgentPackage {
     pub version: String,
     pub sha256: String,
     pub signature_sha256: String,
+    pub signer: AgentSigner,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSigner {
+    pub key_id: String,
+    pub principal: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -97,6 +105,8 @@ pub struct AgentPackage {
 pub struct AgentProvenance {
     pub source_revision: String,
     pub manifest_sha256: String,
+    pub sbom_sha256: String,
+    pub license_ref: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -104,8 +114,8 @@ pub struct AgentProvenance {
 pub struct AgentCatalogEntry {
     pub agent_id: String,
     pub target: AgentTarget,
-    pub package: AgentPackage,
-    pub provenance: AgentProvenance,
+    pub package: Option<AgentPackage>,
+    pub provenance: Option<AgentProvenance>,
     pub capabilities: Vec<String>,
     pub availability: AgentAvailability,
 }
@@ -138,6 +148,9 @@ impl AgentCatalog {
             .as_object_mut()
             .ok_or_else(|| "catalog is not an object".to_string())?;
         object.remove("catalog_sha256");
+        // `refreshed` describes this response operation, not catalog identity.
+        // Excluding it keeps Status and Refresh bound to the same snapshot.
+        object.remove("refreshed");
         let value = canonical_value(value)?;
         serde_json::to_vec(&value).map_err(|_| "cannot serialize canonical catalog".into())
     }
@@ -230,22 +243,34 @@ fn validate_catalog(catalog: AgentCatalog) -> Result<AgentCatalog, String> {
         if entry.target != catalog.target {
             return Err("agent target does not match catalog target".into());
         }
-        validate_token(&entry.package.package_id, "package id")?;
-        validate_token(&entry.package.version, "package version")?;
-        validate_digest(&entry.package.sha256)?;
-        validate_digest(&entry.package.signature_sha256)?;
-        if entry.provenance.source_revision.len() != 40
-            || !entry
-                .provenance
-                .source_revision
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
-            return Err("invalid source revision".into());
-        }
-        validate_digest(&entry.provenance.manifest_sha256)?;
-        if entry.capabilities.is_empty() || entry.capabilities.len() > MAX_CAPABILITIES {
+        if entry.capabilities.len() > MAX_CAPABILITIES {
             return Err("invalid agent capability count".into());
+        }
+        match entry.availability {
+            AgentAvailability::Available => {
+                let package = entry.package.as_ref().ok_or("missing package metadata")?;
+                let provenance = entry
+                    .provenance
+                    .as_ref()
+                    .ok_or("missing provenance metadata")?;
+                validate_package(package)?;
+                validate_provenance(provenance)?;
+                if entry.capabilities.is_empty() {
+                    return Err("invalid agent capability count".into());
+                }
+            }
+            AgentAvailability::Unavailable(AgentUnavailableReason::IncompleteProvenance) => {}
+            AgentAvailability::Unavailable(_) => {
+                if entry.package.is_some() != entry.provenance.is_some() {
+                    return Err("incomplete metadata requires incomplete_provenance".into());
+                }
+                if let Some(package) = &entry.package {
+                    validate_package(package)?;
+                }
+                if let Some(provenance) = &entry.provenance {
+                    validate_provenance(provenance)?;
+                }
+            }
         }
         let mut capabilities = std::collections::BTreeSet::new();
         for capability in &entry.capabilities {
@@ -260,6 +285,29 @@ fn validate_catalog(catalog: AgentCatalog) -> Result<AgentCatalog, String> {
         return Err("agent catalog digest does not match content".into());
     }
     Ok(catalog)
+}
+
+fn validate_package(package: &AgentPackage) -> Result<(), String> {
+    validate_token(&package.package_id, "package id")?;
+    validate_token(&package.version, "package version")?;
+    validate_digest(&package.sha256)?;
+    validate_digest(&package.signature_sha256)?;
+    validate_token(&package.signer.key_id, "signer key id")?;
+    validate_token(&package.signer.principal, "signer principal")
+}
+
+fn validate_provenance(provenance: &AgentProvenance) -> Result<(), String> {
+    if provenance.source_revision.len() != 40
+        || !provenance
+            .source_revision
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err("invalid source revision".into());
+    }
+    validate_digest(&provenance.manifest_sha256)?;
+    validate_digest(&provenance.sbom_sha256)?;
+    validate_token(&provenance.license_ref, "license reference")
 }
 
 fn validate_target(target: &AgentTarget) -> Result<(), String> {

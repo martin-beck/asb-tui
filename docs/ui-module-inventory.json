@@ -15,13 +15,13 @@
     {"path":"src/shell.rs","kind":"state"},
     {"path":"src/startup.rs","kind":"startup"},
     {"path":"src/terminal.rs","kind":"terminal"},
-    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, authenticated live setup-catalog projection into the wizard, typed multi-agent/all-agent controls, runner-authoritative setup and recording estimate/lifecycle status, normalized startup readiness routing, credential-free wizard completion selection and tests, editing, contextual help, and formally checked local configuration editing and save"},
+    {"path":"src/ui.rs","kind":"rendering","responsibility":"Workspace projection, authenticated live setup-catalog projection into the wizard, explicit unavailable-agent explanations, typed multi-agent/all-agent controls, runner-authoritative setup and recording estimate/lifecycle status, normalized startup readiness routing, credential-free wizard completion selection and tests, editing, contextual help, and formally checked local configuration editing and save"},
     {"path":"src/visual.rs","kind":"rendering"},
     {"path":"src/wizard.rs","kind":"state","responsibility":"Formally checked manual and automatic startup wizard routes, steps, typed multi-agent catalog actions, bounded transitions, and completion-draft export"},
     {"path":"src/wizard_catalog.rs","kind":"state","responsibility":"Bounded renderer-neutral agent, provider, and model choices, multi-agent/all-agent selection, and compatibility filtering for the setup wizard"}
   ],
   "exemptions": [
-    {"path":"src/agent_catalog.rs","reason":"Agent catalog protocol adapter and canonical digest verification only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/agent_catalog.rs","reason":"Agent catalog protocol adapter, authenticated provenance validation, incomplete-entry projection boundary, and canonical digest verification only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/agent_lifecycle.rs","reason":"Agent lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/asb_lifecycle.rs","reason":"ASB lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/broker_adoption.rs","reason":"Transport handoff only; it has no UI state or projection ownership.","expires":"2027-12-31"},

@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "model": "asb-tui.ui-state",
+  "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable.",
   "initial": "landing",
   "layouts": [
     "wide",

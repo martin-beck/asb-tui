@@ -1608,16 +1608,22 @@ mod tests {
                 libc: "glibc".into(),
                 libc_version: "2.39".into(),
             },
-            package: crate::agent_catalog::AgentPackage {
+            package: Some(crate::agent_catalog::AgentPackage {
                 package_id: "codex-package".into(),
                 version: "1".into(),
                 sha256: "a".repeat(64),
                 signature_sha256: "b".repeat(64),
-            },
-            provenance: crate::agent_catalog::AgentProvenance {
+                signer: crate::agent_catalog::AgentSigner {
+                    key_id: "key-1".into(),
+                    principal: "asb-release".into(),
+                },
+            }),
+            provenance: Some(crate::agent_catalog::AgentProvenance {
                 source_revision: "source".into(),
                 manifest_sha256: "c".repeat(64),
-            },
+                sbom_sha256: "d".repeat(64),
+                license_ref: "MIT".into(),
+            }),
             capabilities: vec!["coding".into()],
             availability: crate::agent_catalog::AgentAvailability::Available,
         };
