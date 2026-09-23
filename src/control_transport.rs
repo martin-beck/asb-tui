@@ -118,6 +118,7 @@ impl FramedControlStream {
             timeout_ms: self.limits.max_timeout_ms,
             call: control_codec::ControlCall::Negotiate(NegotiateParams {
                 versions: [
+                    control_codec::V1_10,
                     control_codec::V1_8,
                     control_codec::V1_7,
                     control_codec::V1_6,
@@ -143,6 +144,7 @@ impl FramedControlStream {
         if (!self.expected_peer.runner_instance_id.is_empty()
             && session.runner_instance_id != self.expected_peer.runner_instance_id)
             || ![
+                control_codec::V1_10,
                 control_codec::V1_8,
                 control_codec::V1_7,
                 control_codec::V1_6,
@@ -554,6 +556,34 @@ impl AuthenticatedBrokerSession {
             id: RequestId(9_000_000_104),
             timeout_ms: self.negotiated.limits.max_timeout_ms,
             call: ControlCall::AuthStatus(AuthStatusParams { provider }),
+        };
+        let response = self.transport.round_trip(&request)?;
+        projection
+            .apply(&request, &response, self.negotiated.limits)
+            .map_err(|_| TransportError::Projection)
+    }
+
+    /// Ask the runner to resolve a credential helper for a complete,
+    /// credential-free provider profile. No helper path or secret is accepted.
+    pub fn invoke_auth_helper(
+        &mut self,
+        projection: &mut ControlProjection,
+        provider: String,
+        profile: serde_json::Value,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        if self.negotiated.version < control_codec::V1_10 {
+            return Err(TransportError::NotNegotiated);
+        }
+        let request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: RequestId(9_000_000_105),
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call: ControlCall::AuthHelperInvoke(control_codec::AuthHelperInvokeParams {
+                provider,
+                profile,
+                idempotency_key,
+            }),
         };
         let response = self.transport.round_trip(&request)?;
         projection

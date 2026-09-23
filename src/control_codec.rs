@@ -22,6 +22,11 @@ pub const V1_6: ControlVersion = ControlVersion { major: 1, minor: 6 };
 pub const V1_7: ControlVersion = ControlVersion { major: 1, minor: 7 };
 /// Minimum negotiated version that exposes recording campaign lifecycle calls.
 pub const V1_8: ControlVersion = ControlVersion { major: 1, minor: 8 };
+/// Minimum negotiated version for runner-owned credential helper invocation.
+pub const V1_10: ControlVersion = ControlVersion {
+    major: 1,
+    minor: 10,
+};
 /// Minimum negotiated version that exposes the authenticated agent catalog.
 pub const CONTROL_AGENT_CATALOG_V1: ControlVersion = V1_4;
 /// Minimum negotiated version that exposes verified local-agent lifecycle calls.
@@ -140,6 +145,9 @@ pub enum ControlCall {
     AuthRotate(AuthRotateParams),
     /// Revoke a provider enrollment.
     AuthRevoke(AuthRevokeParams),
+    /// Resolve a helper through the runner; the profile is credential-free JSON
+    /// validated again by the ASB control boundary.
+    AuthHelperInvoke(AuthHelperInvokeParams),
     ValidateSettings {
         settings: Value,
     },
@@ -198,6 +206,7 @@ impl ControlCall {
             | Self::AuthStatus(_)
             | Self::AuthRotate(_)
             | Self::AuthRevoke(_) => Some(CONTROL_AUTH_V1),
+            Self::AuthHelperInvoke(_) => Some(V1_10),
             _ => None,
         }
     }
@@ -233,6 +242,14 @@ pub struct AuthRotateParams {
 #[serde(deny_unknown_fields)]
 pub struct AuthRevokeParams {
     pub provider: String,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthHelperInvokeParams {
+    pub provider: String,
+    pub profile: Value,
     pub idempotency_key: String,
 }
 
@@ -1121,9 +1138,12 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
     match call {
         ControlCall::Negotiate(v) => {
             if v.versions.is_empty()
-                || v.versions
-                    .iter()
-                    .any(|v| !matches!(*v, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8))
+                || v.versions.iter().any(|v| {
+                    !matches!(
+                        *v,
+                        V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10
+                    )
+                })
             {
                 return Err(CodecError::UnsupportedVersion);
             }
@@ -1204,6 +1224,11 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
             validate_id(&v.provider)?;
             validate_id(&v.idempotency_key)?;
         }
+        ControlCall::AuthHelperInvoke(v) => {
+            validate_id(&v.provider)?;
+            validate_id(&v.idempotency_key)?;
+            validate_json(&v.profile)?;
+        }
         ControlCall::ProviderCatalog(v) => validate_id(&v.runner_instance_id)?,
         ControlCall::ConfigurationStatus(v) => validate_id(&v.runner_instance_id)?,
         ControlCall::ConfigurationApply(v) => {
@@ -1271,7 +1296,7 @@ fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(
         ControlSuccess::Negotiated(v) => {
             if !matches!(
                 v.version,
-                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8
+                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10
             ) || v.oldest_revision > v.latest_revision
             {
                 return Err(CodecError::InvalidVersion);
@@ -1638,6 +1663,7 @@ impl ControlResult {
                 | (ControlCall::AuthEnroll(_), Self::Acknowledged(_))
                 | (ControlCall::AuthRotate(_), Self::Acknowledged(_))
                 | (ControlCall::AuthRevoke(_), Self::Acknowledged(_))
+                | (ControlCall::AuthHelperInvoke(_), Self::AuthStatus(_))
                 | (ControlCall::AuthStatus(_), Self::AuthStatus(_))
                 | (
                     ControlCall::ValidateSettings { .. },
@@ -1787,6 +1813,28 @@ mod tests {
             r.validate(ControlLimits::default()),
             Err(CodecError::UnsupportedVersion)
         );
+    }
+
+    #[test]
+    fn helper_version_is_offered_and_accepted() {
+        let request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(1),
+            timeout_ms: 1,
+            call: ControlCall::Negotiate(NegotiateParams {
+                versions: [V1_10].into_iter().collect(),
+                limits: ControlLimits::default(),
+            }),
+        };
+        assert!(request.validate(ControlLimits::default()).is_ok());
+        let success = ControlSuccess::Negotiated(Negotiated {
+            version: V1_10,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner".into(),
+            oldest_revision: Revision(0),
+            latest_revision: Revision(0),
+        });
+        assert!(validate_success(&success, ControlLimits::default()).is_ok());
     }
 
     fn catalog() -> MeasurementCatalogPublication {
@@ -2598,5 +2646,20 @@ mod tests {
         });
         assert!(serde_json::from_value::<ControlRequest>(raw_key).is_err());
         assert_eq!(V1_6, CONTROL_AUTH_V1);
+
+        let helper = ControlCall::AuthHelperInvoke(AuthHelperInvokeParams {
+            provider: "openai".into(),
+            profile: serde_json::json!({"credential": {"source": "helper"}}),
+            idempotency_key: "helper-1".into(),
+        });
+        assert_eq!(helper.minimum_version(), Some(V1_10));
+        ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(42),
+            timeout_ms: 1_000,
+            call: helper,
+        }
+        .validate(ControlLimits::default())
+        .unwrap();
     }
 }
