@@ -7,7 +7,7 @@
     {"path":"src/formal_state.rs","kind":"state","responsibility":"Renderer-neutral workspace and wizard transition validation, including typed multi-agent catalog actions"},
     {"path":"src/help.rs","kind":"interaction"},
     {"path":"src/landing.rs","kind":"projection"},
-    {"path":"src/live_projection.rs","kind":"projection","responsibility":"Authenticated run, agent, provider, configuration, credential-free auth status, recording estimate, and recording-campaign lifecycle projection with generation fencing"},
+    {"path":"src/live_projection.rs","kind":"projection","responsibility":"Authenticated run, agent, provider, configuration, credential-free auth status including helper invocation, recording estimate, and recording-campaign lifecycle projection with generation fencing"},
     {"path":"src/renderer.rs","kind":"rendering"},
     {"path":"src/reports.rs","kind":"projection"},
     {"path":"src/runtime.rs","kind":"terminal","responsibility":"Terminal lifecycle, digest-only helper receipt enrollment, runner-authored auth-status projection, and authenticated wizard-configuration mutation dispatch"},
