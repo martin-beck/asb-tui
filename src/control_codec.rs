@@ -1138,9 +1138,12 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
     match call {
         ControlCall::Negotiate(v) => {
             if v.versions.is_empty()
-                || v.versions
-                    .iter()
-                    .any(|v| !matches!(*v, V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8))
+                || v.versions.iter().any(|v| {
+                    !matches!(
+                        *v,
+                        V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10
+                    )
+                })
             {
                 return Err(CodecError::UnsupportedVersion);
             }
@@ -1293,7 +1296,7 @@ fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(
         ControlSuccess::Negotiated(v) => {
             if !matches!(
                 v.version,
-                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8
+                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10
             ) || v.oldest_revision > v.latest_revision
             {
                 return Err(CodecError::InvalidVersion);
@@ -1810,6 +1813,28 @@ mod tests {
             r.validate(ControlLimits::default()),
             Err(CodecError::UnsupportedVersion)
         );
+    }
+
+    #[test]
+    fn helper_version_is_offered_and_accepted() {
+        let request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(1),
+            timeout_ms: 1,
+            call: ControlCall::Negotiate(NegotiateParams {
+                versions: [V1_10].into_iter().collect(),
+                limits: ControlLimits::default(),
+            }),
+        };
+        assert!(request.validate(ControlLimits::default()).is_ok());
+        let success = ControlSuccess::Negotiated(Negotiated {
+            version: V1_10,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner".into(),
+            oldest_revision: Revision(0),
+            latest_revision: Revision(0),
+        });
+        assert!(validate_success(&success, ControlLimits::default()).is_ok());
     }
 
     fn catalog() -> MeasurementCatalogPublication {

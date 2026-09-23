@@ -118,6 +118,7 @@ impl FramedControlStream {
             timeout_ms: self.limits.max_timeout_ms,
             call: control_codec::ControlCall::Negotiate(NegotiateParams {
                 versions: [
+                    control_codec::V1_10,
                     control_codec::V1_8,
                     control_codec::V1_7,
                     control_codec::V1_6,
@@ -143,6 +144,7 @@ impl FramedControlStream {
         if (!self.expected_peer.runner_instance_id.is_empty()
             && session.runner_instance_id != self.expected_peer.runner_instance_id)
             || ![
+                control_codec::V1_10,
                 control_codec::V1_8,
                 control_codec::V1_7,
                 control_codec::V1_6,
