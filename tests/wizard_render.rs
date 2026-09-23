@@ -36,10 +36,12 @@ fn ui_model_declares_runner_setup_and_recording_projection_state() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
     let fields = model["state_fields"].as_array().unwrap();
-    assert!(model["auth_status_after_enrollment"]
-        .as_str()
-        .unwrap()
-        .contains("helper enrollment or invocation"));
+    assert!(
+        model["auth_status_after_enrollment"]
+            .as_str()
+            .unwrap()
+            .contains("helper enrollment or invocation")
+    );
     for field in [
         "provider_catalog",
         "configuration",
