@@ -2,7 +2,7 @@
   "schema_version": 1,
   "model": "asb-tui.ui-state",
   "authentication_handoff": "Provider secrets are enrolled through an approved external keychain/helper; the wizard accepts only credential_helper:<endpoint_sha256>:<locator_sha256>.",
-  "auth_status_after_enrollment": "After helper enrollment, the wizard reads runner-authored status before applying provider/model configuration.",
+  "auth_status_after_enrollment": "After helper enrollment or invocation, the wizard reads runner-authored status and projects only digest metadata before applying provider/model configuration.",
   "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable.",
   "initial": "landing",
   "layouts": [

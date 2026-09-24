@@ -217,7 +217,10 @@ impl ControlProjection {
                 }
                 self.configuration = Some(value.clone());
             }
-            (ControlCall::AuthStatus(_), ControlResult::AuthStatus(value)) => {
+            (
+                ControlCall::AuthHelperInvoke(_) | ControlCall::AuthStatus(_),
+                ControlResult::AuthStatus(value),
+            ) => {
                 if self
                     .negotiated
                     .as_ref()
@@ -604,6 +607,34 @@ mod tests {
             .apply(&request(call, 2), &response, ControlLimits::default())
             .unwrap();
         assert_eq!(current.snapshot().auth_status.unwrap().status, "active");
+    }
+
+    #[test]
+    fn helper_invocation_projects_runner_auth_status() {
+        use crate::control_codec::*;
+        let call = ControlCall::AuthHelperInvoke(AuthHelperInvokeParams {
+            provider: "openai".into(),
+            profile: serde_json::json!({"model": "free"}),
+            idempotency_key: "helper-1".into(),
+        });
+        let response = response(
+            2,
+            ControlResult::AuthStatus(AuthStatusResponse {
+                provider: "openai".into(),
+                endpoint_identity_sha256: "a".repeat(64),
+                credential_locator_sha256: "b".repeat(64),
+                generation: Revision(2),
+                status: "active".into(),
+            }),
+        );
+        let mut projection = connected_projection_at(V1_10);
+        projection
+            .apply(&request(call, 2), &response, ControlLimits::default())
+            .unwrap();
+        assert_eq!(
+            projection.snapshot().auth_status.unwrap().generation,
+            Revision(2)
+        );
     }
 
     fn catalog() -> crate::control_codec::MeasurementCatalogPublication {
