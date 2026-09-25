@@ -4,7 +4,7 @@
     {"path":"src/actions.rs","kind":"interaction"},
     {"path":"src/app.rs","kind":"state"},
     {"path":"src/configuration.rs","kind":"state","responsibility":"Bounded configuration drafts, local persistence, and fail-closed startup state"},
-    {"path":"src/formal_state.rs","kind":"state","responsibility":"Renderer-neutral workspace and wizard transition validation, typed multi-agent catalog actions, and source/model element bindings"},
+    {"path":"src/formal_state.rs","kind":"state","responsibility":"Renderer-neutral workspace, wizard, and terminal-resize transition validation, typed multi-agent catalog actions, and source/model element bindings"},
     {"path":"src/help.rs","kind":"interaction"},
     {"path":"src/landing.rs","kind":"projection"},
     {"path":"src/live_projection.rs","kind":"projection","responsibility":"Authenticated run, agent, provider, configuration, credential-free auth status including helper invocation, recording estimate, and recording-campaign lifecycle projection with generation fencing"},
