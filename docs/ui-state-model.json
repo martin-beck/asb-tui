@@ -94,6 +94,14 @@
     {"id":"wizard.controls","route":"wizard","role":"navigation","help_id":"wizard.controls","focusable":false,"hoverable":true,"parent":null}
   ],
   "transitions": [
+    {"event":"resize","from":"landing","to":"landing","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
+    {"event":"resize","from":"wizard","to":"wizard","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
+    {"event":"resize","from":"measurement_selection","to":"measurement_selection","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
+    {"event":"resize","from":"configuration","to":"configuration","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
+    {"event":"resize","from":"run_control","to":"run_control","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
+    {"event":"resize","from":"recent_runs","to":"recent_runs","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
+    {"event":"resize","from":"reports","to":"reports","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
+    {"event":"resize","from":"help","to":"help","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
     {"event":"open_wizard","from":"landing","to":"wizard","effects":["route_changed","focus_reset"]},
     {"event":"startup_auto_open_wizard","from":"landing","to":"wizard","effects":["route_changed","focus_reset"]},
     {"event":"wizard_next","from":"wizard","to":"wizard","effects":["wizard_step_changed","focus_reset"]},

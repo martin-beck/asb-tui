@@ -131,6 +131,27 @@ impl FormalUiState {
             FormalEvent::Resize { columns, lines } => {
                 crate::app::AppState::new(columns, lines)
                     .map_err(FormalError::InvalidDimensions)?;
+                let route = route_id(self.route);
+                let resize = document
+                    .transitions
+                    .iter()
+                    .find(|item| item.from == route && item.event == "resize")
+                    .ok_or_else(|| FormalError::UnknownTransition {
+                        route: self.route,
+                        event: "resize".into(),
+                    })?;
+                if resize.to != route
+                    || resize
+                        .effects
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        != ["dimensions_changed", "layout_recomputed", "focus_preserved"]
+                {
+                    return Err(FormalError::InvalidModel(
+                        "resize transition effects do not match interpreter semantics".into(),
+                    ));
+                }
                 self.columns = columns;
                 self.lines = lines;
             }
@@ -270,7 +291,9 @@ fn validate_document(model: &Document) -> Result<(), String> {
         {
             return Err(format!("invalid transition {}", transition.event));
         }
-        let expected = if transition.event == "save_configuration" {
+        let expected = if transition.event == "resize" {
+            ["dimensions_changed", "layout_recomputed", "focus_preserved"].as_slice()
+        } else if transition.event == "save_configuration" {
             ["configuration_persisted", "focus_reset"].as_slice()
         } else if matches!(
             transition.event.as_str(),

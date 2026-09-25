@@ -75,6 +75,34 @@ fn focus_and_resize_are_bounded_and_atomic() {
 }
 
 #[test]
+fn every_route_declares_an_executable_resize_transition() {
+    let all = capabilities();
+    let mut state = FormalUiState::new(100, 30).unwrap();
+    for event in [
+        FormalEvent::OpenConfiguration,
+        FormalEvent::OpenMeasurementSelection,
+        FormalEvent::OpenRunControl,
+        FormalEvent::OpenRecentRuns,
+        FormalEvent::OpenReports,
+        FormalEvent::OpenHelp,
+    ] {
+        state.apply(event, Some(&all)).unwrap();
+        let route = state.route();
+        state
+            .apply(
+                FormalEvent::Resize {
+                    columns: 120,
+                    lines: 40,
+                },
+                Some(&all),
+            )
+            .unwrap();
+        assert_eq!(state.route(), route);
+        assert_eq!(state.size(), (120, 40));
+    }
+}
+
+#[test]
 fn recording_dispatch_actions_are_declared_in_the_formal_model() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
