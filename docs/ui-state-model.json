@@ -9,8 +9,13 @@
   "state_fields": ["route", "focus", "hover", "query", "selection", "measurement_catalog", "connection", "capabilities", "provider_catalog", "provider_catalog_generation", "live_setup_catalog", "configuration", "auth_status", "recording_campaign", "recording_estimate", "recording_campaign_lifecycle", "recording_dispatch_action", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "configuration_persistence"],
   "bindings": [
     {"action":"quit","element":"navigation","key":"q"},
+    {"action":"go_back","element":"navigation","key":"Esc"},
+    {"action":"open_landing","element":"navigation","key":"h"},
     {"action":"open_measurement_selection","element":"landing.primary","key":"2"},
     {"action":"open_configuration","element":"landing.primary","key":"3"},
+    {"action":"open_run_control","element":"navigation","key":"s"},
+    {"action":"open_recent_runs","element":"navigation","key":"r"},
+    {"action":"open_reports","element":"navigation","key":"p"},
     {"action":"open_wizard","element":"landing.primary","key":"w"},
     {"action":"complete_wizard","element":"wizard.review","key":"Enter"},
     {"action":"wizard_next","element":"wizard.agent","key":"Enter"},
@@ -25,8 +30,11 @@
     {"action":"wizard_back","element":"navigation","key":"Esc"},
     {"action":"cancel_wizard","element":"navigation","key":"q"},
     {"action":"open_help","element":"navigation","key":"?"},
+    {"action":"reconnect","element":"navigation","key":"x"},
+    {"action":"focus_search","element":"help.search","key":"/"},
     {"action":"focus_measure_search","element":"measures.search","key":"/"},
     {"action":"toggle_measure","element":"measures.row","key":"Space"},
+    {"action":"toggle_all_measures","element":"measures.group_toggle","key":"a"},
     {"action":"toggle_group","element":"measures.group_toggle","key":"g"}
     ,{"action":"focus_configuration","element":"configuration.entry","key":"Enter"}
     ,{"action":"save_configuration","element":"configuration.entry","key":"Ctrl-S"}
@@ -35,6 +43,10 @@
     ,{"action":"commit_configuration_edit","element":"configuration.entry","key":"Enter"}
     ,{"action":"refresh_provider_catalog","element":"configuration.control_status","key":"f"}
     ,{"action":"estimate_recording","element":"run.status","key":"e"}
+    ,{"action":"start_run","element":"run.start","key":"Enter"}
+    ,{"action":"cancel_run","element":"run.cancel","key":"Ctrl-C"}
+    ,{"action":"refresh_runs","element":"runs.refresh","key":"f"}
+    ,{"action":"compare_runs","element":"reports.compare","key":"v"}
     ,{"action":"plan_recording","element":"run.status","key":"P"}
     ,{"action":"confirm_recording_capture","element":"run.status","key":"C"}
     ,{"action":"progress_recording","element":"run.status","key":"G"}

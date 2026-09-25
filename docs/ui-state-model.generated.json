@@ -44,6 +44,16 @@
       "key": "q"
     },
     {
+      "action": "go_back",
+      "element": "navigation",
+      "key": "Esc"
+    },
+    {
+      "action": "open_landing",
+      "element": "navigation",
+      "key": "h"
+    },
+    {
       "action": "open_measurement_selection",
       "element": "landing.primary",
       "key": "2"
@@ -52,6 +62,21 @@
       "action": "open_configuration",
       "element": "landing.primary",
       "key": "3"
+    },
+    {
+      "action": "open_run_control",
+      "element": "navigation",
+      "key": "s"
+    },
+    {
+      "action": "open_recent_runs",
+      "element": "navigation",
+      "key": "r"
+    },
+    {
+      "action": "open_reports",
+      "element": "navigation",
+      "key": "p"
     },
     {
       "action": "open_wizard",
@@ -124,6 +149,16 @@
       "key": "?"
     },
     {
+      "action": "reconnect",
+      "element": "navigation",
+      "key": "x"
+    },
+    {
+      "action": "focus_search",
+      "element": "help.search",
+      "key": "/"
+    },
+    {
       "action": "focus_measure_search",
       "element": "measures.search",
       "key": "/"
@@ -132,6 +167,11 @@
       "action": "toggle_measure",
       "element": "measures.row",
       "key": "Space"
+    },
+    {
+      "action": "toggle_all_measures",
+      "element": "measures.group_toggle",
+      "key": "a"
     },
     {
       "action": "toggle_group",
@@ -172,6 +212,26 @@
       "action": "estimate_recording",
       "element": "run.status",
       "key": "e"
+    },
+    {
+      "action": "start_run",
+      "element": "run.start",
+      "key": "Enter"
+    },
+    {
+      "action": "cancel_run",
+      "element": "run.cancel",
+      "key": "Ctrl-C"
+    },
+    {
+      "action": "refresh_runs",
+      "element": "runs.refresh",
+      "key": "f"
+    },
+    {
+      "action": "compare_runs",
+      "element": "reports.compare",
+      "key": "v"
     },
     {
       "action": "plan_recording",

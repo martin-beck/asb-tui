@@ -72,6 +72,8 @@ jobs:
           else
             python3 tools/validate-ui-state-model.py
           fi
+          python3 tools/test-ui-source-parity.py
+          python3 tools/check-ui-source-parity.py
       - name: Run digest-pinned shell quality
         run: tools/run-shell-quality.sh
       - name: Enforce DCO for introduced commits

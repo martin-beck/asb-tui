@@ -89,6 +89,8 @@ jobs:
           git diff --exit-code -- docs/ui-state-model.generated.json
           python3 tools/test-ui-state-model.py
           python3 tools/validate-ui-state-model.py
+          python3 tools/test-ui-source-parity.py
+          python3 tools/check-ui-source-parity.py
       - name: Capture terminal fixture environment on failure
         if: failure()
         shell: bash
