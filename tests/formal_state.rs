@@ -42,6 +42,17 @@ fn documented_transition_sequence_is_executable() {
 }
 
 #[test]
+fn rendered_element_bindings_are_stable_and_model_visible() {
+    let model = include_str!("../docs/ui-state-model.json");
+    for element in asb_tui::formal_state::RENDERED_ELEMENT_BINDINGS {
+        assert!(
+            model.contains(element),
+            "missing model element binding: {element}"
+        );
+    }
+}
+
+#[test]
 fn focus_and_resize_are_bounded_and_atomic() {
     let mut state = FormalUiState::new(100, 30).unwrap();
     state
