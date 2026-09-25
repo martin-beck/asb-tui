@@ -17,6 +17,8 @@ and its focused tests, then run:
 python3 tools/generate-ui-state-model.py
 python3 tools/test-ui-state-model.py
 python3 tools/validate-ui-state-model.py
+python3 tools/test-ui-source-parity.py
+python3 tools/check-ui-source-parity.py
 ```
 
 The generated JSON is checked byte-for-byte in pull-request and trusted-main CI. The gate fails
