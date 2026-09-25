@@ -1489,6 +1489,128 @@ mod tests {
     }
 
     #[test]
+    fn helper_invocation_requires_v110_and_projects_only_typed_status() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_10,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner-7".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(1),
+        };
+        let join = thread::spawn(move || {
+            let mut server = server;
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let size = u32::from_be_bytes(header) as usize;
+            let mut body = vec![0_u8; size];
+            server.read_exact(&mut body).unwrap();
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request.id, RequestId(9_000_000_105));
+            assert_eq!(request.timeout_ms, ControlLimits::default().max_timeout_ms);
+            assert_eq!(
+                request.call.minimum_version(),
+                Some(crate::control_codec::V1_10)
+            );
+            let ControlCall::AuthHelperInvoke(params) = request.call else {
+                panic!("helper invocation request was not typed");
+            };
+            assert_eq!(params.provider, "openai");
+            assert_eq!(params.profile, serde_json::json!({"model": "free"}));
+            assert_eq!(params.idempotency_key, "helper-1");
+            assert!(
+                !body
+                    .windows(b"api_key".len())
+                    .any(|window| window == b"api_key")
+            );
+            let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id,
+                result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                    request_sha256: "a".repeat(64),
+                    result: crate::control_codec::ControlResult::AuthStatus(
+                        crate::control_codec::AuthStatusResponse {
+                            provider: "openai".into(),
+                            endpoint_identity_sha256: "b".repeat(64),
+                            credential_locator_sha256: "c".repeat(64),
+                            generation: Revision(2),
+                            status: "active".into(),
+                        },
+                    ),
+                }),
+            });
+            server
+                .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                .unwrap();
+        });
+        let mut transport =
+            FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_10);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [9; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated).unwrap();
+        session
+            .invoke_auth_helper(
+                &mut projection,
+                "openai".into(),
+                serde_json::json!({"model": "free"}),
+                "helper-1".into(),
+            )
+            .unwrap();
+        let status = projection.snapshot().auth_status.unwrap();
+        assert_eq!(status.provider, "openai");
+        assert_eq!(status.status, "active");
+        assert_eq!(status.generation, Revision(2));
+        join.join().unwrap();
+
+        let (server, client) = UnixStream::pair().unwrap();
+        drop(server);
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_7,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner-7".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(1),
+        };
+        let mut transport =
+            FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_7);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated,
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [9; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        let mut projection = ControlProjection::default();
+        assert_eq!(
+            session.invoke_auth_helper(
+                &mut projection,
+                "openai".into(),
+                serde_json::json!({"model": "free"}),
+                "helper-2".into(),
+            ),
+            Err(TransportError::NotNegotiated)
+        );
+    }
+
+    #[test]
     fn broker_continuity_rejects_epoch_change_and_sequence_skip() {
         let mut continuity = BrokerContinuity::new(BrokerGeneration {
             epoch: [1; 16],
