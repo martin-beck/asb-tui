@@ -1142,6 +1142,22 @@
       "versionInfo": "0.3.18"
     },
     {
+      "SPDXID": "SPDXRef-signal-hook-0.4.4",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "b2a0c28ca5908dbdbcd52e6fdaa00358ab88637f8ab33e1f188dd510eb44b53d"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "https://crates.io/api/v1/crates/signal-hook/0.4.4/download",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "signal-hook",
+      "versionInfo": "0.4.4"
+    },
+    {
       "SPDXID": "SPDXRef-signal-hook-mio-0.2.5",
       "checksums": [
         {
@@ -1568,7 +1584,7 @@
       "spdxElementId": "SPDXRef-asb-tui"
     },
     {
-      "relatedSpdxElement": "SPDXRef-signal-hook-0.3.18",
+      "relatedSpdxElement": "SPDXRef-signal-hook-0.4.4",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-asb-tui"
     }

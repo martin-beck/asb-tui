@@ -67,6 +67,7 @@ fn immutable_terminal_graph_has_only_the_two_reviewed_duplicates() {
         duplicates,
         BTreeMap::from([
             ("hashbrown", BTreeSet::from(["0.16.1", "0.17.1"])),
+            ("signal-hook", BTreeSet::from(["0.3.18", "0.4.4"])),
             ("syn", BTreeSet::from(["2.0.119", "3.0.5"])),
         ])
     );
@@ -145,7 +146,7 @@ fn manifest_and_deny_policy_cannot_silently_widen() {
         "ratatui = { version = \"=0.30.2\", default-features = false, features = [\"crossterm_0_29\"] }"
     ));
     assert!(manifest.contains(
-        "signal-hook = { version = \"=0.3.18\", default-features = false, features = [\"iterator\"] }"
+        "signal-hook = { version = \"=0.4.4\", default-features = false, features = [\"iterator\"] }"
     ));
     assert!(manifest.contains("libc = \"=0.2.189\""));
     assert!(manifest.contains("seccompiler = { version = \"=0.5.0\", default-features = false }"));
@@ -272,6 +273,10 @@ fn enabled_terminal_features_are_exact_and_calendar_cache_are_absent() {
         (
             ("signal-hook", "0.3.18"),
             BTreeSet::from(["channel", "default", "iterator"]),
+        ),
+        (
+            ("signal-hook", "0.4.4"),
+            BTreeSet::from(["channel", "iterator"]),
         ),
     ]);
     assert_eq!(observed, expected);
