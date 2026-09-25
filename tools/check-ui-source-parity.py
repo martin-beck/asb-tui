@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
 """Check that the authored UI model covers the executable source registries."""
 
 import argparse
