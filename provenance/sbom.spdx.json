@@ -566,20 +566,20 @@
       "versionInfo": "0.3.8"
     },
     {
-      "SPDXID": "SPDXRef-linux-raw-sys-0.11.0",
+      "SPDXID": "SPDXRef-linux-raw-sys-0.12.1",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
+          "checksumValue": "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
         }
       ],
       "copyrightText": "NOASSERTION",
-      "downloadLocation": "https://crates.io/api/v1/crates/linux-raw-sys/0.11.0/download",
+      "downloadLocation": "https://crates.io/api/v1/crates/linux-raw-sys/0.12.1/download",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
       "name": "linux-raw-sys",
-      "versionInfo": "0.11.0"
+      "versionInfo": "0.12.1"
     },
     {
       "SPDXID": "SPDXRef-litrs-1.0.0",
@@ -966,20 +966,20 @@
       "versionInfo": "0.4.1"
     },
     {
-      "SPDXID": "SPDXRef-rustix-1.1.2",
+      "SPDXID": "SPDXRef-rustix-1.1.5",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "cd15f8a2c5551a84d56efdc1cd049089e409ac19a3072d5037a17fd70719ff3e"
+          "checksumValue": "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
         }
       ],
       "copyrightText": "NOASSERTION",
-      "downloadLocation": "https://crates.io/api/v1/crates/rustix/1.1.2/download",
+      "downloadLocation": "https://crates.io/api/v1/crates/rustix/1.1.5/download",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
       "name": "rustix",
-      "versionInfo": "1.1.2"
+      "versionInfo": "1.1.5"
     },
     {
       "SPDXID": "SPDXRef-rustversion-1.0.23",
@@ -1548,7 +1548,7 @@
       "spdxElementId": "SPDXRef-asb-tui"
     },
     {
-      "relatedSpdxElement": "SPDXRef-rustix-1.1.2",
+      "relatedSpdxElement": "SPDXRef-rustix-1.1.5",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-asb-tui"
     },
