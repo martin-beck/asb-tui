@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT = ROOT / "docs/tutorials/development-journey-v1.json"
+CONTRACT = ROOT / "docs/qualification/development-journey-v1.json"
 EXPECTED_STEPS = ["enroll", "select", "mock-capture", "offline-replay", "comparison"]
 EXPECTED_WARNINGS = {"missing-auth", "missing-signature-validation", "missing-key-management"}
 
