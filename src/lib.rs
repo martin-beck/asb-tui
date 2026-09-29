@@ -18,6 +18,7 @@ pub mod control_codec;
 pub mod control_transport;
 pub mod credential_helper;
 pub mod delegated;
+pub mod development_auth;
 pub mod formal_state;
 pub mod help;
 pub mod identity_adapter;

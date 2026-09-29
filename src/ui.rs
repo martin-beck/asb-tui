@@ -513,6 +513,43 @@ impl WorkspaceState {
         }
         if self.screen == Screen::Wizard {
             return match key.code {
+                KeyCode::Char('E') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self.wizard_formal.apply(FormalEvent::DevelopmentEnroll);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char('T') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self.wizard_formal.apply(FormalEvent::DevelopmentTest);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char('R') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self.wizard_formal.apply(FormalEvent::DevelopmentRotate);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char('X') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self.wizard_formal.apply(FormalEvent::DevelopmentReset);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char('F') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self
+                        .wizard_formal
+                        .apply(FormalEvent::DevelopmentSelectFixture);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char('N') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self.wizard_formal.apply(FormalEvent::DevelopmentSelectNone);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char('Z') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self.wizard_formal.apply(FormalEvent::DevelopmentRestart);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
                 KeyCode::Enter => {
                     let agent_selected = self.wizard.catalog().is_some_and(|catalog| {
                         catalog.kind() == crate::wizard_catalog::OptionKind::Agent

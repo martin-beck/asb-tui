@@ -7,6 +7,9 @@
 //! UI state model before state is committed.
 
 use crate::{
+    development_auth::{
+        DevelopmentAuthError, DevelopmentAuthFlow, DevelopmentAuthMethod, DevelopmentAuthSnapshot,
+    },
     terminal::RenderPolicy,
     wizard_catalog::{OptionKind, WizardCatalog, WizardCatalogState},
 };
@@ -79,6 +82,7 @@ pub struct Wizard {
     values: [String; 7],
     cancelled: bool,
     catalog: Option<WizardCatalogState>,
+    development_auth: DevelopmentAuthFlow,
 }
 
 impl Default for Wizard {
@@ -88,6 +92,8 @@ impl Default for Wizard {
             values: Default::default(),
             cancelled: false,
             catalog: None,
+            development_auth: DevelopmentAuthFlow::new("development")
+                .expect("static development provider is valid"),
         }
     }
 }
@@ -130,6 +136,57 @@ impl Wizard {
         self.catalog.as_ref()
     }
 
+    #[must_use]
+    pub fn development_auth(&self) -> DevelopmentAuthSnapshot {
+        self.development_auth.snapshot()
+    }
+
+    pub fn enroll_development_credential(&mut self) -> Result<(), DevelopmentAuthError> {
+        self.development_auth.enroll()?;
+        self.sync_development_auth_value();
+        Ok(())
+    }
+
+    pub fn test_development_credential(&mut self) -> Result<(), DevelopmentAuthError> {
+        self.development_auth.test()
+    }
+
+    pub fn rotate_development_credential(&mut self) -> Result<(), DevelopmentAuthError> {
+        self.development_auth.rotate()?;
+        self.sync_development_auth_value();
+        Ok(())
+    }
+
+    pub fn reset_development_credential(&mut self) {
+        self.development_auth.reset();
+        self.values[Step::Authentication as usize].clear();
+    }
+
+    pub fn select_development_fixture(&mut self) -> Result<(), DevelopmentAuthError> {
+        self.development_auth
+            .select_method(DevelopmentAuthMethod::LocalFixture)?;
+        self.values[Step::Authentication as usize].clear();
+        Ok(())
+    }
+
+    pub fn select_development_none(&mut self) -> Result<(), DevelopmentAuthError> {
+        self.development_auth
+            .select_method(DevelopmentAuthMethod::None)?;
+        self.values[Step::Authentication as usize] = "none".into();
+        Ok(())
+    }
+
+    pub fn restart_development_credential(&mut self) {
+        self.development_auth.restart();
+        self.values[Step::Authentication as usize].clear();
+    }
+
+    fn sync_development_auth_value(&mut self) {
+        if let Some(locator) = self.development_auth.snapshot().credential_locator_sha256 {
+            self.values[Step::Authentication as usize] = format!("credential_reference:{locator}");
+        }
+    }
+
     pub fn set_catalog_query(&mut self, query: impl Into<String>) -> Result<(), WizardError> {
         self.catalog
             .as_mut()
@@ -167,6 +224,12 @@ impl Wizard {
             .selected_for_active_kind()
             .unwrap_or_default()
             .to_owned();
+        if catalog.kind() == OptionKind::Provider
+            && !value.is_empty()
+            && let Ok(flow) = DevelopmentAuthFlow::new(value.clone())
+        {
+            self.development_auth = flow;
+        }
         self.set_value(value)
     }
 
@@ -252,6 +315,7 @@ impl Wizard {
     }
     pub fn cancel(&mut self) {
         self.cancelled = true;
+        self.restart_development_credential();
     }
     pub fn complete(&self) -> Result<(), WizardError> {
         (self.step == Step::Review)
@@ -276,6 +340,13 @@ pub enum FormalEvent {
     CatalogMove(isize),
     CatalogSelect,
     CatalogSelectAllAgents,
+    DevelopmentEnroll,
+    DevelopmentTest,
+    DevelopmentRotate,
+    DevelopmentReset,
+    DevelopmentSelectFixture,
+    DevelopmentSelectNone,
+    DevelopmentRestart,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -315,6 +386,15 @@ impl WizardFormalState {
             FormalEvent::CatalogMove(_) => ("wizard_catalog_move", "wizard"),
             FormalEvent::CatalogSelect => ("wizard_catalog_select", "wizard"),
             FormalEvent::CatalogSelectAllAgents => ("wizard_catalog_select_all_agents", "wizard"),
+            FormalEvent::DevelopmentEnroll => ("wizard_development_enroll", "wizard"),
+            FormalEvent::DevelopmentTest => ("wizard_development_test", "wizard"),
+            FormalEvent::DevelopmentRotate => ("wizard_development_rotate", "wizard"),
+            FormalEvent::DevelopmentReset => ("wizard_development_reset", "wizard"),
+            FormalEvent::DevelopmentSelectFixture => {
+                ("wizard_development_select_fixture", "wizard")
+            }
+            FormalEvent::DevelopmentSelectNone => ("wizard_development_select_none", "wizard"),
+            FormalEvent::DevelopmentRestart => ("wizard_development_restart", "wizard"),
         };
         let from = match next.route {
             StartupRoute::Wizard => "wizard",
@@ -345,6 +425,13 @@ impl WizardFormalState {
                 "focus_reset",
             ]
             .as_slice(),
+            "wizard_development_enroll"
+            | "wizard_development_test"
+            | "wizard_development_rotate"
+            | "wizard_development_reset"
+            | "wizard_development_select_fixture"
+            | "wizard_development_select_none"
+            | "wizard_development_restart" => ["wizard_auth_changed", "focus_reset"].as_slice(),
             _ => ["route_changed", "focus_reset"].as_slice(),
         };
         if transition
@@ -376,6 +463,32 @@ impl WizardFormalState {
             }
             FormalEvent::CatalogSelectAllAgents if next.route == StartupRoute::Wizard => {
                 next.wizard.select_all_agents()?
+            }
+            FormalEvent::DevelopmentEnroll if next.route == StartupRoute::Wizard => next
+                .wizard
+                .enroll_development_credential()
+                .map_err(|_| WizardError::InvalidValue)?,
+            FormalEvent::DevelopmentTest if next.route == StartupRoute::Wizard => next
+                .wizard
+                .test_development_credential()
+                .map_err(|_| WizardError::InvalidValue)?,
+            FormalEvent::DevelopmentRotate if next.route == StartupRoute::Wizard => next
+                .wizard
+                .rotate_development_credential()
+                .map_err(|_| WizardError::InvalidValue)?,
+            FormalEvent::DevelopmentReset if next.route == StartupRoute::Wizard => {
+                next.wizard.reset_development_credential()
+            }
+            FormalEvent::DevelopmentSelectFixture if next.route == StartupRoute::Wizard => next
+                .wizard
+                .select_development_fixture()
+                .map_err(|_| WizardError::InvalidValue)?,
+            FormalEvent::DevelopmentSelectNone if next.route == StartupRoute::Wizard => next
+                .wizard
+                .select_development_none()
+                .map_err(|_| WizardError::InvalidValue)?,
+            FormalEvent::DevelopmentRestart if next.route == StartupRoute::Wizard => {
+                next.wizard.restart_development_credential()
             }
             FormalEvent::Next if next.route == StartupRoute::Wizard => next.wizard.advance()?,
             FormalEvent::Back if next.route == StartupRoute::Wizard => next.wizard.back()?,
@@ -522,6 +635,15 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
                 accent,
             )),
             Line::from(step_prompt(wizard.step)),
+            if wizard.step == Step::Authentication {
+                let auth = wizard.development_auth();
+                Line::from(format!(
+                    "Development fixture: {:?} / {:?} / generation {}",
+                    auth.status, auth.method, auth.generation
+                ))
+            } else {
+                Line::from("")
+            },
             Line::from(format!("Value: {}", wizard.current_value())),
             Line::from(format!("Element: {}", element_id(wizard.step))),
         ]
@@ -537,6 +659,8 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
     frame.render_widget(
         Paragraph::new(if wizard.step == Step::Agent {
             "Space select/unselect | a all agents | Enter continue | Esc back | q cancel"
+        } else if wizard.step == Step::Authentication {
+            "F fixture | N no auth | E enroll | T test | R rotate | X reset | Z restart | Enter continue | Esc back | ? help"
         } else {
             "Enter select/continue | Esc back | ? help | q cancel"
         })
@@ -564,7 +688,7 @@ const fn step_prompt(step: Step) -> &'static str {
         Step::Model => "Choose the provider model.",
         Step::Configuration => "Review benchmark configuration defaults.",
         Step::Authentication => {
-            "Use the provider's approved keychain/helper, then enter credential_helper:<endpoint_sha256>:<locator_sha256>; never paste an API key here."
+            "Choose the local development fixture to enroll, test, rotate, or reset; it creates digest-only metadata and never a provider secret. Production enrollment still uses the approved keychain/helper and credential_helper:<endpoint_sha256>:<locator_sha256>; never paste an API key."
         }
         Step::Recording => "Choose whether to record benchmark activity.",
         Step::Replay => "Choose the offline replay policy.",
@@ -600,8 +724,81 @@ mod tests {
     #[test]
     fn authentication_step_explains_secure_external_enrollment() {
         let prompt = step_prompt(Step::Authentication);
+        assert!(prompt.contains("development fixture"));
+        assert!(prompt.contains("digest-only metadata"));
         assert!(prompt.contains("approved keychain/helper"));
-        assert!(prompt.contains("credential_helper:<endpoint_sha256>:<locator_sha256>"));
-        assert!(prompt.contains("never paste an API key"));
+    }
+
+    #[test]
+    fn development_fixture_is_available_from_the_authentication_step() {
+        let mut wizard = Wizard::default();
+        wizard.enroll_development_credential().unwrap();
+        let auth = wizard.development_auth();
+        assert_eq!(auth.generation, 1);
+        assert!(auth.credential_locator_sha256.is_some());
+        assert!(
+            wizard.values()[Step::Authentication as usize].starts_with("credential_reference:")
+        );
+    }
+
+    #[test]
+    fn formal_development_auth_actions_are_atomic_and_restartable() {
+        let mut state = WizardFormalState::new().unwrap();
+        state.apply(FormalEvent::OpenWizard).unwrap();
+        for value in ["agent", "provider", "model", "config"] {
+            state.apply(FormalEvent::SetValue(value.into())).unwrap();
+            state.apply(FormalEvent::Next).unwrap();
+        }
+        state.apply(FormalEvent::DevelopmentEnroll).unwrap();
+        assert_eq!(state.wizard().development_auth().generation, 1);
+        state.apply(FormalEvent::DevelopmentTest).unwrap();
+        assert_eq!(
+            state.wizard().development_auth().status,
+            crate::development_auth::DevelopmentAuthStatus::Tested
+        );
+        state.apply(FormalEvent::DevelopmentRotate).unwrap();
+        assert_eq!(state.wizard().development_auth().generation, 2);
+        state.apply(FormalEvent::DevelopmentReset).unwrap();
+        assert!(
+            state
+                .wizard()
+                .development_auth()
+                .credential_locator_sha256
+                .is_none()
+        );
+        assert!(state.wizard().values()[Step::Authentication as usize].is_empty());
+    }
+
+    #[test]
+    fn enrollment_populates_a_configuration_safe_reference_for_completion() {
+        let mut state = WizardFormalState::new().unwrap();
+        state.apply(FormalEvent::OpenWizard).unwrap();
+        for value in ["agent", "provider", "model", "config"] {
+            state.apply(FormalEvent::SetValue(value.into())).unwrap();
+            state.apply(FormalEvent::Next).unwrap();
+        }
+        state.apply(FormalEvent::DevelopmentEnroll).unwrap();
+        state.apply(FormalEvent::Next).unwrap();
+        assert_eq!(state.step(), Step::Recording);
+        assert!(
+            state.wizard().values()[Step::Authentication as usize]
+                .starts_with("credential_reference:")
+        );
+    }
+
+    #[test]
+    fn selecting_none_or_cancelling_is_explicit_and_restartable() {
+        let mut wizard = Wizard::default();
+        wizard.select_development_none().unwrap();
+        assert_eq!(wizard.values()[Step::Authentication as usize], "none");
+        wizard.select_development_fixture().unwrap();
+        assert!(wizard.values()[Step::Authentication as usize].is_empty());
+        wizard.enroll_development_credential().unwrap();
+        wizard.cancel();
+        assert!(wizard.values()[Step::Authentication as usize].is_empty());
+        assert_eq!(
+            wizard.development_auth().status,
+            crate::development_auth::DevelopmentAuthStatus::Unconfigured
+        );
     }
 }

@@ -321,6 +321,17 @@ fn validate_document(model: &Document) -> Result<(), String> {
                 "focus_reset",
             ]
             .as_slice()
+        } else if matches!(
+            transition.event.as_str(),
+            "wizard_development_enroll"
+                | "wizard_development_test"
+                | "wizard_development_rotate"
+                | "wizard_development_reset"
+                | "wizard_development_select_fixture"
+                | "wizard_development_select_none"
+                | "wizard_development_restart"
+        ) {
+            ["wizard_auth_changed", "focus_reset"].as_slice()
         } else if transition.event == "go_back" {
             ["route_restored", "focus_reset"].as_slice()
         } else if transition.event == "open_help" {
