@@ -140,7 +140,9 @@ impl Wizard {
     }
 
     pub fn enroll_development_credential(&mut self) -> Result<(), DevelopmentAuthError> {
-        self.development_auth.enroll()
+        self.development_auth.enroll()?;
+        self.sync_development_auth_value();
+        Ok(())
     }
 
     pub fn test_development_credential(&mut self) -> Result<(), DevelopmentAuthError> {
@@ -148,15 +150,25 @@ impl Wizard {
     }
 
     pub fn rotate_development_credential(&mut self) -> Result<(), DevelopmentAuthError> {
-        self.development_auth.rotate()
+        self.development_auth.rotate()?;
+        self.sync_development_auth_value();
+        Ok(())
     }
 
     pub fn reset_development_credential(&mut self) {
         self.development_auth.reset();
+        self.values[Step::Authentication as usize].clear();
     }
 
     pub fn restart_development_credential(&mut self) {
         self.development_auth.restart();
+        self.values[Step::Authentication as usize].clear();
+    }
+
+    fn sync_development_auth_value(&mut self) {
+        if let Some(locator) = self.development_auth.snapshot().credential_locator_sha256 {
+            self.values[Step::Authentication as usize] = format!("credential_reference:{locator}");
+        }
     }
 
     pub fn set_catalog_query(&mut self, query: impl Into<String>) -> Result<(), WizardError> {
@@ -685,6 +697,9 @@ mod tests {
         let auth = wizard.development_auth();
         assert_eq!(auth.generation, 1);
         assert!(auth.credential_locator_sha256.is_some());
+        assert!(
+            wizard.values()[Step::Authentication as usize].starts_with("credential_reference:")
+        );
     }
 
     #[test]
@@ -711,6 +726,24 @@ mod tests {
                 .development_auth()
                 .credential_locator_sha256
                 .is_none()
+        );
+        assert!(state.wizard().values()[Step::Authentication as usize].is_empty());
+    }
+
+    #[test]
+    fn enrollment_populates_a_configuration_safe_reference_for_completion() {
+        let mut state = WizardFormalState::new().unwrap();
+        state.apply(FormalEvent::OpenWizard).unwrap();
+        for value in ["agent", "provider", "model", "config"] {
+            state.apply(FormalEvent::SetValue(value.into())).unwrap();
+            state.apply(FormalEvent::Next).unwrap();
+        }
+        state.apply(FormalEvent::DevelopmentEnroll).unwrap();
+        state.apply(FormalEvent::Next).unwrap();
+        assert_eq!(state.step(), Step::Recording);
+        assert!(
+            state.wizard().values()[Step::Authentication as usize]
+                .starts_with("credential_reference:")
         );
     }
 }
