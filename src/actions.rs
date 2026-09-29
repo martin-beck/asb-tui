@@ -40,11 +40,18 @@ pub enum UiAction {
     CancelRecording,
     ReconcileRecording,
     ActivateOfflineDefault,
+    WizardDevelopmentEnroll,
+    WizardDevelopmentTest,
+    WizardDevelopmentRotate,
+    WizardDevelopmentReset,
+    WizardDevelopmentSelectFixture,
+    WizardDevelopmentSelectNone,
+    WizardDevelopmentRestart,
 }
 
 impl UiAction {
     /// Every action, in stable display order.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 32] = [
         Self::Quit,
         Self::GoBack,
         Self::OpenLanding,
@@ -70,6 +77,13 @@ impl UiAction {
         Self::CancelRecording,
         Self::ReconcileRecording,
         Self::ActivateOfflineDefault,
+        Self::WizardDevelopmentEnroll,
+        Self::WizardDevelopmentTest,
+        Self::WizardDevelopmentRotate,
+        Self::WizardDevelopmentReset,
+        Self::WizardDevelopmentSelectFixture,
+        Self::WizardDevelopmentSelectNone,
+        Self::WizardDevelopmentRestart,
     ];
 
     /// Stable machine-readable action identifier for recordings and help
@@ -101,6 +115,13 @@ impl UiAction {
             Self::CancelRecording => "cancel_recording",
             Self::ReconcileRecording => "reconcile_recording",
             Self::ActivateOfflineDefault => "activate_offline_default",
+            Self::WizardDevelopmentEnroll => "wizard_development_enroll",
+            Self::WizardDevelopmentTest => "wizard_development_test",
+            Self::WizardDevelopmentRotate => "wizard_development_rotate",
+            Self::WizardDevelopmentReset => "wizard_development_reset",
+            Self::WizardDevelopmentSelectFixture => "wizard_development_select_fixture",
+            Self::WizardDevelopmentSelectNone => "wizard_development_select_none",
+            Self::WizardDevelopmentRestart => "wizard_development_restart",
         }
     }
 }
@@ -240,6 +261,13 @@ const fn action_context_route(action: UiAction) -> Route {
         | UiAction::CancelRecording
         | UiAction::ReconcileRecording
         | UiAction::ActivateOfflineDefault => Route::RunControl,
+        UiAction::WizardDevelopmentEnroll
+        | UiAction::WizardDevelopmentTest
+        | UiAction::WizardDevelopmentRotate
+        | UiAction::WizardDevelopmentReset
+        | UiAction::WizardDevelopmentSelectFixture
+        | UiAction::WizardDevelopmentSelectNone
+        | UiAction::WizardDevelopmentRestart => Route::Configuration,
         UiAction::RefreshProviderCatalog => Route::Configuration,
         UiAction::RefreshRuns => Route::RecentRuns,
         UiAction::CompareRuns => Route::Reports,
@@ -428,6 +456,55 @@ fn descriptor(
             ActionContext::Route(Route::RunControl),
             None,
         ),
+        UiAction::WizardDevelopmentEnroll => (
+            KeyChord::Char('E'),
+            "Enroll development fixture",
+            "Create deterministic local development credential metadata",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
+        UiAction::WizardDevelopmentTest => (
+            KeyChord::Char('T'),
+            "Test development fixture",
+            "Check that the local development fixture is usable",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
+        UiAction::WizardDevelopmentRotate => (
+            KeyChord::Char('R'),
+            "Rotate development fixture",
+            "Generate a fresh local development fixture generation",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
+        UiAction::WizardDevelopmentReset => (
+            KeyChord::Char('X'),
+            "Reset development fixture",
+            "Clear local fixture metadata before starting again",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
+        UiAction::WizardDevelopmentSelectFixture => (
+            KeyChord::Char('F'),
+            "Use development fixture",
+            "Select the local development authentication method",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
+        UiAction::WizardDevelopmentSelectNone => (
+            KeyChord::Char('N'),
+            "Use no authentication",
+            "Select explicitly unauthenticated development mode",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
+        UiAction::WizardDevelopmentRestart => (
+            KeyChord::Char('Z'),
+            "Restart development enrollment",
+            "Discard the current fixture attempt and restart it",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
     };
     let relevant = match context {
         ActionContext::Global => true,
@@ -474,7 +551,16 @@ fn action_backend_status(
 ) -> Option<ActionDisabledReason> {
     let Some(caps) = capabilities else {
         return match action {
-            UiAction::Reconnect | UiAction::Quit | UiAction::GoBack => None,
+            UiAction::Reconnect
+            | UiAction::Quit
+            | UiAction::GoBack
+            | UiAction::WizardDevelopmentEnroll
+            | UiAction::WizardDevelopmentTest
+            | UiAction::WizardDevelopmentRotate
+            | UiAction::WizardDevelopmentReset
+            | UiAction::WizardDevelopmentSelectFixture
+            | UiAction::WizardDevelopmentSelectNone
+            | UiAction::WizardDevelopmentRestart => None,
             _ => Some(ActionDisabledReason::NotNegotiated),
         };
     };
@@ -538,7 +624,7 @@ mod tests {
                 .any(|d| d.action == UiAction::ToggleMeasure)
         );
         assert!(!descriptors.iter().any(|d| d.action == UiAction::StartRun));
-        assert_eq!(UiAction::ALL.len(), 25);
+        assert_eq!(UiAction::ALL.len(), 32);
         for action in UiAction::ALL {
             assert!(
                 ActionRegistry::search(action.id())
