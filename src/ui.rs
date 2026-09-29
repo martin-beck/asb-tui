@@ -79,6 +79,7 @@ pub struct WorkspaceState {
     pub wizard: Wizard,
     wizard_formal: WizardFormalState,
     wizard_completion: Option<[String; 7]>,
+    development_catalog_fallback: bool,
     /// Last validated dimensions received from the terminal event stream.
     /// Rendering still uses the frame's authoritative area, so a missed
     /// event cannot make the renderer allocate from stale dimensions.
@@ -100,6 +101,7 @@ impl Default for WorkspaceState {
             wizard: Wizard::default(),
             wizard_formal: WizardFormalState::new().expect("authored wizard model must be valid"),
             wizard_completion: None,
+            development_catalog_fallback: false,
             help: false,
             search: String::new(),
             measure_cursor: 0,
@@ -246,6 +248,7 @@ impl WorkspaceState {
         if let Ok(formal) = WizardFormalState::new_with_catalog(catalog) {
             self.wizard_formal = formal;
             self.wizard = self.wizard_formal.wizard().clone();
+            self.development_catalog_fallback = false;
         }
         self
     }
@@ -448,6 +451,7 @@ impl WorkspaceState {
         {
             self.wizard_formal = formal;
             self.wizard = self.wizard_formal.wizard().clone();
+            self.development_catalog_fallback = true;
         }
     }
 
@@ -486,12 +490,13 @@ impl WorkspaceState {
         // Populate a first-run wizard from the authenticated control-plane
         // catalog so users select supported identifiers instead of typing
         // opaque values. Do not replace an in-progress draft during refresh.
-        if self.wizard.catalog().is_none()
+        if (self.wizard.catalog().is_none() || self.development_catalog_fallback)
             && let Some(catalog) = wizard_catalog_from_snapshot(&snapshot)
         {
             self.wizard = Wizard::with_catalog(catalog.clone());
             self.wizard_formal = WizardFormalState::new_with_catalog(catalog)
                 .expect("validated live wizard catalog must satisfy the state model");
+            self.development_catalog_fallback = false;
         }
         // An authoritative, valid-but-unconfigured runner is the explicit
         // first-run signal. Route it into the wizard after the initial
@@ -1760,7 +1765,24 @@ mod tests {
             recording_campaign_lifecycle: None,
             runs: Vec::new(),
         };
-        let mut state = WorkspaceState::default();
+        let mut state = WorkspaceState::for_readiness(StartupInput {
+            configuration_present: false,
+            configuration_complete: false,
+            endpoint_available: true,
+            configuration_malformed: false,
+            configuration_stale: false,
+            authorized: true,
+        });
+        assert_eq!(
+            state
+                .wizard
+                .catalog()
+                .expect("development fallback")
+                .catalog()
+                .options(crate::wizard_catalog::OptionKind::Provider)[0]
+                .id,
+            "development"
+        );
         state.apply_live_snapshot(snapshot);
         let catalog = state.wizard.catalog().expect("live catalog attached");
         assert_eq!(
