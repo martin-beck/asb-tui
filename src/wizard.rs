@@ -675,7 +675,7 @@ mod tests {
         let prompt = step_prompt(Step::Authentication);
         assert!(prompt.contains("development fixture"));
         assert!(prompt.contains("digest-only metadata"));
-        assert!(prompt.contains("approved helper"));
+        assert!(prompt.contains("approved keychain/helper"));
     }
 
     #[test]
