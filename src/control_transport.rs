@@ -32,6 +32,16 @@ pub enum TransportError {
     Continuity,
     Projection,
     RemoteFailure,
+    /// A bounded runner error code preserved for recovery decisions without
+    /// exposing the remote message or any credential material.
+    RemoteFailureCode(i32),
+}
+
+impl TransportError {
+    #[must_use]
+    pub const fn is_reconciliation_required(&self) -> bool {
+        matches!(self, Self::RemoteFailureCode(-33008))
+    }
 }
 impl From<CodecError> for TransportError {
     fn from(value: CodecError) -> Self {
@@ -421,6 +431,9 @@ impl AuthenticatedBrokerSession {
             }),
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
         if !matches!(response, ControlResponse::Success(_)) {
             return Err(TransportError::RemoteFailure);
         }
@@ -454,6 +467,9 @@ impl AuthenticatedBrokerSession {
             }),
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
         if !matches!(response, ControlResponse::Success(_)) {
             return Err(TransportError::RemoteFailure);
         }
@@ -558,6 +574,9 @@ impl AuthenticatedBrokerSession {
             call: ControlCall::AuthStatus(AuthStatusParams { provider }),
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
         if !matches!(response, ControlResponse::Success(_)) {
             return Err(TransportError::RemoteFailure);
         }
@@ -589,6 +608,9 @@ impl AuthenticatedBrokerSession {
             }),
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
         if !matches!(response, ControlResponse::Success(_)) {
             return Err(TransportError::RemoteFailure);
         }
@@ -613,6 +635,9 @@ impl AuthenticatedBrokerSession {
             call,
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
         if !matches!(response, ControlResponse::Success(_)) {
             return Err(TransportError::RemoteFailure);
         }
@@ -1674,8 +1699,9 @@ mod tests {
                 serde_json::json!({"model": "free"}),
                 "reconcile-retry-1".into(),
             ),
-            Err(TransportError::RemoteFailure)
+            Err(TransportError::RemoteFailureCode(-33008))
         );
+        assert!(TransportError::RemoteFailureCode(-33008).is_reconciliation_required());
         assert!(projection.snapshot().auth_status.is_none());
         join.join().unwrap();
     }
