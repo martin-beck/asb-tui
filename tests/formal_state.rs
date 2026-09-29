@@ -5,6 +5,7 @@ use asb_tui::{
     Capabilities,
     formal_state::{FormalEvent, FormalUiState},
     shell::Route,
+    wizard::{FormalEvent as WizardEvent, WizardFormalState},
 };
 
 fn capabilities() -> Capabilities {
@@ -128,4 +129,25 @@ fn recording_dispatch_actions_are_declared_in_the_formal_model() {
             "missing formal binding for {action}"
         );
     }
+}
+
+#[test]
+fn development_authentication_actions_are_formally_executable() {
+    let mut wizard = WizardFormalState::new().unwrap();
+    wizard.apply(WizardEvent::OpenWizard).unwrap();
+    for value in ["agent", "provider", "model", "configuration"] {
+        wizard.apply(WizardEvent::SetValue(value.into())).unwrap();
+        wizard.apply(WizardEvent::Next).unwrap();
+    }
+    wizard.apply(WizardEvent::DevelopmentEnroll).unwrap();
+    wizard.apply(WizardEvent::DevelopmentTest).unwrap();
+    wizard.apply(WizardEvent::DevelopmentRotate).unwrap();
+    wizard.apply(WizardEvent::DevelopmentReset).unwrap();
+    assert!(
+        wizard
+            .wizard()
+            .development_auth()
+            .credential_locator_sha256
+            .is_none()
+    );
 }

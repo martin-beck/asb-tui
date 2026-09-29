@@ -609,7 +609,7 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         Paragraph::new(if wizard.step == Step::Agent {
             "Space select/unselect | a all agents | Enter continue | Esc back | q cancel"
         } else if wizard.step == Step::Authentication {
-            "e enroll fixture | t test | r rotate | x reset | Enter continue | Esc back | ? help"
+            "E enroll fixture | T test | R rotate | X reset | Enter continue | Esc back | ? help"
         } else {
             "Enter select/continue | Esc back | ? help | q cancel"
         })
@@ -637,7 +637,7 @@ const fn step_prompt(step: Step) -> &'static str {
         Step::Model => "Choose the provider model.",
         Step::Configuration => "Review benchmark configuration defaults.",
         Step::Authentication => {
-            "Choose the local development fixture to enroll, test, rotate, or reset; it creates digest-only metadata and never a provider secret. Production enrollment still uses an approved helper."
+            "Choose the local development fixture to enroll, test, rotate, or reset; it creates digest-only metadata and never a provider secret. Production enrollment still uses the approved keychain/helper and credential_helper:<endpoint_sha256>:<locator_sha256>; never paste an API key."
         }
         Step::Recording => "Choose whether to record benchmark activity.",
         Step::Replay => "Choose the offline replay policy.",

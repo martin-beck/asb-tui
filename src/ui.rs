@@ -513,22 +513,22 @@ impl WorkspaceState {
         }
         if self.screen == Screen::Wizard {
             return match key.code {
-                KeyCode::Char('e') if self.wizard.step() == wizard::Step::Authentication => {
+                KeyCode::Char('E') if self.wizard.step() == wizard::Step::Authentication => {
                     let _ = self.wizard_formal.apply(FormalEvent::DevelopmentEnroll);
                     self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None
                 }
-                KeyCode::Char('t') if self.wizard.step() == wizard::Step::Authentication => {
+                KeyCode::Char('T') if self.wizard.step() == wizard::Step::Authentication => {
                     let _ = self.wizard_formal.apply(FormalEvent::DevelopmentTest);
                     self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None
                 }
-                KeyCode::Char('r') if self.wizard.step() == wizard::Step::Authentication => {
+                KeyCode::Char('R') if self.wizard.step() == wizard::Step::Authentication => {
                     let _ = self.wizard_formal.apply(FormalEvent::DevelopmentRotate);
                     self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None
                 }
-                KeyCode::Char('x') if self.wizard.step() == wizard::Step::Authentication => {
+                KeyCode::Char('X') if self.wizard.step() == wizard::Step::Authentication => {
                     let _ = self.wizard_formal.apply(FormalEvent::DevelopmentReset);
                     self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None

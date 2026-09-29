@@ -136,22 +136,22 @@
     {
       "action": "wizard_development_enroll",
       "element": "wizard.authentication",
-      "key": "e"
+      "key": "E"
     },
     {
       "action": "wizard_development_test",
       "element": "wizard.authentication",
-      "key": "t"
+      "key": "T"
     },
     {
       "action": "wizard_development_rotate",
       "element": "wizard.authentication",
-      "key": "r"
+      "key": "R"
     },
     {
       "action": "wizard_development_reset",
       "element": "wizard.authentication",
-      "key": "x"
+      "key": "X"
     },
     {
       "action": "wizard_back",
