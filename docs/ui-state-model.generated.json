@@ -22,6 +22,7 @@
     "provider_catalog",
     "provider_catalog_generation",
     "live_setup_catalog",
+    "development_catalog_fallback",
     "configuration",
     "auth_status",
     "recording_campaign",

@@ -54,6 +54,19 @@ fn rendered_element_bindings_are_stable_and_model_visible() {
 }
 
 #[test]
+fn development_catalog_fallback_is_declared_in_the_formal_model() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    assert!(
+        model["state_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "development_catalog_fallback")
+    );
+}
+
+#[test]
 fn focus_and_resize_are_bounded_and_atomic() {
     let mut state = FormalUiState::new(100, 30).unwrap();
     state
