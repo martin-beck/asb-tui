@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
 """Validate the credential-free development/mock journey contract (AR-1330)."""
 
 import json

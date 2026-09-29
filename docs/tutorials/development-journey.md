@@ -1,3 +1,5 @@
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<!-- SPDX-License-Identifier: MIT -->
 # Development/mock journey qualification
 
 `development-journey-v1.json` is the standalone asb-tui qualification contract
