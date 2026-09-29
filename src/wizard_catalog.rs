@@ -67,6 +67,25 @@ pub struct WizardCatalog {
 }
 
 impl WizardCatalog {
+    /// Deterministic catalog used by the disconnected development wizard.
+    /// These entries are local fixtures only; a negotiated runner may replace
+    /// them with its authoritative catalog before a real run.
+    pub fn development() -> Result<Self, String> {
+        let agents = ["fake-alpha", "fake-beta"]
+            .into_iter()
+            .map(|id| WizardOption::new(id, id, true))
+            .collect::<Result<Vec<_>, _>>()?;
+        let providers = vec![
+            WizardOption::new("development", "Development fixture", true)?
+                .compatible_with(vec!["fake-alpha".into(), "fake-beta".into()])?,
+        ];
+        let models = vec![
+            WizardOption::new("fixture-model", "Development fixture model", true)?
+                .compatible_with(vec!["development".into()])?,
+        ];
+        Self::new(agents, providers, models)
+    }
+
     pub fn new(
         agents: Vec<WizardOption>,
         providers: Vec<WizardOption>,
@@ -515,5 +534,27 @@ mod tests {
             state.selected_ids(OptionKind::Agent),
             ["agent-a", "agent-b"]
         );
+    }
+
+    #[test]
+    fn development_catalog_is_bounded_and_compatible() {
+        let catalog = WizardCatalog::development().unwrap();
+        assert_eq!(
+            catalog
+                .options(OptionKind::Agent)
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            ["fake-alpha", "fake-beta"]
+        );
+        assert_eq!(catalog.options(OptionKind::Provider)[0].id, "development");
+        assert_eq!(catalog.options(OptionKind::Model)[0].id, "fixture-model");
+        let mut state = WizardCatalogState::new(catalog, OptionKind::Agent);
+        state.select_all_agents().unwrap();
+        state.set_kind(OptionKind::Provider);
+        assert_eq!(state.visible_options()[0].id, "development");
+        state.select_cursor().unwrap();
+        state.set_kind(OptionKind::Model);
+        assert_eq!(state.visible_options()[0].id, "fixture-model");
     }
 }

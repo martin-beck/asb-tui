@@ -421,6 +421,7 @@ impl WorkspaceState {
             // interpreter as manual wizard navigation.  The readiness facts
             // have already been normalized by the injected boundary above;
             // this call performs no I/O or persistence.
+            state.ensure_development_catalog();
             if state
                 .wizard_formal
                 .apply(FormalEvent::AutoOpenWizard)
@@ -437,6 +438,16 @@ impl WorkspaceState {
     pub fn open_wizard(&mut self) {
         if self.wizard_formal.apply(FormalEvent::OpenWizard).is_ok() {
             self.screen = Screen::Wizard;
+        }
+    }
+
+    fn ensure_development_catalog(&mut self) {
+        if self.wizard.catalog().is_none()
+            && let Ok(catalog) = crate::wizard_catalog::WizardCatalog::development()
+            && let Ok(formal) = WizardFormalState::new_with_catalog(catalog)
+        {
+            self.wizard_formal = formal;
+            self.wizard = self.wizard_formal.wizard().clone();
         }
     }
 
@@ -491,6 +502,7 @@ impl WorkspaceState {
             .as_ref()
             .is_some_and(|configuration| !configuration.configured)
         {
+            self.ensure_development_catalog();
             self.open_wizard();
         }
         self.live = Some(snapshot);
@@ -1802,6 +1814,27 @@ mod tests {
         assert_eq!(state.wizard.step(), crate::wizard::Step::Agent);
         let configured = WorkspaceState::for_startup(true);
         assert_eq!(configured.screen, Screen::Landing);
+    }
+
+    #[test]
+    fn automatic_unconfigured_route_has_development_catalog_fallback() {
+        let state = WorkspaceState::for_readiness(StartupInput {
+            configuration_present: false,
+            configuration_complete: false,
+            endpoint_available: true,
+            configuration_malformed: false,
+            configuration_stale: false,
+            authorized: true,
+        });
+        assert_eq!(state.screen, Screen::Wizard);
+        let catalog = state.wizard.catalog().expect("development catalog");
+        assert_eq!(
+            catalog
+                .catalog()
+                .options(crate::wizard_catalog::OptionKind::Provider)[0]
+                .id,
+            "development"
+        );
     }
 
     #[test]
