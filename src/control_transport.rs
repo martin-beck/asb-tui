@@ -32,6 +32,16 @@ pub enum TransportError {
     Continuity,
     Projection,
     RemoteFailure,
+    /// A bounded runner error code preserved for recovery decisions without
+    /// exposing the remote message or any credential material.
+    RemoteFailureCode(i32),
+}
+
+impl TransportError {
+    #[must_use]
+    pub const fn is_reconciliation_required(&self) -> bool {
+        matches!(self, Self::RemoteFailureCode(-33008))
+    }
 }
 impl From<CodecError> for TransportError {
     fn from(value: CodecError) -> Self {
@@ -421,6 +431,9 @@ impl AuthenticatedBrokerSession {
             }),
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
         if !matches!(response, ControlResponse::Success(_)) {
             return Err(TransportError::RemoteFailure);
         }
@@ -454,6 +467,9 @@ impl AuthenticatedBrokerSession {
             }),
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
         if !matches!(response, ControlResponse::Success(_)) {
             return Err(TransportError::RemoteFailure);
         }
@@ -558,6 +574,12 @@ impl AuthenticatedBrokerSession {
             call: ControlCall::AuthStatus(AuthStatusParams { provider }),
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
         projection
             .apply(&request, &response, self.negotiated.limits)
             .map_err(|_| TransportError::Projection)
@@ -586,6 +608,12 @@ impl AuthenticatedBrokerSession {
             }),
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
         projection
             .apply(&request, &response, self.negotiated.limits)
             .map_err(|_| TransportError::Projection)
@@ -607,6 +635,12 @@ impl AuthenticatedBrokerSession {
             call,
         };
         let response = self.transport.round_trip(&request)?;
+        if let ControlResponse::Failure(failure) = &response {
+            return Err(TransportError::RemoteFailureCode(failure.error.code));
+        }
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
         projection
             .apply(&request, &response, self.negotiated.limits)
             .map_err(|_| TransportError::Projection)
@@ -1608,6 +1642,292 @@ mod tests {
             ),
             Err(TransportError::NotNegotiated)
         );
+    }
+
+    #[test]
+    fn helper_reconciliation_failure_is_typed_and_does_not_mutate_projection() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let join = thread::spawn(move || {
+            let mut server = server;
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let size = u32::from_be_bytes(header) as usize;
+            let mut body = vec![0_u8; size];
+            server.read_exact(&mut body).unwrap();
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            assert!(matches!(request.call, ControlCall::AuthHelperInvoke(_)));
+            let response = ControlResponse::Failure(crate::control_codec::FailureResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id,
+                error: crate::control_codec::RpcError {
+                    code: -33008,
+                    message: "runner reconciliation is required".into(),
+                },
+            });
+            server
+                .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                .unwrap();
+        });
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_10,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner-reconcile".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(1),
+        };
+        let mut transport =
+            FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(control_codec::V1_10);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [7; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated).unwrap();
+        assert_eq!(
+            session.invoke_auth_helper(
+                &mut projection,
+                "openai".into(),
+                serde_json::json!({"model": "free"}),
+                "reconcile-retry-1".into(),
+            ),
+            Err(TransportError::RemoteFailureCode(-33008))
+        );
+        assert!(TransportError::RemoteFailureCode(-33008).is_reconciliation_required());
+        assert!(projection.snapshot().auth_status.is_none());
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn helper_reconciliation_fixture_retries_with_digest_only_auth_status() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let join = thread::spawn(move || {
+            let mut server = server;
+            for (attempt, expected_key) in [(0, "reconcile-1"), (1, "reconcile-2")] {
+                let mut header = [0_u8; 4];
+                server.read_exact(&mut header).unwrap();
+                let size = u32::from_be_bytes(header) as usize;
+                let mut body = vec![0_u8; size];
+                server.read_exact(&mut body).unwrap();
+                assert!(!body.windows(b"api_key".len()).any(|w| w == b"api_key"));
+                assert!(!body.windows(b"secret".len()).any(|w| w == b"secret"));
+                let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+                let ControlCall::AuthHelperInvoke(params) = request.call else {
+                    panic!("reconciliation fixture received a non-helper request");
+                };
+                assert_eq!(params.idempotency_key, expected_key);
+                let response = if attempt == 0 {
+                    ControlResponse::Failure(crate::control_codec::FailureResponse {
+                        jsonrpc: "2.0".into(),
+                        id: request.id,
+                        error: crate::control_codec::RpcError {
+                            code: -33008,
+                            message: "runner reconciliation is required".into(),
+                        },
+                    })
+                } else {
+                    ControlResponse::Success(crate::control_codec::SuccessResponse {
+                        jsonrpc: "2.0".into(),
+                        id: request.id,
+                        result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                            request_sha256: "d".repeat(64),
+                            result: crate::control_codec::ControlResult::AuthStatus(
+                                crate::control_codec::AuthStatusResponse {
+                                    provider: "openai".into(),
+                                    endpoint_identity_sha256: "e".repeat(64),
+                                    credential_locator_sha256: "f".repeat(64),
+                                    generation: Revision(3),
+                                    status: "active".into(),
+                                },
+                            ),
+                        }),
+                    })
+                };
+                server
+                    .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                    .unwrap();
+            }
+        });
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_10,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner-reconcile-fixture".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(1),
+        };
+        let mut transport =
+            FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(control_codec::V1_10);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [8; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated).unwrap();
+        assert_eq!(
+            session.invoke_auth_helper(
+                &mut projection,
+                "openai".into(),
+                serde_json::json!({"model": "free"}),
+                "reconcile-1".into(),
+            ),
+            Err(TransportError::RemoteFailureCode(-33008))
+        );
+        assert!(projection.snapshot().auth_status.is_none());
+        session
+            .invoke_auth_helper(
+                &mut projection,
+                "openai".into(),
+                serde_json::json!({"model": "free"}),
+                "reconcile-2".into(),
+            )
+            .unwrap();
+        let status = projection.snapshot().auth_status.unwrap();
+        assert_eq!(status.provider, "openai");
+        assert_eq!(status.status, "active");
+        assert_eq!(status.generation, Revision(3));
+        assert_eq!(status.endpoint_identity_sha256.len(), 64);
+        assert_eq!(status.credential_locator_sha256.len(), 64);
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn helper_reconciliation_fixture_survives_transport_reconnect() {
+        let (server1, client1) = UnixStream::pair().unwrap();
+        let first = thread::spawn(move || {
+            let mut server = server1;
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let size = u32::from_be_bytes(header) as usize;
+            let mut body = vec![0_u8; size];
+            server.read_exact(&mut body).unwrap();
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            let response = ControlResponse::Failure(crate::control_codec::FailureResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id,
+                error: crate::control_codec::RpcError {
+                    code: -33008,
+                    message: "runner reconciliation is required".into(),
+                },
+            });
+            server
+                .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                .unwrap();
+        });
+        let (server2, client2) = UnixStream::pair().unwrap();
+        let second = thread::spawn(move || {
+            let mut server = server2;
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let size = u32::from_be_bytes(header) as usize;
+            let mut body = vec![0_u8; size];
+            server.read_exact(&mut body).unwrap();
+            assert!(!body.windows(b"api_key".len()).any(|w| w == b"api_key"));
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            let ControlCall::AuthHelperInvoke(params) = request.call else {
+                panic!("reconnected fixture received a non-helper request");
+            };
+            assert_eq!(params.idempotency_key, "reconnect-retry");
+            let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id,
+                result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                    request_sha256: "1".repeat(64),
+                    result: crate::control_codec::ControlResult::AuthStatus(
+                        crate::control_codec::AuthStatusResponse {
+                            provider: "openai".into(),
+                            endpoint_identity_sha256: "2".repeat(64),
+                            credential_locator_sha256: "3".repeat(64),
+                            generation: Revision(4),
+                            status: "active".into(),
+                        },
+                    ),
+                }),
+            });
+            server
+                .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                .unwrap();
+        });
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_10,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner-reconnect-fixture".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(1),
+        };
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated.clone()).unwrap();
+        let mut transport =
+            FramedControlStream::adopt(client1, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(control_codec::V1_10);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [6; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        assert_eq!(
+            session.invoke_auth_helper(
+                &mut projection,
+                "openai".into(),
+                serde_json::json!({"model": "free"}),
+                "reconnect-first".into(),
+            ),
+            Err(TransportError::RemoteFailureCode(-33008))
+        );
+        drop(session);
+        first.join().unwrap();
+
+        let mut transport =
+            FramedControlStream::adopt(client2, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(control_codec::V1_10);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated,
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [6; 16],
+                sequence: 2,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        session
+            .invoke_auth_helper(
+                &mut projection,
+                "openai".into(),
+                serde_json::json!({"model": "free"}),
+                "reconnect-retry".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            projection.snapshot().auth_status.unwrap().generation,
+            Revision(4)
+        );
+        second.join().unwrap();
     }
 
     #[test]
