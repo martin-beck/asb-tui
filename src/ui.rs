@@ -533,6 +533,23 @@ impl WorkspaceState {
                     self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None
                 }
+                KeyCode::Char('F') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self
+                        .wizard_formal
+                        .apply(FormalEvent::DevelopmentSelectFixture);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char('N') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self.wizard_formal.apply(FormalEvent::DevelopmentSelectNone);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char('Z') if self.wizard.step() == wizard::Step::Authentication => {
+                    let _ = self.wizard_formal.apply(FormalEvent::DevelopmentRestart);
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
                 KeyCode::Enter => {
                     let agent_selected = self.wizard.catalog().is_some_and(|catalog| {
                         catalog.kind() == crate::wizard_catalog::OptionKind::Agent

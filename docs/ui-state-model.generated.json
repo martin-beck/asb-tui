@@ -154,6 +154,21 @@
       "key": "X"
     },
     {
+      "action": "wizard_development_select_fixture",
+      "element": "wizard.authentication",
+      "key": "F"
+    },
+    {
+      "action": "wizard_development_select_none",
+      "element": "wizard.authentication",
+      "key": "N"
+    },
+    {
+      "action": "wizard_development_restart",
+      "element": "wizard.authentication",
+      "key": "Z"
+    },
+    {
       "action": "wizard_back",
       "element": "navigation",
       "key": "Esc"
@@ -798,6 +813,33 @@
     },
     {
       "event": "wizard_development_reset",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_auth_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "wizard_development_select_fixture",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_auth_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "wizard_development_select_none",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_auth_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "wizard_development_restart",
       "from": "wizard",
       "to": "wizard",
       "effects": [

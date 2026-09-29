@@ -143,6 +143,10 @@ fn development_authentication_actions_are_formally_executable() {
     wizard.apply(WizardEvent::DevelopmentTest).unwrap();
     wizard.apply(WizardEvent::DevelopmentRotate).unwrap();
     wizard.apply(WizardEvent::DevelopmentReset).unwrap();
+    wizard.apply(WizardEvent::DevelopmentSelectNone).unwrap();
+    assert_eq!(wizard.wizard().values()[4], "none");
+    wizard.apply(WizardEvent::DevelopmentSelectFixture).unwrap();
+    wizard.apply(WizardEvent::DevelopmentRestart).unwrap();
     assert!(
         wizard
             .wizard()
