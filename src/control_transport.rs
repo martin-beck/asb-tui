@@ -558,6 +558,9 @@ impl AuthenticatedBrokerSession {
             call: ControlCall::AuthStatus(AuthStatusParams { provider }),
         };
         let response = self.transport.round_trip(&request)?;
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
         projection
             .apply(&request, &response, self.negotiated.limits)
             .map_err(|_| TransportError::Projection)
@@ -586,6 +589,9 @@ impl AuthenticatedBrokerSession {
             }),
         };
         let response = self.transport.round_trip(&request)?;
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
         projection
             .apply(&request, &response, self.negotiated.limits)
             .map_err(|_| TransportError::Projection)
@@ -607,6 +613,9 @@ impl AuthenticatedBrokerSession {
             call,
         };
         let response = self.transport.round_trip(&request)?;
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
         projection
             .apply(&request, &response, self.negotiated.limits)
             .map_err(|_| TransportError::Projection)
@@ -1608,6 +1617,67 @@ mod tests {
             ),
             Err(TransportError::NotNegotiated)
         );
+    }
+
+    #[test]
+    fn helper_reconciliation_failure_is_typed_and_does_not_mutate_projection() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let join = thread::spawn(move || {
+            let mut server = server;
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let size = u32::from_be_bytes(header) as usize;
+            let mut body = vec![0_u8; size];
+            server.read_exact(&mut body).unwrap();
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            assert!(matches!(request.call, ControlCall::AuthHelperInvoke(_)));
+            let response = ControlResponse::Failure(crate::control_codec::FailureResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id,
+                error: crate::control_codec::RpcError {
+                    code: -33008,
+                    message: "runner reconciliation is required".into(),
+                },
+            });
+            server
+                .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                .unwrap();
+        });
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_10,
+            limits: ControlLimits::default(),
+            runner_instance_id: "runner-reconcile".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(1),
+        };
+        let mut transport =
+            FramedControlStream::adopt(client, observed(), peer(), ControlLimits::default())
+                .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(control_codec::V1_10);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [7; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
+        };
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated).unwrap();
+        assert_eq!(
+            session.invoke_auth_helper(
+                &mut projection,
+                "openai".into(),
+                serde_json::json!({"model": "free"}),
+                "reconcile-retry-1".into(),
+            ),
+            Err(TransportError::RemoteFailure)
+        );
+        assert!(projection.snapshot().auth_status.is_none());
+        join.join().unwrap();
     }
 
     #[test]
