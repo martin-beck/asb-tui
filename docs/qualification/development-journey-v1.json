@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "journey_id": "asb-tui-development-journey",
+  "classification": "development/mock",
+  "network": "denied",
+  "credentials": "none",
+  "asb_revision": "runtime-provided",
+  "asb_tui_revision": "runtime-provided",
+  "warning_cases": [
+    {"id": "missing-auth", "warning": "development-only authentication is unavailable", "continue": true},
+    {"id": "missing-signature-validation", "warning": "development-only signature validation is unavailable", "continue": true},
+    {"id": "missing-key-management", "warning": "development-only key management is unavailable", "continue": true}
+  ],
+  "steps": [
+    {"id": "enroll", "action": "development_fixture_enroll", "expected": "digest-only metadata", "continue_on_warning": true},
+    {"id": "select", "action": "provider_model_agent_selection", "expected": "supported development catalog selection", "continue_on_warning": true},
+    {"id": "mock-capture", "action": "mock_benchmark_capture", "expected": "development/mock recording", "continue_on_warning": true},
+    {"id": "offline-replay", "action": "strict_offline_replay", "expected": "identity-bound replay", "continue_on_warning": true},
+    {"id": "comparison", "action": "report_comparison", "expected": "comparable development report", "continue_on_warning": true}
+  ]
+}
