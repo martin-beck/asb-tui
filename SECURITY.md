@@ -12,3 +12,9 @@ crate-specific license/duplicate exceptions are documented in
 `docs/TERMINAL_DEPENDENCY_POLICY.md`; widening them requires a new review. The current frontend
 remains `source_only_unverified`. Rendering is implemented, but it does not own runner state,
 qualify a platform, or establish an installable release channel.
+
+The development build enforces a credential-free boundary: helper receipts and control requests
+carry only provider identity and SHA-256 locator digests. Unknown fields and secret-shaped
+configuration values are rejected. The CI boundary check is regression assurance only; it does
+not claim OS keychain storage, secure production input, provider authorization, or production
+security qualification.
