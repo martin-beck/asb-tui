@@ -1,5 +1,5 @@
 use asb_tui::{
-    benchmark_route::{CampaignError, CampaignStage, GuidedCampaign, ReplayMode},
+    benchmark_route::{CampaignError, CampaignStage, GuidedCampaign, GuidedCatalog, ReplayMode},
     reports::{Artifact, MeasureResult, MeasureStatus, Report, RunId},
 };
 use std::collections::BTreeMap;
@@ -49,6 +49,28 @@ fn comparison_is_deferred_until_successful_completion_and_delegates_compatibilit
         .unwrap();
     assert!(comparison.compatible);
     assert_eq!(comparison.run_ids, vec![id("run-a"), id("run-b")]);
+}
+
+#[test]
+fn catalog_backed_route_rejects_unsupported_choices() {
+    let catalog = GuidedCatalog::new(
+        vec!["quality".into()],
+        vec!["agent-a".into()],
+        vec!["quality.correctness".into()],
+    )
+    .unwrap();
+    let mut route = GuidedCampaign::with_catalog("quality", catalog).unwrap();
+    assert_eq!(
+        route.add_agent("unlisted"),
+        Err(CampaignError::MissingAgent)
+    );
+    assert_eq!(
+        route.add_measure("unlisted"),
+        Err(CampaignError::MissingMeasure)
+    );
+    route.add_agent("agent-a").unwrap();
+    route.add_measure("quality.correctness").unwrap();
+    route.review().unwrap();
 }
 
 fn id(value: &str) -> RunId {

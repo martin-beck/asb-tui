@@ -34,6 +34,44 @@ pub struct GuidedCampaign {
     pub measures: Vec<String>,
     pub replay: ReplayMode,
     pub stage: CampaignStage,
+    catalog: Option<GuidedCatalog>,
+}
+
+/// The validated catalog projection supplied by ASB. The route never accepts
+/// an identifier that is absent from this catalog when one is attached.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuidedCatalog {
+    pub workloads: Vec<String>,
+    pub agents: Vec<String>,
+    pub measures: Vec<String>,
+}
+
+impl GuidedCatalog {
+    pub fn new(
+        workloads: Vec<String>,
+        agents: Vec<String>,
+        measures: Vec<String>,
+    ) -> Result<Self, CampaignError> {
+        if workloads.is_empty()
+            || agents.is_empty()
+            || measures.is_empty()
+            || workloads.len() > MAX_ITEMS
+            || agents.len() > MAX_ITEMS
+            || measures.len() > MAX_ITEMS
+        {
+            return Err(CampaignError::MissingWorkload);
+        }
+        for value in workloads.iter().chain(agents.iter()).chain(measures.iter()) {
+            if bounded(value.clone())?.is_empty() {
+                return Err(CampaignError::InvalidText);
+            }
+        }
+        Ok(Self {
+            workloads,
+            agents,
+            measures,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,13 +100,37 @@ impl GuidedCampaign {
             measures: Vec::new(),
             replay: ReplayMode::Live,
             stage: CampaignStage::Selection,
+            catalog: None,
         })
+    }
+
+    pub fn with_catalog(
+        workload: impl Into<String>,
+        catalog: GuidedCatalog,
+    ) -> Result<Self, CampaignError> {
+        let mut campaign = Self::new(workload)?;
+        if !catalog
+            .workloads
+            .iter()
+            .any(|item| item == &campaign.workload)
+        {
+            return Err(CampaignError::MissingWorkload);
+        }
+        campaign.catalog = Some(catalog);
+        Ok(campaign)
     }
 
     pub fn add_agent(&mut self, agent: impl Into<String>) -> Result<(), CampaignError> {
         self.ensure_selection()?;
         let agent = bounded(agent.into())?;
         if agent.is_empty() {
+            return Err(CampaignError::MissingAgent);
+        }
+        if self
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| !catalog.agents.iter().any(|item| item == &agent))
+        {
             return Err(CampaignError::MissingAgent);
         }
         push_unique(&mut self.agents, agent)
@@ -78,6 +140,13 @@ impl GuidedCampaign {
         self.ensure_selection()?;
         let measure = bounded(measure.into())?;
         if measure.is_empty() {
+            return Err(CampaignError::MissingMeasure);
+        }
+        if self
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| !catalog.measures.iter().any(|item| item == &measure))
+        {
             return Err(CampaignError::MissingMeasure);
         }
         push_unique(&mut self.measures, measure)
