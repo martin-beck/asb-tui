@@ -497,6 +497,7 @@ mod tests {
         assert_eq!(binding.provider_catalog_generation, Revision(1));
         assert_eq!(binding.benchmark_catalog_generation, Revision(3));
         assert_eq!(binding.agent_ids, vec!["codex"]);
+        assert_eq!(binding.pool_id, "development");
         assert_eq!(binding.measure_ids, vec!["quality.correctness"]);
         assert!(binding.development_only);
         let json = serde_json::to_string(&binding).unwrap();
