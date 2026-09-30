@@ -15,6 +15,7 @@ use crate::control_codec::{
 use crate::{
     broker_adoption::{AdoptionError, BrokerGeneration, ReceivedChannel},
     control_client::{AdoptedChannel, PeerCredentials, RunnerIdentity},
+    launch_statistics::{LaunchRequest, LaunchState},
     live_projection::ControlProjection,
 };
 use std::io::{Read, Write};
@@ -498,6 +499,101 @@ impl AuthenticatedBrokerSession {
         projection
             .apply(&request, &response, self.negotiated.limits)
             .map_err(|_| TransportError::Projection)
+    }
+
+    /// Create and launch the exact reviewed materialization. Binding checks
+    /// happen before the first write, so stale catalog/configuration state
+    /// cannot reach the runner. The returned projection contains the runner's
+    /// authoritative initial run summary.
+    pub fn launch_materialized(
+        &mut self,
+        projection: &mut ControlProjection,
+        bundle: &crate::configuration_materialization::MaterializedBundle,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.require_version(control_codec::V1_0)?;
+        bundle
+            .validate_integrity()
+            .map_err(|_| TransportError::Projection)?;
+        let snapshot = projection.snapshot();
+        let request_binding = LaunchRequest::new(bundle, &snapshot, idempotency_key)
+            .map_err(|_| TransportError::Projection)?;
+        let definition: serde_json::Value =
+            serde_json::from_str(&bundle.canonical_json).map_err(|_| TransportError::Projection)?;
+        let plan_request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: RequestId(9_000_000_201),
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call: ControlCall::CreatePlan(control_codec::MutationParams {
+                idempotency_key: request_binding.idempotency_key.clone(),
+                definition,
+            }),
+        };
+        let plan_response = self.transport.round_trip(&plan_request)?;
+        let ControlResponse::Success(success) = &plan_response else {
+            return Err(TransportError::RemoteFailure);
+        };
+        let ControlSuccess::Operation(result) = &success.result else {
+            return Err(TransportError::Projection);
+        };
+        let control_codec::ControlResult::Plan(plan) = &result.result else {
+            return Err(TransportError::Projection);
+        };
+        let launch_request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: RequestId(9_000_000_202),
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call: ControlCall::Launch(control_codec::LaunchParams {
+                idempotency_key: request_binding.idempotency_key,
+                plan_id: plan.plan_id.clone(),
+            }),
+        };
+        let launch_response = self.transport.round_trip(&launch_request)?;
+        if !matches!(launch_response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
+        projection
+            .apply(&launch_request, &launch_response, self.negotiated.limits)
+            .map_err(|_| TransportError::Projection)
+    }
+
+    /// Cancel the currently projected active run using its exact run and
+    /// attempt identifiers. No cancellation is issued when history is empty
+    /// or already terminal.
+    pub fn cancel_active_run(
+        &mut self,
+        projection: &mut ControlProjection,
+        launch: &LaunchState,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.require_version(control_codec::V1_0)?;
+        let (active_run_id, active_attempt_id) = launch
+            .active_run_attempt()
+            .ok_or(TransportError::Projection)?;
+        let run = projection
+            .snapshot()
+            .runs
+            .into_iter()
+            .find(|run| &run.run_id == active_run_id && &run.attempt_id == active_attempt_id)
+            .ok_or(TransportError::Projection)?;
+        let request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: RequestId(9_000_000_203),
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call: ControlCall::Cancel(control_codec::CancelParams {
+                run_id: run.run_id,
+                attempt_id: run.attempt_id,
+                idempotency_key,
+            }),
+        };
+        let response = self.transport.round_trip(&request)?;
+        if !matches!(response, ControlResponse::Success(_)) {
+            return Err(TransportError::RemoteFailure);
+        }
+        projection
+            .apply(&request, &response, self.negotiated.limits)
+            .map_err(|_| TransportError::Projection)?;
+        self.poll_projection(projection)
     }
 
     /// Refresh the runner-owned provider/model catalog. The known generation
