@@ -13,6 +13,10 @@ use asb_tui::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
 fn policy(unicode: bool) -> RenderPolicy {
     RenderPolicy {
         tier: asb_tui::terminal::CapabilityTier::Plain,
@@ -265,6 +269,31 @@ fn wide_render_covers_every_documented_wizard_step() {
         .collect::<String>();
     assert!(text.contains("Current step"));
     assert!(text.contains("Review all choices"));
+}
+
+#[test]
+fn wizard_completion_is_consumed_once_and_restart_safe() {
+    let mut state = WorkspaceState::for_startup(false);
+    for _ in 0..7 {
+        state.handle_key(key(KeyCode::Char('x')));
+        state.handle_key(key(KeyCode::Enter));
+    }
+    state.handle_key(key(KeyCode::Enter));
+    let mut values = state.take_wizard_completion().expect("completed draft");
+    // The fixture route may leave an intentionally invalid auth draft; choosing
+    // the explicit no-credential development mode makes the apply seam valid.
+    values[4] = "none".into();
+    let selection = WorkspaceState::wizard_configuration_selection(&values).unwrap();
+    assert_eq!(selection.agent_ids, vec!["x"]);
+    assert!(state.take_wizard_completion().is_none());
+
+    // A restarted workspace has no completion payload and cannot replay the
+    // prior selection without a fresh formal completion.
+    let mut restarted = WorkspaceState::for_startup(false);
+    assert!(restarted.take_wizard_completion().is_none());
+    assert_eq!(restarted.wizard.step(), asb_tui::wizard::Step::Agent);
+    restarted.handle_key(key(KeyCode::Esc));
+    assert!(restarted.take_wizard_completion().is_none());
 }
 
 #[test]

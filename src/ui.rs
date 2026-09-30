@@ -2338,29 +2338,4 @@ mod tests {
         assert!(state.take_wizard_completion().is_some());
         assert!(state.take_wizard_completion().is_none());
     }
-
-    #[test]
-    fn wizard_completion_apply_is_restart_safe_and_not_replayed() {
-        let mut state = WorkspaceState::for_startup(false);
-        for _ in 0..7 {
-            state.handle_key(key(KeyCode::Char('x')));
-            state.handle_key(key(KeyCode::Enter));
-        }
-        state.handle_key(key(KeyCode::Enter));
-        let mut values = state.take_wizard_completion().expect("completed draft");
-        // The fixture route may leave an intentionally invalid auth draft; choosing
-        // the explicit no-credential development mode makes the apply seam valid.
-        values[4] = "none".into();
-        let selection = WorkspaceState::wizard_configuration_selection(&values).unwrap();
-        assert_eq!(selection.agent_ids, vec!["x"]);
-        assert!(state.take_wizard_completion().is_none());
-
-        // A restarted workspace has no completion payload and cannot replay the
-        // prior generation-bound selection without a fresh formal completion.
-        let mut restarted = WorkspaceState::for_startup(false);
-        assert!(restarted.take_wizard_completion().is_none());
-        assert_eq!(restarted.wizard.step(), crate::wizard::Step::Agent);
-        restarted.handle_key(key(KeyCode::Esc));
-        assert!(restarted.take_wizard_completion().is_none());
-    }
 }
