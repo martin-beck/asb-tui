@@ -321,10 +321,10 @@ impl Report {
         for (name, measure) in &self.measures {
             validate_ascii_text("measure", name, MAX_TEXT_BYTES)?;
             validate_ascii_text("unit", &measure.unit, MAX_TEXT_BYTES)?;
-            if let Some(value) = measure.value {
-                if !value.is_finite() {
-                    return Err(ValidationError::InvalidValue);
-                }
+            if let Some(value) = measure.value
+                && !value.is_finite()
+            {
+                return Err(ValidationError::InvalidValue);
             }
         }
         Ok(())
