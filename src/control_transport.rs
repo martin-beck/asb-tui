@@ -1390,6 +1390,84 @@ mod tests {
     }
 
     #[test]
+    fn poll_projection_commits_capabilities_and_empty_history_atomically() {
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let runner = "runner-poll";
+        let join = thread::spawn(move || {
+            for index in 0..2 {
+                let mut header = [0_u8; 4];
+                server.read_exact(&mut header).unwrap();
+                let size = u32::from_be_bytes(header) as usize;
+                let mut body = vec![0_u8; size];
+                server.read_exact(&mut body).unwrap();
+                let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+                let result = if index == 0 {
+                    crate::control_codec::ControlResult::Capabilities(
+                        crate::control_codec::Capabilities {
+                            validate_settings: true,
+                            run_control: true,
+                            repeat: false,
+                            analysis: true,
+                            events: true,
+                        },
+                    )
+                } else {
+                    crate::control_codec::ControlResult::History(crate::control_codec::Page {
+                        items: Vec::new(),
+                        next: None,
+                        has_more: false,
+                    })
+                };
+                let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                    jsonrpc: "2.0".into(),
+                    id: request.id,
+                    result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                        request_sha256: "a".repeat(64),
+                        result,
+                    }),
+                });
+                server
+                    .write_all(&control_codec::encode(&response, 4096).unwrap())
+                    .unwrap();
+            }
+        });
+        let mut transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            ControlLimits::default(),
+        )
+        .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_0);
+        let negotiated = crate::control_codec::Negotiated {
+            version: crate::control_codec::V1_0,
+            limits: ControlLimits::default(),
+            runner_instance_id: runner.into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(4),
+        };
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated,
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [4; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        let mut projection = ControlProjection::default();
+        session.poll_projection(&mut projection).unwrap();
+        assert!(projection.snapshot().capabilities.is_some());
+        assert_eq!(projection.run_count(), 0);
+        join.join().unwrap();
+    }
+
+    #[test]
     fn wizard_configuration_apply_round_trips_and_updates_projection() {
         let (server, client) = UnixStream::pair().unwrap();
         let negotiated = crate::control_codec::Negotiated {
