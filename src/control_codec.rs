@@ -131,6 +131,7 @@ pub enum ControlCall {
     Negotiate(NegotiateParams),
     Capabilities,
     MeasurementCatalog,
+    BenchmarkCatalog,
     AgentCatalog(crate::agent_catalog::AgentCatalogRequest),
     AgentInstall(crate::asb_lifecycle::AgentInstallRequest),
     AgentStatus(crate::asb_lifecycle::AgentStatusRequest),
@@ -180,11 +181,14 @@ pub enum ControlCall {
     RecordingCampaignOfflineDefault(RecordingCampaignOfflineDefaultParams),
 }
 
+pub const CONTROL_BENCHMARK_CATALOG_V1: ControlVersion = V1_7;
+
 impl ControlCall {
     /// Earliest exact wire version that defines this operation.
     #[must_use]
     pub const fn minimum_version(&self) -> Option<ControlVersion> {
         match self {
+            Self::BenchmarkCatalog => Some(CONTROL_BENCHMARK_CATALOG_V1),
             Self::ProviderCatalog(_)
             | Self::ConfigurationStatus(_)
             | Self::ConfigurationApply(_)
@@ -1021,6 +1025,7 @@ pub struct Page<T> {
 pub enum ControlResult {
     Capabilities(Capabilities),
     MeasurementCatalog(MeasurementCatalogPublication),
+    BenchmarkCatalog(BenchmarkCatalogPublication),
     AgentCatalog(crate::agent_catalog::AgentCatalog),
     AgentLifecycle(crate::asb_lifecycle::AgentLifecycleResponse),
     SettingsValidation(SettingsValidation),
@@ -1039,6 +1044,82 @@ pub enum ControlResult {
     RecordingCampaignStatus(RecordingCampaignStatus),
     RecordingCampaignEstimate(RecordingCampaignEstimate),
     RecordingCampaignLifecycle(RecordingCampaignLifecycle),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkCatalogPublication {
+    pub generation: Revision,
+    pub catalog_sha256: String,
+    pub pools: Vec<BenchmarkCatalogPool>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkCatalogPool {
+    pub id: String,
+    pub groups: Vec<BenchmarkCatalogGroup>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkCatalogGroup {
+    pub id: String,
+    pub benchmarks: Vec<BenchmarkCatalogEntry>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkCatalogEntry {
+    pub id: String,
+    pub measure_ids: Vec<String>,
+}
+
+impl BenchmarkCatalogPublication {
+    pub fn computed_digest(&self) -> Result<String, CodecError> {
+        let address = serde_json::to_vec(&(self.generation, &self.pools))
+            .map_err(|_| CodecError::Serialization)?;
+        let mut input = b"asb-benchmark-catalog-v1\0".to_vec();
+        input.extend_from_slice(&address);
+        Ok(crate::sha256::digest_hex(&input))
+    }
+
+    pub fn validate(&self) -> Result<(), CodecError> {
+        if self.generation.0 == 0
+            || self.pools.is_empty()
+            || self.pools.len() > 16
+            || self.catalog_sha256 != self.computed_digest()?
+        {
+            return Err(CodecError::InvalidValue("benchmark_catalog.digest"));
+        }
+        let mut pools = std::collections::BTreeSet::new();
+        for pool in &self.pools {
+            if pool.id.is_empty() || !pools.insert(&pool.id) || pool.groups.is_empty() {
+                return Err(CodecError::InvalidValue("benchmark_catalog.pool"));
+            }
+            let mut groups = std::collections::BTreeSet::new();
+            for group in &pool.groups {
+                if group.id.is_empty() || !groups.insert(&group.id) || group.benchmarks.is_empty() {
+                    return Err(CodecError::InvalidValue("benchmark_catalog.group"));
+                }
+                let mut benchmarks = std::collections::BTreeSet::new();
+                for benchmark in &group.benchmarks {
+                    if benchmark.id.is_empty()
+                        || !benchmarks.insert(&benchmark.id)
+                        || benchmark.measure_ids.is_empty()
+                    {
+                        return Err(CodecError::InvalidValue("benchmark_catalog.benchmark"));
+                    }
+                    let mut measures = std::collections::BTreeSet::new();
+                    if benchmark
+                        .measure_ids
+                        .iter()
+                        .any(|id| id.is_empty() || !measures.insert(id))
+                    {
+                        return Err(CodecError::InvalidValue("benchmark_catalog.measure"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ControlRequest {
@@ -1190,6 +1271,7 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
         }
         ControlCall::Capabilities => {}
         ControlCall::MeasurementCatalog => {}
+        ControlCall::BenchmarkCatalog => {}
         ControlCall::AgentCatalog(v) => v
             .validate()
             .map_err(|_| CodecError::InvalidValue("agent_catalog"))?,
@@ -1315,6 +1397,7 @@ fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), 
     match result {
         ControlResult::Capabilities(_) => {}
         ControlResult::MeasurementCatalog(v) => v.validate()?,
+        ControlResult::BenchmarkCatalog(v) => v.validate()?,
         ControlResult::AgentCatalog(v) => v
             .validate()
             .map_err(|_| CodecError::InvalidValue("agent_catalog"))?,
@@ -1654,6 +1737,7 @@ impl ControlResult {
             (call, self),
             (ControlCall::Capabilities, Self::Capabilities(_))
                 | (ControlCall::MeasurementCatalog, Self::MeasurementCatalog(_))
+                | (ControlCall::BenchmarkCatalog, Self::BenchmarkCatalog(_))
                 | (ControlCall::AgentCatalog(_), Self::AgentCatalog(_))
                 | (ControlCall::AgentInstall(_), Self::AgentLifecycle(_))
                 | (ControlCall::AgentStatus(_), Self::AgentLifecycle(_))

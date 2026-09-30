@@ -1053,6 +1053,9 @@ impl AuthenticatedBrokerSession {
             .map_err(|_| TransportError::Projection)?;
         let limits = self.negotiated.limits;
         let mut calls = vec![ControlCall::Capabilities];
+        if self.negotiated.version >= control_codec::CONTROL_BENCHMARK_CATALOG_V1 {
+            calls.push(ControlCall::BenchmarkCatalog);
+        }
         if self.negotiated.version >= control_codec::CONTROL_MEASUREMENT_CATALOG_V1 {
             calls.push(ControlCall::MeasurementCatalog);
         }
