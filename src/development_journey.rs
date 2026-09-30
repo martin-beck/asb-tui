@@ -108,6 +108,8 @@ pub fn execute_input(mut input: impl Read) -> FixtureResponse {
 mod tests {
     use super::{FixtureResponse, evaluate_fixture, execute_input};
 
+    type MismatchCase = (&'static str, &'static str, fn(&mut super::FixtureRequest));
+
     fn request() -> super::FixtureRequest {
         super::FixtureRequest {
             schema_version: 1,
@@ -140,7 +142,7 @@ mod tests {
 
     #[test]
     fn each_mismatch_stops_before_execution_with_one_recovery() {
-        let cases: [(&str, &str, fn(&mut super::FixtureRequest)); 5] = [
+        let cases: [MismatchCase; 5] = [
             (
                 "asb_version_mismatch",
                 "refresh_version",
