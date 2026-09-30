@@ -533,7 +533,13 @@ impl WorkspaceState {
             && let Some(selection) = selection_from_catalog(catalog, self.selection.as_ref())
         {
             self.selection = Some(selection);
-            self.benchmark_selection = None;
+            self.benchmark_selection = nested_selection_from_catalog(
+                catalog,
+                self.benchmark_selection.as_ref(),
+                snapshot
+                    .latest_revision
+                    .unwrap_or(crate::control_codec::Revision(1)),
+            );
             self.sync_measure_projection();
         }
         // Populate a first-run wizard from the authenticated control-plane
@@ -1198,6 +1204,65 @@ fn selection_from_catalog(
         }
     }
     Some(selection)
+}
+
+fn nested_selection_from_catalog(
+    catalog: &MeasurementCatalog,
+    previous: Option<&BenchmarkSelection>,
+    generation: crate::control_codec::Revision,
+) -> Option<BenchmarkSelection> {
+    let groups = catalog
+        .groups
+        .iter()
+        .map(|group| {
+            let group_id = measurement_group_id(group.id);
+            let measures = catalog
+                .measurements
+                .iter()
+                .filter(|definition| definition.group == group.id)
+                .map(|definition| {
+                    let available = matches!(
+                        definition.live,
+                        crate::control_codec::MeasurementModeSupport::Supported
+                    );
+                    BenchmarkMeasure::new(
+                        definition.id.clone(),
+                        definition.name.clone(),
+                        definition.unit.clone(),
+                        available,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            let benchmark =
+                BenchmarkDefinition::new(group_id.clone(), group.label.clone(), measures).ok()?;
+            BenchmarkGroup::new(group_id, group.label.clone(), vec![benchmark]).ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let pool = BenchmarkPool::new("authoritative", "Authoritative benchmark pool", groups).ok()?;
+    let mut next = BenchmarkSelection::new(
+        BenchmarkCatalog::new(generation, catalog.catalog_sha256.clone(), vec![pool]).ok()?,
+    )
+    .ok()?;
+    if let Some(previous) = previous {
+        for id in previous.selected_measure_ids() {
+            let _ = next.set_measure_selected(id, true);
+        }
+    }
+    Some(next)
+}
+
+fn measurement_group_id(group: crate::control_codec::MeasurementGroupId) -> String {
+    match group {
+        crate::control_codec::MeasurementGroupId::SystemResources => "system_resources",
+        crate::control_codec::MeasurementGroupId::SchedulingContention => "scheduling_contention",
+        crate::control_codec::MeasurementGroupId::Latency => "latency",
+        crate::control_codec::MeasurementGroupId::QualityReliability => "quality_reliability",
+        crate::control_codec::MeasurementGroupId::Fairness => "fairness",
+        crate::control_codec::MeasurementGroupId::Cost => "cost",
+        crate::control_codec::MeasurementGroupId::Provenance => "provenance",
+    }
+    .into()
 }
 
 fn default_benchmark_selection() -> BenchmarkSelection {
