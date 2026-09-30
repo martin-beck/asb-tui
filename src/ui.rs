@@ -669,7 +669,7 @@ impl WorkspaceState {
     /// projection. No renderer input can mutate ASB state through this method.
     pub fn apply_live_snapshot(&mut self, snapshot: LiveSnapshot) {
         self.authoritative_provider_catalog_seen =
-            snapshot.agent_catalog.is_some() && snapshot.provider_catalog.is_some();
+            snapshot.agent_catalog.is_some() || snapshot.provider_catalog.is_some();
         if let Some(catalog) = snapshot.measurement_catalog.as_ref()
             && let Some(selection) = selection_from_catalog(catalog, self.selection.as_ref())
         {
@@ -733,7 +733,7 @@ impl WorkspaceState {
             ) {
                 self.help = false;
             }
-            return UiAction::None;
+            return UiAction::Control(crate::actions::UiAction::OpenPreflight);
         }
         if self.screen == Screen::Wizard {
             return match key.code {
@@ -935,7 +935,7 @@ impl WorkspaceState {
             if let Err(error) = self.prepare_preflight() {
                 self.preflight_error = Some(error);
             }
-            return UiAction::None;
+            return UiAction::Control(crate::actions::UiAction::OpenPreflight);
         }
         if self.screen == Screen::Configuration && key.code == KeyCode::Char('A') {
             if let Err(error) = self.apply_preflight() {
@@ -943,7 +943,7 @@ impl WorkspaceState {
             } else {
                 self.preflight_error = None;
             }
-            return UiAction::None;
+            return UiAction::Control(crate::actions::UiAction::ApplyPreflight);
         }
         match key.code {
             KeyCode::Char('f') if self.screen == Screen::Configuration => {
