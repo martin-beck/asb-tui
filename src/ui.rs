@@ -733,7 +733,7 @@ impl WorkspaceState {
             ) {
                 self.help = false;
             }
-            return UiAction::Control(crate::actions::UiAction::OpenPreflight);
+            return UiAction::None;
         }
         if self.screen == Screen::Wizard {
             return match key.code {
