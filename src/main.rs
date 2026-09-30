@@ -9,6 +9,7 @@ use asb_tui::{
     control_codec::ControlLimits,
     control_transport::AuthenticatedBrokerSession,
     delegated::execute_input,
+    development_router::execute_input as execute_development_router_input,
     lifecycle::{local_self_test_response, run_self_test_supervisor},
     runtime::{run_interactive, run_interactive_with_control},
     system_probe::{LocalSystem, detect},
@@ -58,6 +59,14 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(if response.ok { 0 } else { 3 });
     }
+    if arguments == ["router", "--format", "json"] {
+        let response = execute_development_router_input(std::io::stdin().lock());
+        println!(
+            "{}",
+            serde_json::to_string(&response).expect("serialize development router response")
+        );
+        return ExitCode::from(if response.lifecycle.ok { 0 } else { 3 });
+    }
     if let [
         command,
         release_flag,
@@ -106,7 +115,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: asb-tui [run|run --broker] | (doctor|compatibility) --format json | doctor --terminal"
+        "usage: asb-tui [run|run --broker] | (doctor|compatibility|lifecycle|router) --format json | doctor --terminal"
     );
     ExitCode::from(2)
 }

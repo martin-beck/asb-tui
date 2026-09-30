@@ -8,7 +8,7 @@
 | Closed capability/protocol schemas | Available and tested | Required at exact released versions |
 | Signed dependency closure and SPDX SBOM | Available for source audit | Required in release bundle |
 | Bundle authentication and bounded acquisition | Implemented and tested with synthetic fixtures | Required against published artifacts |
-| Transactional lifecycle and recovery | Implemented and tested locally | Required through the ASB router |
+| Transactional lifecycle and recovery | Implemented and tested locally | Development router fixture is available; live ASB router remains future qualification |
 | Top-level `asb tui` routing | Not available | Required |
 | Ratatui/Crossterm interactive UI | Implemented and source-tested | Required to be platform-qualified |
 | Linux x86_64 qualification | Source CI only | Required on exact release |

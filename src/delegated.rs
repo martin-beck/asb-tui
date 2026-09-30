@@ -100,7 +100,7 @@ pub struct LifecycleResponse {
 }
 
 impl LifecycleResponse {
-    fn result(ok: bool, code: &'static str) -> Self {
+    pub(crate) fn result(ok: bool, code: &'static str) -> Self {
         Self {
             schema_version: 1,
             classification: compiled_classification().as_str(),
