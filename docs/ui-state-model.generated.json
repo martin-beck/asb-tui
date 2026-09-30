@@ -1063,6 +1063,30 @@
       ]
     },
     {
+      "event": "start_run",
+      "from": "run_control",
+      "to": "run_control",
+      "effects": [
+        "run_state_changed"
+      ]
+    },
+    {
+      "event": "cancel_run",
+      "from": "run_control",
+      "to": "run_control",
+      "effects": [
+        "run_state_changed"
+      ]
+    },
+    {
+      "event": "reconnect",
+      "from": "run_control",
+      "to": "run_control",
+      "effects": [
+        "run_state_changed"
+      ]
+    },
+    {
       "event": "open_landing",
       "from": "recent_runs",
       "to": "landing",

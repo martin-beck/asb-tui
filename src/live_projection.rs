@@ -17,6 +17,31 @@ use std::{collections::BTreeMap, fmt};
 
 pub const MAX_PROJECTED_RUNS: usize = 256;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveBenchmarkCatalog {
+    pub generation: Revision,
+    pub catalog_sha256: String,
+    pub pools: Vec<LiveBenchmarkPool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveBenchmarkPool {
+    pub id: String,
+    pub groups: Vec<LiveBenchmarkGroup>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveBenchmarkGroup {
+    pub id: String,
+    pub benchmarks: Vec<LiveBenchmarkEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveBenchmarkEntry {
+    pub id: String,
+    pub measure_ids: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Connection {
     #[default]
@@ -31,6 +56,7 @@ pub struct LiveSnapshot {
     pub latest_revision: Option<Revision>,
     pub capabilities: Option<crate::control_codec::Capabilities>,
     pub measurement_catalog: Option<MeasurementCatalog>,
+    pub benchmark_catalog: Option<LiveBenchmarkCatalog>,
     pub agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
     pub agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     pub provider_catalog: Option<ProviderCatalog>,
@@ -73,6 +99,7 @@ pub struct ControlProjection {
     negotiated: Option<Negotiated>,
     capabilities: Option<crate::control_codec::Capabilities>,
     measurement_catalog: Option<MeasurementCatalog>,
+    benchmark_catalog: Option<LiveBenchmarkCatalog>,
     agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
     agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     provider_catalog: Option<ProviderCatalog>,
@@ -388,6 +415,7 @@ impl ControlProjection {
             latest_revision: self.negotiated.as_ref().map(|value| value.latest_revision),
             capabilities: self.capabilities.clone(),
             measurement_catalog: self.measurement_catalog.clone(),
+            benchmark_catalog: self.benchmark_catalog.clone(),
             agent_catalog: self.agent_catalog.clone(),
             agent_lifecycle: self.agent_lifecycle.clone(),
             provider_catalog: self.provider_catalog.clone(),

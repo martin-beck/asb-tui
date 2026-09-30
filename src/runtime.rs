@@ -29,7 +29,10 @@ use signal_hook::{
     consts::signal::{SIGCONT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP},
     iterator::Signals,
 };
-use std::{fmt, io, time::Duration};
+use std::{
+    fmt, io,
+    time::{Duration, Instant},
+};
 
 struct BoundedBackend<B>(B);
 
@@ -392,8 +395,34 @@ fn run_interactive_loop(
     let backend = BoundedBackend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
     let mut recording_state: Option<crate::recording_dispatch::RecordingDispatchState> = None;
+    let mut next_live_refresh = Instant::now();
     while !state.should_quit() {
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
+        if let (Some(control), Some(projection)) =
+            (control.as_deref_mut(), projection.as_deref_mut())
+            && workspace.launch_state_mut().is_some()
+            && Instant::now() >= next_live_refresh
+        {
+            // Refresh only while a reviewed launch exists. Every response is
+            // projected through the negotiated transport and stale revisions
+            // are rejected; a refresh never restarts a run.
+            if control.poll_projection(projection).is_err() {
+                if let Some(launch) = workspace.launch_state_mut() {
+                    launch.disconnected();
+                    launch.reconnect_started();
+                }
+                next_live_refresh = Instant::now() + Duration::from_millis(500);
+                continue;
+            }
+            let snapshot = projection.snapshot();
+            if let Some(launch) = workspace.launch_state_mut()
+                && let Some(run) = snapshot.runs.first()
+            {
+                let _ = launch.observe_summary(run);
+            }
+            workspace.apply_live_snapshot(snapshot);
+            next_live_refresh = Instant::now() + Duration::from_millis(500);
+        }
         terminal.draw(|frame| ui::render(frame, &workspace, policy))?;
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
@@ -412,6 +441,58 @@ fn run_interactive_loop(
                         && let (Some(control), Some(projection)) =
                             (control.as_deref_mut(), projection.as_deref_mut())
                     {
+                        if control_action == crate::actions::UiAction::StartRun {
+                            let bundle = workspace.preflight_bundle().ok_or_else(|| {
+                                RuntimeError(io::Error::other(
+                                    "reviewed preflight is required before launch",
+                                ))
+                            })?;
+                            control
+                                .launch_materialized(projection, bundle, "asb-tui-launch".into())
+                                .map_err(|error| RuntimeError(io::Error::other(error)))?;
+                            let snapshot = projection.snapshot();
+                            if let Some(launch) = workspace.launch_state_mut()
+                                && let Some(run) = snapshot.runs.first()
+                            {
+                                let _ = launch.observe_summary(run);
+                            }
+                            workspace.apply_live_snapshot(snapshot);
+                            continue;
+                        }
+                        if control_action == crate::actions::UiAction::CancelRun {
+                            if let Some(launch) = workspace.launch_state_mut() {
+                                let _ = launch.request_cancel();
+                            }
+                            let launch = workspace.launch_state().cloned().ok_or_else(|| {
+                                RuntimeError(io::Error::other("active launch is unavailable"))
+                            })?;
+                            control
+                                .cancel_active_run(projection, &launch, "asb-tui-cancel".into())
+                                .map_err(|error| RuntimeError(io::Error::other(error)))?;
+                            let snapshot = projection.snapshot();
+                            if let Some(launch) = workspace.launch_state_mut()
+                                && let Some(run) = snapshot.runs.first()
+                            {
+                                let _ = launch.observe_summary(run);
+                            }
+                            workspace.apply_live_snapshot(snapshot);
+                            continue;
+                        }
+                        if control_action == crate::actions::UiAction::Reconnect {
+                            if control.poll_projection(projection).is_err() {
+                                if let Some(launch) = workspace.launch_state_mut() {
+                                    launch.disconnected();
+                                    launch.reconnect_started();
+                                }
+                                continue;
+                            }
+                            let snapshot = projection.snapshot();
+                            if let Some(launch) = workspace.launch_state_mut() {
+                                launch.reconnect_complete(snapshot.latest_revision);
+                            }
+                            workspace.apply_live_snapshot(snapshot);
+                            continue;
+                        }
                         if matches!(
                             control_action,
                             crate::actions::UiAction::OpenPreflight
