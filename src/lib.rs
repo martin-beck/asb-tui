@@ -30,6 +30,7 @@ pub mod landing;
 pub mod lifecycle;
 pub mod live_projection;
 pub mod provider_catalog;
+pub mod provider_setup;
 pub mod recording_campaign;
 pub mod recording_dispatch;
 pub mod release_channel;

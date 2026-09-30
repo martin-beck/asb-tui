@@ -443,8 +443,30 @@ fn run_interactive_loop(
                         projection.as_deref_mut(),
                         workspace.take_wizard_completion(),
                     ) {
-                        let selection = ui::WorkspaceState::wizard_configuration_selection(&values)
-                            .map_err(|reason| RuntimeError(io::Error::other(reason)))?;
+                        // A negotiated catalog is authoritative: bind the
+                        // completed wizard to it before any configuration
+                        // mutation. The disconnected development fixture keeps
+                        // the bounded legacy parser because it has no wire
+                        // catalog to validate against.
+                        let selection = match (
+                            projection.snapshot().agent_catalog.as_ref(),
+                            projection.snapshot().provider_catalog.as_ref(),
+                        ) {
+                            (Some(agents), Some(providers)) => {
+                                ui::WorkspaceState::wizard_provider_setup_draft(
+                                    &values, agents, providers,
+                                )
+                                .map_err(|error| {
+                                    RuntimeError(io::Error::other(format!(
+                                        "provider setup draft rejected: {error:?}"
+                                    )))
+                                })?
+                                .selection()
+                                .clone()
+                            }
+                            _ => ui::WorkspaceState::wizard_configuration_selection(&values)
+                                .map_err(|reason| RuntimeError(io::Error::other(reason)))?,
+                        };
                         if let Some(receipt) =
                             ui::WorkspaceState::wizard_credential_helper_receipt(&values)
                                 .map_err(|reason| RuntimeError(io::Error::other(reason)))?

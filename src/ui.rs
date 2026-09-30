@@ -6,7 +6,10 @@
 //! the external ASB control plane.
 
 use crate::{
-    control_codec::{ConfigurationSelection, MeasurementCatalog, ProviderAuthMethod},
+    agent_catalog::AgentCatalog,
+    control_codec::{
+        ConfigurationSelection, MeasurementCatalog, ProviderAuthMethod, ProviderCatalog,
+    },
     help::document_help_text,
     live_projection::{Connection, LiveSnapshot},
     selection::{MAX_QUERY_BYTES, Measurement, MeasurementSelection},
@@ -333,6 +336,19 @@ impl WorkspaceState {
             auth_method,
             credential_reference_sha256,
         })
+    }
+
+    /// Convert a completed wizard into the catalog-bound typed setup draft.
+    /// Callers should use this seam when a live or development catalog is
+    /// available; the legacy selection helper above remains for protocol
+    /// compatibility with older fixture paths.
+    pub fn wizard_provider_setup_draft(
+        values: &[String; 7],
+        agents: &AgentCatalog,
+        providers: &ProviderCatalog,
+    ) -> Result<crate::provider_setup::ProviderSetupDraft, crate::provider_setup::ProviderSetupError>
+    {
+        crate::provider_setup::ProviderSetupDraft::from_wizard_values(values, agents, providers)
     }
 
     /// Decode the optional digest-only helper receipt embedded in the wizard
