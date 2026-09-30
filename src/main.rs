@@ -16,6 +16,7 @@ use asb_tui::{
     runtime::{run_interactive, run_interactive_with_control},
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
+    top_level::{self, TuiCommand},
 };
 use std::{env, process::ExitCode};
 
@@ -37,6 +38,9 @@ fn main() -> ExitCode {
     }
     if arguments == ["run", "--broker"] {
         return launch_broker_entry();
+    }
+    if let Some(tui_arguments) = arguments.strip_prefix(&["tui".to_owned()]) {
+        return launch_tui_command(tui_arguments);
     }
     if arguments.is_empty() || arguments == ["run"] {
         return launch();
@@ -133,9 +137,30 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: asb-tui [run|run --broker] | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
+        "usage: asb-tui [run|run --broker] | tui | tui <install|upgrade|status|launch|remove> --development --format json | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
     );
     ExitCode::from(2)
+}
+
+fn launch_tui_command(arguments: &[String]) -> ExitCode {
+    let command = match top_level::parse(arguments) {
+        Ok(command) => command,
+        Err(error) => {
+            eprintln!("{}: {}", error.code(), top_level::usage());
+            return ExitCode::from(2);
+        }
+    };
+    match command {
+        TuiCommand::LaunchUi => launch(),
+        TuiCommand::Lifecycle { operation, .. } => {
+            let response = top_level::execute_lifecycle(operation, std::io::stdin().lock());
+            println!(
+                "{}",
+                serde_json::to_string(&response).expect("serialize lifecycle response")
+            );
+            ExitCode::from(if response.ok { 0 } else { 3 })
+        }
+    }
 }
 
 /// Consume the broker's inherited fd-0 handoff without entering the UI.

@@ -42,6 +42,7 @@ pub mod shell;
 pub mod startup;
 pub mod system_probe;
 pub mod terminal;
+pub mod top_level;
 pub mod ui;
 pub mod visual;
 pub mod wizard;
