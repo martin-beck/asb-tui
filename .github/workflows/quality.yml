@@ -54,6 +54,7 @@ jobs:
           python3 tools/test-run-shared-config-tutorial.py
           python3 tools/test-replay-comparison-tutorial.py
           python3 tools/test-development-journey.py
+          python3 tools/test-end-to-end-journey.py
           python3 tools/check-credential-boundary.py
           python3 tools/test-release-verifier.py
           tools/test-promoted-self-test.sh
