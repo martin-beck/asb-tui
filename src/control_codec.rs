@@ -2944,26 +2944,34 @@ mod tests {
 
     #[test]
     fn control_limits_and_version_edges_fail_closed() {
-        let mut limits = ControlLimits::default();
-        limits.max_frame_bytes = 0;
+        let limits = ControlLimits {
+            max_frame_bytes: 0,
+            ..ControlLimits::default()
+        };
         assert_eq!(
             limits.validate(),
             Err(CodecError::InvalidLimit("max_frame_bytes"))
         );
-        let mut limits = ControlLimits::default();
-        limits.max_timeout_ms = 0;
+        let limits = ControlLimits {
+            max_timeout_ms: 0,
+            ..ControlLimits::default()
+        };
         assert_eq!(
             limits.validate(),
             Err(CodecError::InvalidLimit("max_timeout_ms"))
         );
-        let mut limits = ControlLimits::default();
-        limits.max_page_items = 0;
+        let limits = ControlLimits {
+            max_page_items: 0,
+            ..ControlLimits::default()
+        };
         assert_eq!(
             limits.validate(),
             Err(CodecError::InvalidLimit("max_page_items"))
         );
-        let mut limits = ControlLimits::default();
-        limits.max_in_flight = 0;
+        let limits = ControlLimits {
+            max_in_flight: 0,
+            ..ControlLimits::default()
+        };
         assert_eq!(
             limits.validate(),
             Err(CodecError::InvalidLimit("max_in_flight"))
