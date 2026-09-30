@@ -1,3 +1,6 @@
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Materialized bundle handoff
 
 `MaterializedBundle::launch_binding()` is the canonical handoff from the
