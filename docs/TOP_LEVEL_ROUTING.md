@@ -1,0 +1,41 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+# Top-level TUI routing
+
+The standalone package supplies the bounded target for the parent `asb tui`
+router. The equivalent direct command is:
+
+```console
+asb-tui tui
+```
+
+It opens the interactive application. Lifecycle operations use one typed
+development envelope on standard input and require an explicit development
+marker:
+
+```console
+asb-tui tui status --development --format json < status-request.json
+asb-tui tui install --development --format json < install-request.json
+asb-tui tui upgrade --development --format json < upgrade-request.json
+asb-tui tui launch --development --format json < launch-request.json
+asb-tui tui remove --development --format json < remove-request.json
+```
+
+The parent ASB command may invoke the same target as `asb tui <operation>`.
+The request remains the v1 development-router envelope from
+`protocol/v1/lifecycle-request.schema.json`; the selected operation and the
+request operation must match. This prevents an outer command typo from
+dispatching a different lifecycle action.
+
+Development mode is explicit and warning-labelled. It uses the existing
+standalone signature, artifact, ownership, atomic-activation, self-test,
+supervisor, and cleanup checks; it does not require live provider
+authorization or an authenticated production router. `--production` is
+rejected rather than downgraded to a fixture. Public installation remains
+unavailable until the release-channel gates and the external ASB router are
+qualified.
+
+Exit codes are stable: `0` means the lifecycle response is successful, `2`
+means command usage is invalid, and `3` means the bounded request was accepted
+but the lifecycle operation was rejected or could not complete.

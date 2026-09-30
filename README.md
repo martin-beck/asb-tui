@@ -23,6 +23,11 @@ Running through a pipe or with `TERM=dumb` emits a stable plain-text view withou
 alternate-screen mode. This is source functionality, not platform
 qualification or an installable release. See
 [the terminal dependency decision](docs/TERMINAL_DEPENDENCY_POLICY.md).
+The standalone package also supplies the bounded target for the parent
+`asb tui` command. `asb-tui tui` launches the application; lifecycle commands
+such as `asb-tui tui status --development --format json` use the explicit
+development router envelope described in [top-level routing](docs/TOP_LEVEL_ROUTING.md).
+This development seam does not claim a public ASB router or a verified release.
 The Unix lifecycle registers restoration handlers before terminal acquisition: `SIGHUP`, `SIGINT`,
 `SIGQUIT`, and `SIGTERM` restore acquired effects before preserving the signal's default exit,
 while `SIGTSTP` restores before suspension and `SIGCONT` re-enters the UI.
