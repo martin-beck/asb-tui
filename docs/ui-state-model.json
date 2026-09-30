@@ -74,7 +74,7 @@
     {"id":"configuration","elements":["configuration.entry","configuration.search","configuration.control_status","configuration.preflight","navigation"]},
     {"id":"run_control","elements":["run.status","run.start","run.cancel","navigation"]},
     {"id":"recent_runs","elements":["runs.row","runs.refresh","navigation"]},
-    {"id":"reports","elements":["reports.row","reports.compare","navigation"]},
+    {"id":"reports","elements":["reports.row","reports.evidence","reports.measure","reports.failure","reports.compare","navigation"]},
     {"id":"help","elements":["help.search","help.entry","navigation"]}
   ],
   "elements": [
@@ -96,6 +96,9 @@
     {"id":"runs.row","route":"recent_runs","role":"selectable","help_id":"runs.row","focusable":true,"hoverable":true,"parent":null},
     {"id":"runs.refresh","route":"recent_runs","role":"action","help_id":"runs.refresh","focusable":true,"hoverable":true,"parent":null},
     {"id":"reports.row","route":"reports","role":"selectable","help_id":"reports.row","focusable":true,"hoverable":true,"parent":null},
+    {"id":"reports.evidence","route":"reports","role":"status","help_id":"reports.evidence","focusable":false,"hoverable":true,"parent":null},
+    {"id":"reports.measure","route":"reports","role":"status","help_id":"reports.measure","focusable":false,"hoverable":true,"parent":null},
+    {"id":"reports.failure","route":"reports","role":"status","help_id":"reports.failure","focusable":false,"hoverable":true,"parent":null},
     {"id":"reports.compare","route":"reports","role":"action","help_id":"reports.compare","focusable":true,"hoverable":true,"parent":null},
     {"id":"help.search","route":"help","role":"editable","help_id":"help.search","focusable":true,"hoverable":true,"parent":null},
     {"id":"help.entry","route":"help","role":"selectable","help_id":"help.entry","focusable":true,"hoverable":true,"parent":null},
@@ -194,6 +197,9 @@
     {"id":"runs.row","text":"Choose a completed run to inspect its report."},
     {"id":"runs.refresh","text":"Reload the latest run history from ASB."},
     {"id":"reports.row","text":"Choose a completed run to inspect its report."},
+    {"id":"reports.evidence","text":"Shows whether this result is live, development, replayed, unavailable, or unsupported."},
+    {"id":"reports.measure","text":"Shows the value, unit, and status of each requested benchmark measure."},
+    {"id":"reports.failure","text":"Explains a failed or missing result and the next action needed before rerunning."},
     {"id":"reports.compare","text":"Compare the selected completed runs."},
     {"id":"help.search","text":"Type to find an action or explanation."},
     {"id":"help.entry","text":"Read the explanation and key for this action."},

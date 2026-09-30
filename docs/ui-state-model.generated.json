@@ -402,6 +402,9 @@
       "id": "reports",
       "elements": [
         "reports.row",
+        "reports.evidence",
+        "reports.measure",
+        "reports.failure",
         "reports.compare",
         "navigation"
       ]
@@ -575,6 +578,33 @@
       "role": "selectable",
       "help_id": "reports.row",
       "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "reports.evidence",
+      "route": "reports",
+      "role": "status",
+      "help_id": "reports.evidence",
+      "focusable": false,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "reports.measure",
+      "route": "reports",
+      "role": "status",
+      "help_id": "reports.measure",
+      "focusable": false,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "reports.failure",
+      "route": "reports",
+      "role": "status",
+      "help_id": "reports.failure",
+      "focusable": false,
       "hoverable": true,
       "parent": null
     },
@@ -1303,6 +1333,18 @@
     {
       "id": "reports.row",
       "text": "Choose a completed run to inspect its report."
+    },
+    {
+      "id": "reports.evidence",
+      "text": "Shows whether this result is live, development, replayed, unavailable, or unsupported."
+    },
+    {
+      "id": "reports.measure",
+      "text": "Shows the value, unit, and status of each requested benchmark measure."
+    },
+    {
+      "id": "reports.failure",
+      "text": "Explains a failed or missing result and the next action needed before rerunning."
     },
     {
       "id": "reports.compare",
