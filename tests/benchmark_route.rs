@@ -1,4 +1,8 @@
-use asb_tui::benchmark_route::{CampaignError, CampaignStage, GuidedCampaign, ReplayMode};
+use asb_tui::{
+    benchmark_route::{CampaignError, CampaignStage, GuidedCampaign, ReplayMode},
+    reports::{Artifact, MeasureResult, MeasureStatus, Report, RunId},
+};
+use std::collections::BTreeMap;
 
 #[test]
 fn guided_route_selects_then_launches_and_comparisons_are_after_completion() {
@@ -25,4 +29,51 @@ fn offline_replay_is_explicit_and_has_no_live_fallback() {
     let intent = route.start_offline_replay("cassette-1").unwrap();
     assert!(intent.offline_only);
     assert_eq!(intent.recording_id, "cassette-1");
+}
+
+#[test]
+fn comparison_is_deferred_until_successful_completion_and_delegates_compatibility() {
+    let mut route = GuidedCampaign::new("quality").unwrap();
+    route.add_agent("agent-a").unwrap();
+    route.add_measure("quality.correctness").unwrap();
+    route.review().unwrap();
+    let reports = vec![report("run-a", 1.0), report("run-b", 2.0)];
+    assert_eq!(
+        route.compare(&reports, &[id("run-a"), id("run-b")]),
+        Err(CampaignError::InvalidTransition)
+    );
+    route.start().unwrap();
+    route.finish(true).unwrap();
+    let comparison = route
+        .compare(&reports, &[id("run-a"), id("run-b")])
+        .unwrap();
+    assert!(comparison.compatible);
+    assert_eq!(comparison.run_ids, vec![id("run-a"), id("run-b")]);
+}
+
+fn id(value: &str) -> RunId {
+    RunId::new(value).unwrap()
+}
+
+fn report(value: &str, measurement: f64) -> Report {
+    Report {
+        run_id: id(value),
+        provenance: "development/mock/offline-replay".into(),
+        measures: BTreeMap::from([(
+            "quality.correctness".into(),
+            MeasureResult {
+                value: Some(measurement),
+                unit: "score".into(),
+                status: MeasureStatus::Complete,
+            },
+        )]),
+        uncertainty: None,
+        failures: Vec::new(),
+        artifacts: vec![Artifact {
+            name: "report.json".into(),
+            available: true,
+        }],
+        command_argv: vec!["asb".into(), "replay".into(), "--offline".into()],
+        stale: false,
+    }
 }
