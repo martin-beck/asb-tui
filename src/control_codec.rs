@@ -2941,4 +2941,40 @@ mod tests {
         assert_eq!(decoded, request);
         publication.validate().unwrap();
     }
+
+    #[test]
+    fn control_limits_and_version_edges_fail_closed() {
+        let mut limits = ControlLimits::default();
+        limits.max_frame_bytes = 0;
+        assert_eq!(
+            limits.validate(),
+            Err(CodecError::InvalidLimit("max_frame_bytes"))
+        );
+        let mut limits = ControlLimits::default();
+        limits.max_timeout_ms = 0;
+        assert_eq!(
+            limits.validate(),
+            Err(CodecError::InvalidLimit("max_timeout_ms"))
+        );
+        let mut limits = ControlLimits::default();
+        limits.max_page_items = 0;
+        assert_eq!(
+            limits.validate(),
+            Err(CodecError::InvalidLimit("max_page_items"))
+        );
+        let mut limits = ControlLimits::default();
+        limits.max_in_flight = 0;
+        assert_eq!(
+            limits.validate(),
+            Err(CodecError::InvalidLimit("max_in_flight"))
+        );
+        assert_eq!(ControlCall::Capabilities.minimum_version(), None);
+        assert_eq!(
+            ControlCall::ValidateSettings {
+                settings: serde_json::Value::Null
+            }
+            .minimum_version(),
+            None
+        );
+    }
 }

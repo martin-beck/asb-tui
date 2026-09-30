@@ -1696,7 +1696,77 @@ mod tests {
         assert!(snapshot.provider_catalog.is_some());
         assert!(snapshot.configuration.is_some());
         assert!(snapshot.recording_campaign_lifecycle.is_none());
-        assert_eq!(snapshot.auth_status.unwrap().status, "active");
+        let provider = snapshot.provider_catalog.as_ref().unwrap();
+        assert_eq!(provider.runner_instance_id, runner);
+        assert_eq!(provider.generation, Revision(3));
+        assert_eq!(provider.providers.len(), 1);
+        assert_eq!(provider.providers[0].provider_id, "openrouter");
+        assert_eq!(provider.providers[0].models.len(), 1);
+        assert_eq!(provider.providers[0].models[0].model_id, "free-model");
+        let configuration = snapshot.configuration.as_ref().unwrap();
+        assert!(configuration.configured);
+        assert_eq!(configuration.runner_instance_id, runner);
+        assert_eq!(configuration.generation, Revision(4));
+        assert_eq!(configuration.agent_ids, vec!["agent-a"]);
+        assert_eq!(configuration.provider_id.as_deref(), Some("openrouter"));
+        assert_eq!(configuration.model_id.as_deref(), Some("free-model"));
+        assert_eq!(
+            configuration
+                .credential_reference_sha256
+                .as_ref()
+                .map(String::len),
+            Some(64)
+        );
+        let auth = snapshot.auth_status.as_ref().unwrap();
+        assert_eq!(auth.provider, "openrouter");
+        assert_eq!(auth.generation, Revision(6));
+        assert_eq!(auth.endpoint_identity_sha256, "e".repeat(64));
+        assert_eq!(auth.credential_locator_sha256, "f".repeat(64));
+        assert_eq!(auth.status, "active");
+        let benchmark = snapshot.benchmark_catalog.as_ref().unwrap();
+        assert_eq!(benchmark.generation, Revision(7));
+        assert_eq!(benchmark.pools.len(), 1);
+        assert_eq!(benchmark.pools[0].groups.len(), 1);
+        assert_eq!(benchmark.pools[0].groups[0].benchmarks.len(), 1);
+        assert_eq!(
+            benchmark.pools[0].groups[0].benchmarks[0].measure_ids.len(),
+            1
+        );
+        let measurement = snapshot.measurement_catalog.as_ref().unwrap();
+        assert_eq!(measurement.schema_version, 1);
+        assert_eq!(measurement.groups.len(), 1);
+        assert_eq!(measurement.measurements.len(), 1);
+        assert_eq!(measurement.measurements[0].id, "latency.first_response");
+        assert_eq!(measurement.measurements[0].unit, "ns");
+        let agents = snapshot.agent_catalog.as_ref().unwrap();
+        assert_eq!(agents.runner_instance_id, runner);
+        assert_eq!(agents.generation, 3);
+        assert_eq!(agents.agents.len(), 1);
+        assert_eq!(agents.agents[0].agent_id, "agent-a");
+        assert!(agents.agents[0].package.is_some());
+        let lifecycle = snapshot.agent_lifecycle.as_ref().unwrap();
+        assert_eq!(lifecycle.binding.agent_id, "agent-a");
+        assert_eq!(lifecycle.binding.runner_instance_id, runner);
+        assert_eq!(lifecycle.operation_id, "operation-1");
+        assert_eq!(lifecycle.progress_percent, 100);
+        assert_eq!(lifecycle.generation, 3);
+        let run = snapshot.runs.first().unwrap();
+        assert_eq!(run.run_id.0, "run-history");
+        assert_eq!(run.attempt_id.0, "attempt-1");
+        assert_eq!(run.revision, Revision(6));
+        assert_eq!(run.created_revision, Revision(6));
+        assert!(snapshot.capabilities.as_ref().unwrap().run_control);
+        assert!(snapshot.capabilities.as_ref().unwrap().analysis);
+        assert!(snapshot.capabilities.as_ref().unwrap().validate_settings);
+        assert!(snapshot.capabilities.as_ref().unwrap().repeat);
+        assert!(snapshot.capabilities.as_ref().unwrap().events);
+        assert_eq!(snapshot.runs.len(), 1);
+        assert_eq!(snapshot.runs[0].state, PublicRunState::Completed);
+        assert_eq!(snapshot.runs[0].plan_sha256.len(), 64);
+        assert_eq!(measurement.catalog_sha256.len(), 64);
+        assert_eq!(benchmark.catalog_sha256.len(), 64);
+        assert_eq!(provider.catalog_sha256.len(), 64);
+        assert_eq!(agents.catalog_sha256.len(), 64);
         drop(session);
         join.join().unwrap();
     }
