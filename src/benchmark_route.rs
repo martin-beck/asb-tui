@@ -6,7 +6,9 @@
 //! execution, recording, replay and report data.  In particular, offline
 //! replay is an explicit mode and can never silently become a live run.
 
+use crate::control_codec::Revision;
 use crate::reports::{CompareError, Comparison, Report, RunId, compare};
+use crate::selection::CampaignSelection;
 
 const MAX_ITEMS: usize = 64;
 const MAX_TEXT: usize = 128;
@@ -85,6 +87,8 @@ pub enum CampaignError {
     OfflineRecordingRequired,
     LiveFallbackForbidden,
     Comparison(CompareError),
+    StaleCatalog,
+    EmptyCatalogSelection,
 }
 
 impl GuidedCampaign {
@@ -185,6 +189,39 @@ impl GuidedCampaign {
             agents: self.agents.clone(),
             measures: self.measures.clone(),
             replay: self.replay,
+            catalog_generation: None,
+            catalog_digest: None,
+            benchmark_ids: Vec::new(),
+        })
+    }
+
+    /// Review and start a campaign from the exact nested benchmark-picker
+    /// handoff. The generation and digest remain attached to the launch intent
+    /// so a downstream dispatcher cannot silently substitute a refreshed
+    /// catalog.
+    pub fn start_with_handoff(
+        &mut self,
+        handoff: CampaignSelection,
+        expected_generation: Revision,
+    ) -> Result<LaunchIntent, CampaignError> {
+        self.ensure_selection()?;
+        if handoff.generation != expected_generation {
+            return Err(CampaignError::StaleCatalog);
+        }
+        if handoff.catalog_digest.is_empty() || handoff.measure_ids.is_empty() {
+            return Err(CampaignError::EmptyCatalogSelection);
+        }
+        self.measures = handoff.measure_ids.clone();
+        self.review()?;
+        self.stage = CampaignStage::Running;
+        Ok(LaunchIntent {
+            workload: self.workload.clone(),
+            agents: self.agents.clone(),
+            measures: self.measures.clone(),
+            replay: self.replay,
+            catalog_generation: Some(handoff.generation),
+            catalog_digest: Some(handoff.catalog_digest),
+            benchmark_ids: handoff.benchmark_ids,
         })
     }
 
@@ -246,6 +283,9 @@ pub struct LaunchIntent {
     pub agents: Vec<String>,
     pub measures: Vec<String>,
     pub replay: ReplayMode,
+    pub catalog_generation: Option<Revision>,
+    pub catalog_digest: Option<String>,
+    pub benchmark_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

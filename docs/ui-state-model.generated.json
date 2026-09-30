@@ -16,6 +16,9 @@
     "hover",
     "query",
     "selection",
+    "benchmark_catalog",
+    "benchmark_selection",
+    "benchmark_catalog_generation",
     "measurement_catalog",
     "connection",
     "capabilities",
@@ -216,6 +219,26 @@
       "key": "g"
     },
     {
+      "action": "focus_benchmark_search",
+      "element": "benchmarks.search",
+      "key": "/"
+    },
+    {
+      "action": "select_benchmark_pool",
+      "element": "benchmarks.pool",
+      "key": "P"
+    },
+    {
+      "action": "toggle_benchmark_group",
+      "element": "benchmarks.group_toggle",
+      "key": "g"
+    },
+    {
+      "action": "toggle_benchmark",
+      "element": "benchmarks.row",
+      "key": "b"
+    },
+    {
       "action": "focus_configuration",
       "element": "configuration.entry",
       "key": "Enter"
@@ -328,6 +351,10 @@
     {
       "id": "measurement_selection",
       "elements": [
+        "benchmarks.search",
+        "benchmarks.pool",
+        "benchmarks.group_toggle",
+        "benchmarks.row",
         "measures.search",
         "measures.row",
         "measures.group_toggle",
@@ -410,6 +437,42 @@
       "route": "measurement_selection",
       "role": "action",
       "help_id": "measures.group_toggle",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "benchmarks.search",
+      "route": "measurement_selection",
+      "role": "editable",
+      "help_id": "benchmarks.search",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "benchmarks.pool",
+      "route": "measurement_selection",
+      "role": "selectable",
+      "help_id": "benchmarks.pool",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "benchmarks.group_toggle",
+      "route": "measurement_selection",
+      "role": "action",
+      "help_id": "benchmarks.group_toggle",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "benchmarks.row",
+      "route": "measurement_selection",
+      "role": "selectable",
+      "help_id": "benchmarks.row",
       "focusable": true,
       "hoverable": true,
       "parent": null
@@ -1122,6 +1185,22 @@
     {
       "id": "measures.group_toggle",
       "text": "Select or clear every visible measure in this group."
+    },
+    {
+      "id": "benchmarks.search",
+      "text": "Search the nested pool, group, benchmark, and measure catalog."
+    },
+    {
+      "id": "benchmarks.pool",
+      "text": "Choose the benchmark pool whose groups and benchmarks are visible."
+    },
+    {
+      "id": "benchmarks.group_toggle",
+      "text": "Select or clear visible benchmarks and their available measures."
+    },
+    {
+      "id": "benchmarks.row",
+      "text": "Select a benchmark and include its available measures in the campaign."
     },
     {
       "id": "configuration.entry",
