@@ -699,6 +699,32 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn load_rejects_symlink_root_bundle_and_stage() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-tui-materialized-load-links-{}",
+            std::process::id()
+        ));
+        let target = root.with_extension("target");
+        let _ = std::fs::remove_file(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&target);
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &root).unwrap();
+        assert!(MaterializedBundleStore::new(&root).load().is_err());
+        std::fs::remove_file(&root).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(target.join("valid"), b"not-a-bundle").unwrap();
+        std::os::unix::fs::symlink(target.join("valid"), root.join("bundle.json")).unwrap();
+        assert!(MaterializedBundleStore::new(&root).load().is_err());
+        std::fs::remove_file(root.join("bundle.json")).unwrap();
+        std::os::unix::fs::symlink(target.join("valid"), root.join(".bundle.stage")).unwrap();
+        assert!(MaterializedBundleStore::new(&root).load().is_err());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(target);
+    }
+
     fn benchmark_catalog() -> BenchmarkCatalog {
         let measure = crate::selection::BenchmarkMeasure::new(
             "quality.correctness",
