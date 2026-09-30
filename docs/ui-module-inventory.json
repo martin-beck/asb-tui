@@ -40,7 +40,7 @@
     {"path":"src/identity_adapter.rs","reason":"Identity validation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/provider_catalog.rs","reason":"Renderer-neutral provider catalog refresh, scoped-default validation, and credential-reference-only option mapping; it has no renderer ownership.","expires":"2027-12-31"},
     {"path":"src/provider_setup.rs","reason":"Renderer-neutral typed provider setup draft, catalog-bound review, digest-only authentication references, and single-use atomic apply gate; it has no renderer ownership.","expires":"2027-12-31"},
-    {"path":"src/configuration_materialization.rs","reason":"Renderer-neutral deterministic configuration bundle validation, digesting, canonical LaunchBinding handoff, atomic persistence, and bounded failure-path and symlink tests; it has no route, widget, terminal, or formal UI-model ownership.","expires":"2027-12-31"},
+    {"path":"src/configuration_materialization.rs","reason":"Renderer-neutral deterministic configuration bundle validation, digesting, canonical LaunchBinding handoff, atomic persistence, and bounded failure-path, symlink, and preflight tests; it has no route, widget, terminal, or formal UI-model ownership.","expires":"2027-12-31"},
     {"path":"src/lib.rs","reason":"Module exports only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/lifecycle.rs","reason":"Install lifecycle only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/main.rs","reason":"CLI bootstrap only; it has no UI state or projection ownership.","expires":"2027-12-31"},

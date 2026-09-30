@@ -725,6 +725,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(target);
     }
 
+    #[test]
+    fn preflight_summary_is_secret_free_and_complete() {
+        let (value, draft) = input();
+        let bundle = MaterializedBundle::build(
+            value,
+            &draft,
+            &benchmark_catalog(),
+            Revision(1),
+            Revision(3),
+        )
+        .unwrap();
+        let summary = bundle.preflight_summary();
+        assert_eq!(summary.digest_sha256, bundle.digest_sha256);
+        assert_eq!(summary.provider_id, "openrouter");
+        assert_eq!(summary.model_id, "free-model");
+        assert_eq!(summary.agent_count, 1);
+        assert_eq!(summary.pool_id, "development");
+        assert_eq!(summary.measure_count, 1);
+        assert!(summary.development_only);
+        let encoded = serde_json::to_string(&bundle.document).unwrap();
+        assert!(!encoded.contains("api_key"));
+    }
+
     fn benchmark_catalog() -> BenchmarkCatalog {
         let measure = crate::selection::BenchmarkMeasure::new(
             "quality.correctness",
