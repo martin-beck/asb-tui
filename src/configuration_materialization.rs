@@ -107,7 +107,7 @@ impl MaterializedBundle {
             agent_count: self.document.provider.agent_ids.len(),
             pool_id: self.document.benchmark.pool_id.clone(),
             measure_count: self.document.benchmark.measure_ids.len(),
-            development_only: self.document.asb_protocol == "asb-control",
+            development_only: self.document.provider.catalog_digest == "0".repeat(64),
         }
     }
 }
@@ -255,6 +255,11 @@ impl MaterializedBundleStore {
         };
         if recover_stage {
             fs::rename(&stage, &path).map_err(io_error)?;
+            make_private_file(&path)?;
+            fs::File::open(&self.root)
+                .map_err(io_error)?
+                .sync_all()
+                .map_err(io_error)?;
         }
         Ok(Some(bundle))
     }
@@ -510,6 +515,13 @@ mod tests {
         assert_eq!(store.load().unwrap(), Some(bundle.clone()));
         assert!(root.join("bundle.json").exists());
         assert!(!root.join(".bundle.stage").exists());
+        #[cfg(unix)]
+        assert_eq!(
+            std::os::unix::fs::MetadataExt::mode(
+                &std::fs::metadata(root.join("bundle.json")).unwrap()
+            ) & 0o777,
+            0o600
+        );
         std::fs::write(root.join(".bundle.stage"), b"corrupt").unwrap();
         store.apply(&bundle).unwrap();
         assert_eq!(store.load().unwrap(), Some(bundle));

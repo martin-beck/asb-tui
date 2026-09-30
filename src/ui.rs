@@ -77,6 +77,7 @@ pub struct WorkspaceState {
     pub preflight: Option<crate::configuration_materialization::PreflightSummary>,
     preflight_bundle: Option<crate::configuration_materialization::MaterializedBundle>,
     preflight_error: Option<String>,
+    reviewed_provider_setup: Option<crate::provider_setup::ProviderSetupDraft>,
     pub report_cursor: usize,
     configuration_draft: crate::configuration::ConfigurationDraft,
     configuration_path: Option<PathBuf>,
@@ -178,6 +179,7 @@ impl Default for WorkspaceState {
             preflight: None,
             preflight_bundle: None,
             preflight_error: None,
+            reviewed_provider_setup: None,
             report_cursor: 0,
             configuration_draft: crate::configuration::ConfigurationDraft::new(
                 crate::configuration::Configuration::default(),
@@ -432,15 +434,32 @@ impl WorkspaceState {
         self.preflight_error = None;
     }
 
+    /// Supply the catalog-bound provider review produced by the authenticated
+    /// setup seam. Development fallback is used only when this is absent.
+    pub fn set_reviewed_provider_setup(
+        &mut self,
+        draft: crate::provider_setup::ProviderSetupDraft,
+    ) {
+        self.reviewed_provider_setup = Some(draft);
+        self.clear_preflight();
+    }
+
     /// Build a fresh digest-bound bundle from the current reviewed wizard and
     /// nested benchmark selections. No file is changed by this operation.
     pub fn prepare_preflight(&mut self) -> Result<(), String> {
         let values = self.wizard.values();
         let selection = Self::wizard_configuration_selection(&values)?;
-        let draft = crate::provider_setup::ProviderSetupDraft::from_selection_for_development(
-            selection.clone(),
-        )
-        .map_err(|error| format!("provider review invalid: {error:?}"))?;
+        let draft = if let Some(draft) = self.reviewed_provider_setup.clone() {
+            draft
+        } else {
+            crate::provider_setup::ProviderSetupDraft::from_selection_for_development(
+                selection.clone(),
+            )
+            .map_err(|error| format!("provider review invalid: {error:?}"))?
+        };
+        if draft.selection() != &selection {
+            return Err("provider review no longer matches wizard selection".into());
+        }
         let benchmark_selection = self
             .benchmark_selection
             .as_ref()
