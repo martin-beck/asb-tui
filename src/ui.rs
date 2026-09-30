@@ -6,7 +6,10 @@
 //! the external ASB control plane.
 
 use crate::{
-    control_codec::{ConfigurationSelection, MeasurementCatalog, ProviderAuthMethod},
+    agent_catalog::AgentCatalog,
+    control_codec::{
+        ConfigurationSelection, MeasurementCatalog, ProviderAuthMethod, ProviderCatalog,
+    },
     help::document_help_text,
     live_projection::{Connection, LiveSnapshot},
     selection::{MAX_QUERY_BYTES, Measurement, MeasurementSelection},
@@ -79,6 +82,9 @@ pub struct WorkspaceState {
     pub wizard: Wizard,
     wizard_formal: WizardFormalState,
     wizard_completion: Option<[String; 7]>,
+    /// Single-use apply gate for a completed provider setup review. Opening a
+    /// new wizard restarts this gate; a failed apply cannot be replayed.
+    pub(crate) provider_setup_apply: crate::provider_setup::AtomicProviderSetup,
     development_catalog_fallback: bool,
     /// Last validated dimensions received from the terminal event stream.
     /// Rendering still uses the frame's authoritative area, so a missed
@@ -101,6 +107,7 @@ impl Default for WorkspaceState {
             wizard: Wizard::default(),
             wizard_formal: WizardFormalState::new().expect("authored wizard model must be valid"),
             wizard_completion: None,
+            provider_setup_apply: Default::default(),
             development_catalog_fallback: false,
             help: false,
             search: String::new(),
@@ -335,6 +342,19 @@ impl WorkspaceState {
         })
     }
 
+    /// Convert a completed wizard into the catalog-bound typed setup draft.
+    /// Callers should use this seam when a live or development catalog is
+    /// available; the legacy selection helper above remains for protocol
+    /// compatibility with older fixture paths.
+    pub fn wizard_provider_setup_draft(
+        values: &[String; 7],
+        agents: &AgentCatalog,
+        providers: &ProviderCatalog,
+    ) -> Result<crate::provider_setup::ProviderSetupDraft, crate::provider_setup::ProviderSetupError>
+    {
+        crate::provider_setup::ProviderSetupDraft::from_wizard_values(values, agents, providers)
+    }
+
     /// Decode the optional digest-only helper receipt embedded in the wizard
     /// auth field. Raw credentials cannot match this syntax.
     pub fn wizard_credential_helper_receipt(
@@ -439,6 +459,7 @@ impl WorkspaceState {
 
     /// Open the wizard for a later manual reconfiguration.
     pub fn open_wizard(&mut self) {
+        self.provider_setup_apply.restart();
         if self.wizard_formal.apply(FormalEvent::OpenWizard).is_ok() {
             self.screen = Screen::Wizard;
         }

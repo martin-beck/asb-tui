@@ -443,8 +443,48 @@ fn run_interactive_loop(
                         projection.as_deref_mut(),
                         workspace.take_wizard_completion(),
                     ) {
-                        let selection = ui::WorkspaceState::wizard_configuration_selection(&values)
-                            .map_err(|reason| RuntimeError(io::Error::other(reason)))?;
+                        // A negotiated catalog is authoritative: bind the
+                        // completed wizard to it before any configuration
+                        // mutation. The disconnected development fixture keeps
+                        // the bounded legacy parser because it has no wire
+                        // catalog to validate against.
+                        let snapshot = projection.snapshot();
+                        let draft = match (
+                            snapshot.agent_catalog.as_ref(),
+                            snapshot.provider_catalog.as_ref(),
+                        ) {
+                            (Some(agents), Some(providers)) => {
+                                ui::WorkspaceState::wizard_provider_setup_draft(
+                                    &values, agents, providers,
+                                )
+                                .map_err(|error| {
+                                    RuntimeError(io::Error::other(format!(
+                                        "provider setup draft rejected: {error:?}"
+                                    )))
+                                })?
+                            }
+                            (None, None) => {
+                                // Only a completely disconnected development
+                                // fixture may use the legacy bounded parser.
+                                let selection =
+                                    ui::WorkspaceState::wizard_configuration_selection(&values)
+                                        .map_err(|reason| RuntimeError(io::Error::other(reason)))?;
+                                crate::provider_setup::ProviderSetupDraft::from_selection_for_development(selection)
+                                    .map_err(|error| RuntimeError(io::Error::other(format!("provider setup draft rejected: {error:?}"))))?
+                            }
+                            _ => {
+                                return Err(RuntimeError(io::Error::other(
+                                    "provider setup catalogs are incomplete",
+                                )));
+                            }
+                        };
+                        let current_generation = snapshot
+                            .provider_catalog
+                            .as_ref()
+                            .map_or(crate::control_codec::Revision(1), |catalog| {
+                                catalog.generation
+                            });
+                        let selection = draft.selection().clone();
                         if let Some(receipt) =
                             ui::WorkspaceState::wizard_credential_helper_receipt(&values)
                                 .map_err(|reason| RuntimeError(io::Error::other(reason)))?
@@ -460,9 +500,18 @@ fn run_interactive_loop(
                                 .auth_status(projection, selection.provider_id.clone())
                                 .map_err(|error| RuntimeError(io::Error::other(error)))?;
                         }
-                        control
-                            .apply_configuration(projection, selection)
-                            .map_err(|error| RuntimeError(io::Error::other(error)))?;
+                        workspace
+                            .provider_setup_apply
+                            .apply(draft, current_generation, |selection| {
+                                control
+                                    .apply_configuration(projection, selection.clone())
+                                    .map_err(|error| error.to_string())
+                            })
+                            .map_err(|error| {
+                                RuntimeError(io::Error::other(format!(
+                                    "provider setup apply rejected: {error:?}"
+                                )))
+                            })?;
                         workspace.apply_live_snapshot(projection.snapshot());
                     }
                 }

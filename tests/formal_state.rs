@@ -67,6 +67,26 @@ fn development_catalog_fallback_is_declared_in_the_formal_model() {
 }
 
 #[test]
+fn provider_setup_review_and_single_apply_are_declared_in_the_formal_model() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    assert!(
+        model["state_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "provider_setup_review")
+    );
+    let catalog_contract = model["catalog_contract"].as_str().unwrap();
+    assert!(catalog_contract.contains("catalog-bound"));
+    assert!(catalog_contract.contains("at most once"));
+    let mut gate = asb_tui::provider_setup::AtomicProviderSetup::default();
+    assert_eq!(gate.applied_generation(), None);
+    gate.restart();
+    assert_eq!(gate.applied_generation(), None);
+}
+
+#[test]
 fn focus_and_resize_are_bounded_and_atomic() {
     let mut state = FormalUiState::new(100, 30).unwrap();
     state

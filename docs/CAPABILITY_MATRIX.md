@@ -15,6 +15,7 @@
 | Linux AArch64 qualification | Contract/emulation evidence only | Required on exact release |
 | Installation, upgrade, rollback, removal | Development lifecycle and onboarding fixtures available | Live end-to-end qualification remains future work |
 | Clean development install-to-comparison journey | Executable credential-free fixture harness with mismatch recovery | Local development evidence only; live ASB/provider qualification remains future work |
+| User-driven provider setup draft | Catalog-bound provider/model/agent selection, digest-only auth references, review, and single-use atomic apply gate | Development catalog and local runner seam; live authorization remains future qualification |
 
 Green source CI proves the checked-in contracts and tests at its exact revision. It does not prove
 that ASB exposes the proposed protocol, that source-tested rendering is platform-qualified, that
