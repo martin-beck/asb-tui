@@ -1468,6 +1468,240 @@ mod tests {
     }
 
     #[test]
+    fn poll_projection_v17_fixture_projects_every_bootstrap_surface() {
+        use crate::control_codec::*;
+
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let runner = "runner-poll-v17";
+        let join = thread::spawn(move || {
+            let agent_catalog: crate::agent_catalog::AgentCatalog =
+                crate::agent_catalog::parse_agent_catalog_response(include_str!(
+                    "../tests/fixtures/asb-v1.4-agent-catalog-response.json"
+                ))
+                .unwrap();
+            let mut agent_catalog = agent_catalog;
+            agent_catalog.runner_instance_id = runner.into();
+            agent_catalog.catalog_sha256 = agent_catalog.computed_digest().unwrap();
+            let agent_entry = agent_catalog.agents[0].clone();
+            let measurement: MeasurementCatalogPublication = serde_json::from_value(
+                serde_json::json!({
+                    "version": {"major": 1, "minor": 2},
+                    "freshness": "content_addressed",
+                    "source": "built_in_collectors",
+                    "catalog": {
+                        "schema_version": 1,
+                        "catalog_sha256": "",
+                        "groups": [{"id": "latency", "label": "Latency", "description": "Request timing"}],
+                        "measurements": [{
+                            "id": "latency.first_response",
+                            "name": "First response",
+                            "description": "Time until the first response",
+                            "group": "latency",
+                            "quantity": "time",
+                            "unit": "ns",
+                            "aggregation": "gauge",
+                            "scope": "attempt",
+                            "provenance": {"source": "asb_runner_journal", "qualification": "implemented"},
+                            "source_identity": "procfs_process_stat",
+                            "resolution_ns": 1,
+                            "overhead": {"class": "low", "minimum_interval_ns": 1, "requires_privilege": false},
+                            "live": {"status": "supported"},
+                            "replay": {"status": "supported"},
+                            "platforms": [{"operating_system": "linux", "architectures": ["x86_64"], "required_features": ["procfs"]}],
+                            "evidence_limits": ["collector_overhead_recorded"]
+                        }]
+                    }
+                }))
+                .unwrap();
+            let mut measurement = measurement;
+            measurement.catalog.catalog_sha256 = measurement.catalog.computed_digest().unwrap();
+            let mut benchmark = BenchmarkCatalogPublication {
+                generation: Revision(7),
+                catalog_sha256: String::new(),
+                pools: vec![BenchmarkCatalogPool {
+                    id: "default".into(),
+                    groups: vec![BenchmarkCatalogGroup {
+                        id: "latency".into(),
+                        benchmarks: vec![BenchmarkCatalogEntry {
+                            id: "latency-basic".into(),
+                            measure_ids: vec!["latency.first_response".into()],
+                        }],
+                    }],
+                }],
+            };
+            benchmark.catalog_sha256 = benchmark.computed_digest().unwrap();
+            let provider = ProviderCatalog {
+                runner_instance_id: runner.into(),
+                generation: Revision(3),
+                catalog_sha256: "b".repeat(64),
+                providers: vec![ProviderCatalogEntry {
+                    provider_id: "openrouter".into(),
+                    display_name: "OpenRouter".into(),
+                    auth_methods: vec![ProviderAuthMethod::CredentialReference],
+                    models: vec![ProviderModel {
+                        model_id: "free-model".into(),
+                        revision: "2026-01".into(),
+                        availability: ProviderAvailability::Available,
+                    }],
+                    availability: ProviderAvailability::Available,
+                }],
+                refreshed: false,
+            };
+            let configuration = ConfigurationSnapshot {
+                runner_instance_id: runner.into(),
+                generation: Revision(4),
+                configured: true,
+                agent_ids: vec![agent_entry.agent_id.clone()],
+                provider_id: Some("openrouter".into()),
+                model_id: Some("free-model".into()),
+                auth_method: Some(ProviderAuthMethod::CredentialReference),
+                credential_reference_sha256: Some("c".repeat(64)),
+            };
+            let recording = RecordingCampaignStatus {
+                runner_instance_id: runner.into(),
+                generation: Revision(5),
+                campaign: Some(RecordingCampaignPlan {
+                    runner_instance_id: runner.into(),
+                    generation: Revision(5),
+                    campaign_id: "campaign-1".into(),
+                    provider_id: "openrouter".into(),
+                    model_id: "free-model".into(),
+                    agent_ids: vec![agent_entry.agent_id.clone()],
+                    workload_ids: vec!["latency-basic".into()],
+                    tuple_count: 1,
+                    state: "planned".into(),
+                    offline_ready: false,
+                    unavailable_reason: Some("recording-required".into()),
+                }),
+            };
+            let run = RunSummary {
+                run_id: RunId("run-history".into()),
+                attempt_id: AttemptId("attempt-1".into()),
+                state: PublicRunState::Completed,
+                created_revision: Revision(6),
+                revision: Revision(6),
+                plan_sha256: "d".repeat(64),
+            };
+            let auth = AuthStatusResponse {
+                provider: "openrouter".into(),
+                endpoint_identity_sha256: "e".repeat(64),
+                credential_locator_sha256: "f".repeat(64),
+                generation: Revision(6),
+                status: "active".into(),
+            };
+            loop {
+                let mut header = [0; 4];
+                if server.read_exact(&mut header).is_err() {
+                    break;
+                }
+                let size = u32::from_be_bytes(header) as usize;
+                let mut body = vec![0; size];
+                server.read_exact(&mut body).unwrap();
+                let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+                let result = match request.call {
+                    ControlCall::Capabilities => ControlResult::Capabilities(Capabilities {
+                        validate_settings: true,
+                        run_control: true,
+                        repeat: true,
+                        analysis: true,
+                        events: true,
+                    }),
+                    ControlCall::BenchmarkCatalog => {
+                        ControlResult::BenchmarkCatalog(benchmark.clone())
+                    }
+                    ControlCall::MeasurementCatalog => {
+                        ControlResult::MeasurementCatalog(measurement.clone())
+                    }
+                    ControlCall::History(_) => ControlResult::History(Page {
+                        items: vec![run.clone()],
+                        next: None,
+                        has_more: false,
+                    }),
+                    ControlCall::AgentCatalog(_) => {
+                        ControlResult::AgentCatalog(agent_catalog.clone())
+                    }
+                    ControlCall::AgentStatus(params) => ControlResult::AgentLifecycle(
+                        crate::asb_lifecycle::AgentLifecycleResponse {
+                            binding: params.binding,
+                            operation_id: "operation-1".into(),
+                            state: crate::asb_lifecycle::AgentLifecycleState::Active,
+                            generation: 3,
+                            progress_percent: 100,
+                            failure: None,
+                        },
+                    ),
+                    ControlCall::ProviderCatalog(_) => {
+                        ControlResult::ProviderCatalog(provider.clone())
+                    }
+                    ControlCall::ConfigurationStatus(_) => {
+                        ControlResult::Configuration(configuration.clone())
+                    }
+                    ControlCall::RecordingCampaignStatus(_) => {
+                        ControlResult::RecordingCampaignStatus(recording.clone())
+                    }
+                    ControlCall::AuthStatus(_) => ControlResult::AuthStatus(auth.clone()),
+                    other => panic!("unexpected poll call: {other:?}"),
+                };
+                let response = ControlResponse::Success(SuccessResponse {
+                    jsonrpc: JSONRPC_VERSION.into(),
+                    id: request.id,
+                    result: ControlSuccess::Operation(BoundResult {
+                        request_sha256: "a".repeat(64),
+                        result,
+                    }),
+                });
+                server
+                    .write_all(&control_codec::encode(&response, 256 * 1024).unwrap())
+                    .unwrap();
+            }
+        });
+        let mut transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            ControlLimits::default(),
+        )
+        .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(V1_10);
+        let negotiated = Negotiated {
+            version: V1_10,
+            limits: ControlLimits::default(),
+            runner_instance_id: runner.into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(10),
+        };
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated,
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [5; 16],
+                sequence: 1,
+            })
+            .unwrap(),
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        let mut projection = crate::live_projection::ControlProjection::default();
+        session.poll_projection(&mut projection).unwrap();
+        let snapshot = projection.snapshot();
+        assert!(snapshot.capabilities.is_some());
+        assert!(snapshot.benchmark_catalog.is_some());
+        assert!(snapshot.measurement_catalog.is_some());
+        assert_eq!(projection.run_count(), 1);
+        assert!(snapshot.agent_catalog.is_some());
+        assert!(snapshot.agent_lifecycle.is_some());
+        assert!(snapshot.provider_catalog.is_some());
+        assert!(snapshot.configuration.is_some());
+        assert!(snapshot.recording_campaign_lifecycle.is_none());
+        assert_eq!(snapshot.auth_status.unwrap().status, "active");
+        drop(session);
+        join.join().unwrap();
+    }
+
+    #[test]
     fn wizard_configuration_apply_round_trips_and_updates_projection() {
         let (server, client) = UnixStream::pair().unwrap();
         let negotiated = crate::control_codec::Negotiated {
