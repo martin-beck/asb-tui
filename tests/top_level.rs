@@ -19,7 +19,7 @@ fn tui_lifecycle_commands_require_explicit_development_mode() {
 
 #[test]
 fn tui_status_uses_the_development_router_and_keeps_request_closed() {
-    let request = br#"{"router_version":1,"profile":"development","request":{"operation":"status","schema_version":1,"install_root":"/tmp/asb-tui-no-such-root"}}"#;
+    let request = br#"{"router_version":1,"profile":"development","channel":"dev","current_main":{"asb_source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asb_source_tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tui_source_commit":"cccccccccccccccccccccccccccccccccccccccc","tui_source_tree":"dddddddddddddddddddddddddddddddddddddddd"},"request":{"operation":"status","schema_version":1,"install_root":"/tmp/asb-tui-no-such-root"}}"#;
     let output = binary()
         .args(["tui", "status", "--development", "--format", "json"])
         .stdin(std::process::Stdio::piped())
