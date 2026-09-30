@@ -112,7 +112,7 @@ fn clean_fixture_composes_install_wizard_benchmark_replay_and_comparison() {
 
     let root = temporary_install_root();
     let router_request = format!(
-        r#"{{"router_version":1,"profile":"development","request":{{"operation":"status","schema_version":1,"install_root":{root:?}}}}}"#,
+        r#"{{"router_version":1,"profile":"development","channel":"dev","current_main":{{"asb_source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asb_source_tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tui_source_commit":"cccccccccccccccccccccccccccccccccccccccc","tui_source_tree":"dddddddddddddddddddddddddddddddddddddddd"}},"request":{{"operation":"status","schema_version":1,"install_root":{root:?}}}}}"#,
         root = root.to_string_lossy()
     );
     let router = development_router::execute_input(router_request.as_bytes());

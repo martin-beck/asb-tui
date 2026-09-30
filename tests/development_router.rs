@@ -31,7 +31,7 @@ fn router_cli_exposes_explicit_development_provenance() {
     )
     .unwrap();
     let request = format!(
-        r#"{{"router_version":1,"profile":"development","request":{{"operation":"status","schema_version":1,"install_root":{root:?}}}}}"#,
+        r#"{{"router_version":1,"profile":"development","channel":"dev","current_main":{{"asb_source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asb_source_tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tui_source_commit":"cccccccccccccccccccccccccccccccccccccccc","tui_source_tree":"dddddddddddddddddddddddddddddddddddddddd"}},"request":{{"operation":"status","schema_version":1,"install_root":{root:?}}}}}"#,
         root = root.to_string_lossy()
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_asb-tui"))
