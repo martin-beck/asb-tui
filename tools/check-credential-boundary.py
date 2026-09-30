@@ -48,6 +48,12 @@ def main() -> int:
     if "profile" not in invoke or "idempotency_key" not in invoke:
         errors.append("helper invocation is missing the credential-free profile contract")
 
+    transport = (ROOT / "src/control_transport.rs").read_text(encoding="utf-8")
+    if "fn validate_credential_free_profile" not in transport:
+        errors.append("helper transport lacks nested profile boundary validation")
+    if "validate_credential_free_profile(&profile)?" not in transport:
+        errors.append("helper transport does not validate profile before serialization")
+
     configuration = (ROOT / "src/configuration.rs").read_text(encoding="utf-8")
     if "fn reject_secret_shapes" not in configuration:
         errors.append("configuration import lacks secret-shape rejection")

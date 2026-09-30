@@ -257,6 +257,59 @@ fn minimum_version_for_call(
     call.minimum_version()
 }
 
+/// Reject secret-shaped fields before an arbitrary provider profile reaches
+/// the wire. The profile remains JSON because ASB owns its full schema, but
+/// this frontend boundary must never accept raw credential names or helper
+/// paths. Credential provenance is allowed when it contains only digests.
+fn validate_credential_free_profile(value: &serde_json::Value) -> Result<(), TransportError> {
+    const MAX_DEPTH: usize = 16;
+    const MAX_NODES: usize = 4096;
+    const FORBIDDEN: &[&str] = &[
+        "api_key",
+        "access_token",
+        "password",
+        "private_key",
+        "secret",
+        "helper_path",
+        "executable_path",
+    ];
+
+    fn walk(
+        value: &serde_json::Value,
+        depth: usize,
+        nodes: &mut usize,
+    ) -> Result<(), TransportError> {
+        *nodes = nodes.saturating_add(1);
+        if *nodes > MAX_NODES || depth > MAX_DEPTH {
+            return Err(TransportError::Codec(CodecError::InvalidValue(
+                "credential-free profile bounds",
+            )));
+        }
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, child) in fields {
+                    let normalized = key.to_ascii_lowercase().replace('-', "_");
+                    if FORBIDDEN.iter().any(|name| normalized == *name) {
+                        return Err(TransportError::Codec(CodecError::InvalidValue(
+                            "credential-free profile",
+                        )));
+                    }
+                    walk(child, depth + 1, nodes)?;
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for child in items {
+                    walk(child, depth + 1, nodes)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    walk(value, 0, &mut 0)
+}
+
 #[derive(Clone, Copy)]
 enum RecordingMutation {
     Execute,
@@ -597,6 +650,7 @@ impl AuthenticatedBrokerSession {
         if self.negotiated.version < control_codec::V1_10 {
             return Err(TransportError::NotNegotiated);
         }
+        validate_credential_free_profile(&profile)?;
         let request = ControlRequest {
             jsonrpc: control_codec::JSONRPC_VERSION.into(),
             id: RequestId(9_000_000_105),
@@ -1520,6 +1574,33 @@ mod tests {
                 .offline_ready
         );
         join.join().unwrap();
+    }
+
+    #[test]
+    fn helper_profile_rejects_nested_secret_fields_and_bounds() {
+        assert!(
+            validate_credential_free_profile(&serde_json::json!({
+                "credential": {"source": "helper", "reference_sha256": "a".repeat(64)},
+                "model": "fixture-model"
+            }))
+            .is_ok()
+        );
+        assert_eq!(
+            validate_credential_free_profile(&serde_json::json!({
+                "credential": {"api-key": "sk-secret"}
+            })),
+            Err(TransportError::Codec(CodecError::InvalidValue(
+                "credential-free profile"
+            )))
+        );
+        assert_eq!(
+            validate_credential_free_profile(&serde_json::json!({
+                "nested": {"password": "secret"}
+            })),
+            Err(TransportError::Codec(CodecError::InvalidValue(
+                "credential-free profile"
+            )))
+        );
     }
 
     #[test]
