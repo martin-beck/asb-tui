@@ -254,6 +254,11 @@
       "key": "V"
     },
     {
+      "action": "apply_preflight",
+      "element": "configuration.preflight",
+      "key": "A"
+    },
+    {
       "action": "edit_configuration",
       "element": "configuration.entry",
       "key": "Character"
@@ -1153,6 +1158,15 @@
       "to": "configuration",
       "effects": [
         "preflight_opened",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "apply_preflight",
+      "from": "configuration",
+      "to": "configuration",
+      "effects": [
+        "configuration_materialized",
         "focus_reset"
       ]
     }
