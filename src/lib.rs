@@ -20,6 +20,7 @@ pub mod control_transport;
 pub mod credential_helper;
 pub mod delegated;
 pub mod development_auth;
+pub mod development_journey;
 pub mod development_onboarding;
 pub mod development_router;
 pub mod formal_state;

@@ -9,6 +9,7 @@ use asb_tui::{
     control_codec::ControlLimits,
     control_transport::AuthenticatedBrokerSession,
     delegated::execute_input,
+    development_journey::execute_input as execute_development_journey_input,
     development_onboarding::execute_input as execute_development_onboarding_input,
     development_router::execute_input as execute_development_router_input,
     lifecycle::{local_self_test_response, run_self_test_supervisor},
@@ -76,6 +77,14 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(if response.ready { 0 } else { 3 });
     }
+    if arguments == ["journey", "--format", "json"] {
+        let response = execute_development_journey_input(std::io::stdin().lock());
+        println!(
+            "{}",
+            serde_json::to_string(&response).expect("serialize development journey response")
+        );
+        return ExitCode::from(if response.ready { 0 } else { 3 });
+    }
     if let [
         command,
         release_flag,
@@ -124,7 +133,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: asb-tui [run|run --broker] | (doctor|compatibility|lifecycle|router|onboarding) --format json | doctor --terminal"
+        "usage: asb-tui [run|run --broker] | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
     );
     ExitCode::from(2)
 }

@@ -35,6 +35,7 @@
     {"path":"src/delegated.rs","reason":"Lifecycle delegation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/development_router.rs","reason":"Development-only router envelope and fixture dispatch; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/development_onboarding.rs","reason":"Development-only bundle/broker onboarding fixture evaluation and one-choice recovery projection; it owns no rendering or live broker authority.","expires":"2027-12-31"},
+    {"path":"src/development_journey.rs","reason":"Development-only bounded journey fixture evaluation with mismatch recovery; it performs no network, credential, provider, ASB, or rendering work.","expires":"2027-12-31"},
     {"path":"src/identity_adapter.rs","reason":"Identity validation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/provider_catalog.rs","reason":"Renderer-neutral provider catalog refresh, scoped-default validation, and credential-reference-only option mapping; it has no renderer ownership.","expires":"2027-12-31"},
     {"path":"src/lib.rs","reason":"Module exports only; it has no UI state or projection ownership.","expires":"2027-12-31"},
