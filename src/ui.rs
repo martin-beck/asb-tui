@@ -483,6 +483,10 @@ impl WorkspaceState {
         self.launch_state.as_mut()
     }
 
+    pub(crate) fn launch_state(&self) -> Option<&crate::launch_statistics::LaunchState> {
+        self.launch_state.as_ref()
+    }
+
     pub(crate) fn install_launch_state(&mut self) -> Result<(), String> {
         let bundle = self
             .preflight_bundle

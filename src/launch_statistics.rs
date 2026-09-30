@@ -27,6 +27,8 @@ pub enum LaunchValidationError {
     ConfigurationUnavailable,
     ConfigurationMismatch,
     Disconnected,
+    InvalidBundle,
+    InvalidBenchmarkSelection,
 }
 
 /// A plan launch request bound to exactly one reviewed materialization.
@@ -59,6 +61,9 @@ pub fn validate_binding(
     bundle: &MaterializedBundle,
     snapshot: &LiveSnapshot,
 ) -> Result<(), LaunchValidationError> {
+    bundle
+        .validate_integrity()
+        .map_err(|_| LaunchValidationError::InvalidBundle)?;
     let binding = bundle.launch_binding();
     if binding.materialization_digest_sha256 != bundle.digest_sha256
         || bundle.document.configuration_digest_sha256 != bundle.digest_sha256
@@ -74,6 +79,31 @@ pub fn validate_binding(
     }
     if provider.catalog_sha256 != binding.provider_catalog_digest {
         return Err(LaunchValidationError::ProviderCatalogDigestMismatch);
+    }
+    if binding.benchmark_catalog_generation.0 == 0
+        || binding.benchmark_catalog_digest.len() != 64
+        || binding.pool_id.is_empty()
+        || binding.group_ids.is_empty()
+        || binding.benchmark_ids.is_empty()
+        || binding.measure_ids.is_empty()
+        || has_duplicate(&binding.group_ids)
+        || has_duplicate(&binding.benchmark_ids)
+        || has_duplicate(&binding.measure_ids)
+    {
+        return Err(LaunchValidationError::InvalidBenchmarkSelection);
+    }
+    if let Some(catalog) = snapshot.measurement_catalog.as_ref()
+        && (catalog
+            .computed_digest()
+            .map_err(|_| LaunchValidationError::InvalidBenchmarkSelection)?
+            != catalog.catalog_sha256
+            || catalog.catalog_sha256 != binding.benchmark_catalog_digest
+            || binding
+                .measure_ids
+                .iter()
+                .any(|id| !catalog.measurements.iter().any(|measure| &measure.id == id)))
+    {
+        return Err(LaunchValidationError::InvalidBenchmarkSelection);
     }
     if snapshot.connection != Connection::Negotiated {
         return Err(LaunchValidationError::Disconnected);
@@ -169,6 +199,7 @@ pub enum RunEventError {
     StaleGeneration,
     ProgressOutOfBounds,
     InvalidUnavailableState,
+    TerminalRegression,
 }
 
 /// Single-writer state for the run-control screen.  It retains partial
@@ -246,6 +277,10 @@ impl LaunchState {
         if event.generation != self.generation {
             return Err(RunEventError::StaleGeneration);
         }
+        let next_state = state_for_public(event.state);
+        if is_terminal(&self.state) && !is_terminal(&next_state) {
+            return Err(RunEventError::TerminalRegression);
+        }
         if let Some(run_id) = &self.run_id {
             if run_id != &event.run_id {
                 return Err(RunEventError::WrongRun);
@@ -271,14 +306,7 @@ impl LaunchState {
             return Err(RunEventError::InvalidUnavailableState);
         }
         self.last_revision = Some(event.revision);
-        self.state = match event.state {
-            PublicRunState::Planned | PublicRunState::Prepared => RunState::Launching,
-            PublicRunState::Running | PublicRunState::Collecting => RunState::Running,
-            PublicRunState::Completed => RunState::Completed,
-            PublicRunState::Failed => RunState::Failed,
-            PublicRunState::Cancelled => RunState::Cancelled,
-            PublicRunState::NeedsReconciliation => RunState::Unavailable,
-        };
+        self.state = next_state;
         self.statistics = Some(LiveStatistics {
             run_id: event.run_id,
             attempt_id: event.attempt_id,
@@ -332,6 +360,10 @@ impl LaunchState {
         &self.binding
     }
     #[must_use]
+    pub fn active_run_attempt(&self) -> Option<(&RunId, &AttemptId)> {
+        self.run_id.as_ref().zip(self.attempt_id.as_ref())
+    }
+    #[must_use]
     pub const fn state(&self) -> &RunState {
         &self.state
     }
@@ -343,6 +375,29 @@ impl LaunchState {
     pub fn statistics(&self) -> Option<&LiveStatistics> {
         self.statistics.as_ref()
     }
+}
+
+fn state_for_public(state: PublicRunState) -> RunState {
+    match state {
+        PublicRunState::Planned | PublicRunState::Prepared => RunState::Launching,
+        PublicRunState::Running | PublicRunState::Collecting => RunState::Running,
+        PublicRunState::Completed => RunState::Completed,
+        PublicRunState::Failed => RunState::Failed,
+        PublicRunState::Cancelled => RunState::Cancelled,
+        PublicRunState::NeedsReconciliation => RunState::Unavailable,
+    }
+}
+
+fn is_terminal(state: &RunState) -> bool {
+    matches!(
+        state,
+        RunState::Completed | RunState::Failed | RunState::Cancelled | RunState::Unavailable
+    )
+}
+
+fn has_duplicate(values: &[String]) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    values.iter().any(|value| !seen.insert(value))
 }
 
 fn validate_id(value: &str, field: &'static str) -> Result<(), LaunchValidationError> {
@@ -400,32 +455,36 @@ mod tests {
     }
 
     fn reviewed_bundle() -> MaterializedBundle {
-        let digest = "a".repeat(64);
-        MaterializedBundle {
-            document: crate::configuration_materialization::MaterializedConfiguration {
-                schema_version: 1,
-                asb_protocol: "asb-control".into(),
-                asb_version: "development".into(),
-                provider: crate::configuration_materialization::MaterializedProvider {
-                    agent_ids: vec!["agent".into()],
-                    provider_id: "provider".into(),
-                    model_id: "model".into(),
-                    auth_method: ProviderAuthMethod::None,
-                    credential_reference_sha256: None,
-                    catalog_generation: Revision(4),
-                    catalog_digest: "b".repeat(64),
-                },
-                benchmark: crate::configuration_materialization::MaterializedBenchmark {
-                    generation: Revision(7),
-                    catalog_digest: "c".repeat(64),
-                    pool_id: "pool".into(),
-                    group_ids: vec!["group".into()],
-                    benchmark_ids: vec!["benchmark".into()],
-                    measure_ids: vec!["measure".into()],
-                },
-                configuration_digest_sha256: digest.clone(),
+        let mut document = crate::configuration_materialization::MaterializedConfiguration {
+            schema_version: 1,
+            asb_protocol: "asb-control".into(),
+            asb_version: "development".into(),
+            provider: crate::configuration_materialization::MaterializedProvider {
+                agent_ids: vec!["agent".into()],
+                provider_id: "provider".into(),
+                model_id: "model".into(),
+                auth_method: ProviderAuthMethod::None,
+                credential_reference_sha256: None,
+                catalog_generation: Revision(4),
+                catalog_digest: "b".repeat(64),
             },
-            canonical_json: "{}".into(),
+            benchmark: crate::configuration_materialization::MaterializedBenchmark {
+                generation: Revision(7),
+                catalog_digest: "c".repeat(64),
+                pool_id: "pool".into(),
+                group_ids: vec!["group".into()],
+                benchmark_ids: vec!["benchmark".into()],
+                measure_ids: vec!["measure".into()],
+            },
+            configuration_digest_sha256: String::new(),
+        };
+        let unsigned = serde_json::to_string(&document).unwrap();
+        let digest =
+            crate::sha256::digest_hex(format!("asb-tui.materialized.v1\0{unsigned}").as_bytes());
+        document.configuration_digest_sha256 = digest.clone();
+        MaterializedBundle {
+            canonical_json: serde_json::to_string(&document).unwrap(),
+            document,
             digest_sha256: digest,
         }
     }
@@ -470,7 +529,7 @@ mod tests {
         let request = LaunchRequest::new(&bundle, &snapshot(), "launch-key").unwrap();
         assert_eq!(
             request.binding.materialization_digest_sha256,
-            "a".repeat(64)
+            bundle.digest_sha256
         );
         let mut stale = snapshot();
         stale.provider_catalog.as_mut().unwrap().generation = Revision(5);
@@ -483,6 +542,16 @@ mod tests {
         assert_eq!(
             LaunchRequest::new(&bundle, &wrong, "launch-key"),
             Err(LaunchValidationError::ConfigurationMismatch)
+        );
+    }
+
+    #[test]
+    fn launch_request_rejects_tampered_canonical_bundle_before_io() {
+        let mut bundle = reviewed_bundle();
+        bundle.canonical_json = "{}".into();
+        assert_eq!(
+            LaunchRequest::new(&bundle, &snapshot(), "launch-key"),
+            Err(LaunchValidationError::InvalidBundle)
         );
     }
 
@@ -521,6 +590,20 @@ mod tests {
             Err(RunEventError::StaleGeneration)
         );
         assert_eq!(state.statistics().unwrap().state, PublicRunState::Running);
+    }
+
+    #[test]
+    fn terminal_run_cannot_regress_to_nonterminal_state() {
+        let mut state = LaunchState::new(binding());
+        state.begin_launch().unwrap();
+        state
+            .apply_event(event(1, PublicRunState::Completed))
+            .unwrap();
+        assert_eq!(
+            state.apply_event(event(2, PublicRunState::Running)),
+            Err(RunEventError::TerminalRegression)
+        );
+        assert_eq!(state.state(), &RunState::Completed);
     }
 
     #[test]

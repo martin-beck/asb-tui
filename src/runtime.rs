@@ -406,9 +406,14 @@ fn run_interactive_loop(
             // Refresh only while a reviewed launch exists. Every response is
             // projected through the negotiated transport and stale revisions
             // are rejected; a refresh never restarts a run.
-            control
-                .poll_projection(projection)
-                .map_err(|error| RuntimeError(io::Error::other(error)))?;
+            if control.poll_projection(projection).is_err() {
+                if let Some(launch) = workspace.launch_state_mut() {
+                    launch.disconnected();
+                    launch.reconnect_started();
+                }
+                next_live_refresh = Instant::now() + Duration::from_millis(500);
+                continue;
+            }
             let snapshot = projection.snapshot();
             if let Some(launch) = workspace.launch_state_mut()
                 && let Some(run) = snapshot.runs.first()
@@ -458,8 +463,11 @@ fn run_interactive_loop(
                             if let Some(launch) = workspace.launch_state_mut() {
                                 let _ = launch.request_cancel();
                             }
+                            let launch = workspace.launch_state().cloned().ok_or_else(|| {
+                                RuntimeError(io::Error::other("active launch is unavailable"))
+                            })?;
                             control
-                                .cancel_active_run(projection, "asb-tui-cancel".into())
+                                .cancel_active_run(projection, &launch, "asb-tui-cancel".into())
                                 .map_err(|error| RuntimeError(io::Error::other(error)))?;
                             let snapshot = projection.snapshot();
                             if let Some(launch) = workspace.launch_state_mut()

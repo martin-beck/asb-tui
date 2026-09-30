@@ -15,7 +15,7 @@ use crate::control_codec::{
 use crate::{
     broker_adoption::{AdoptionError, BrokerGeneration, ReceivedChannel},
     control_client::{AdoptedChannel, PeerCredentials, RunnerIdentity},
-    launch_statistics::LaunchRequest,
+    launch_statistics::{LaunchRequest, LaunchState},
     live_projection::ControlProjection,
 };
 use std::io::{Read, Write};
@@ -512,6 +512,9 @@ impl AuthenticatedBrokerSession {
         idempotency_key: String,
     ) -> Result<(), TransportError> {
         self.require_version(control_codec::V1_0)?;
+        bundle
+            .validate_integrity()
+            .map_err(|_| TransportError::Projection)?;
         let snapshot = projection.snapshot();
         let request_binding = LaunchRequest::new(bundle, &snapshot, idempotency_key)
             .map_err(|_| TransportError::Projection)?;
@@ -560,22 +563,18 @@ impl AuthenticatedBrokerSession {
     pub fn cancel_active_run(
         &mut self,
         projection: &mut ControlProjection,
+        launch: &LaunchState,
         idempotency_key: String,
     ) -> Result<(), TransportError> {
         self.require_version(control_codec::V1_0)?;
+        let (active_run_id, active_attempt_id) = launch
+            .active_run_attempt()
+            .ok_or(TransportError::Projection)?;
         let run = projection
             .snapshot()
             .runs
             .into_iter()
-            .find(|run| {
-                matches!(
-                    run.state,
-                    control_codec::PublicRunState::Planned
-                        | control_codec::PublicRunState::Prepared
-                        | control_codec::PublicRunState::Running
-                        | control_codec::PublicRunState::Collecting
-                )
-            })
+            .find(|run| &run.run_id == active_run_id && &run.attempt_id == active_attempt_id)
             .ok_or(TransportError::Projection)?;
         let request = ControlRequest {
             jsonrpc: control_codec::JSONRPC_VERSION.into(),

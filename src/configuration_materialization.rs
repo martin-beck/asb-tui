@@ -118,6 +118,17 @@ pub struct PreflightSummary {
 }
 
 impl MaterializedBundle {
+    /// Revalidate the serialized handoff at the control boundary.  A caller
+    /// must never be able to replace the reviewed document with `{}` (or with
+    /// a document whose digest was computed over different bytes).
+    pub fn validate_integrity(&self) -> Result<(), MaterializationError> {
+        if bundle_is_self_consistent(self)? {
+            Ok(())
+        } else {
+            Err(MaterializationError::Invalid("bundle integrity"))
+        }
+    }
+
     #[must_use]
     pub fn launch_binding(&self) -> LaunchBinding {
         LaunchBinding {
