@@ -73,6 +73,11 @@ pub struct WorkspaceState {
     /// picker; the flat rows are a rendering projection only.
     benchmark_selection: Option<BenchmarkSelection>,
     pub config_cursor: usize,
+    /// Secret-free materialization preflight shown before configuration apply.
+    pub preflight: Option<crate::configuration_materialization::PreflightSummary>,
+    preflight_bundle: Option<crate::configuration_materialization::MaterializedBundle>,
+    preflight_error: Option<String>,
+    reviewed_provider_setup: Option<crate::provider_setup::ProviderSetupDraft>,
     pub report_cursor: usize,
     configuration_draft: crate::configuration::ConfigurationDraft,
     configuration_path: Option<PathBuf>,
@@ -92,6 +97,7 @@ pub struct WorkspaceState {
     /// new wizard restarts this gate; a failed apply cannot be replayed.
     pub(crate) provider_setup_apply: crate::provider_setup::AtomicProviderSetup,
     development_catalog_fallback: bool,
+    authoritative_provider_catalog_seen: bool,
     /// Last validated dimensions received from the terminal event stream.
     /// Rendering still uses the frame's authoritative area, so a missed
     /// event cannot make the renderer allocate from stale dimensions.
@@ -120,6 +126,7 @@ impl Default for WorkspaceState {
             wizard_completion: None,
             provider_setup_apply: Default::default(),
             development_catalog_fallback: false,
+            authoritative_provider_catalog_seen: false,
             help: false,
             search: String::new(),
             measure_cursor: 0,
@@ -171,6 +178,10 @@ impl Default for WorkspaceState {
                 },
             ],
             config_cursor: 0,
+            preflight: None,
+            preflight_bundle: None,
+            preflight_error: None,
+            reviewed_provider_setup: None,
             report_cursor: 0,
             configuration_draft: crate::configuration::ConfigurationDraft::new(
                 crate::configuration::Configuration::default(),
@@ -410,6 +421,121 @@ impl WorkspaceState {
             .then_some(self.configuration_edit_buffer.as_str())
     }
 
+    /// Replace the visible preflight projection after a validated bundle has
+    /// been built. The projection contains identifiers and counts only.
+    pub fn set_preflight(
+        &mut self,
+        summary: crate::configuration_materialization::PreflightSummary,
+    ) {
+        self.preflight = Some(summary);
+    }
+
+    pub fn clear_preflight(&mut self) {
+        self.preflight = None;
+        self.preflight_bundle = None;
+        self.preflight_error = None;
+    }
+
+    /// Supply the catalog-bound provider review produced by the authenticated
+    /// setup seam. Development fallback is used only when this is absent.
+    pub fn set_reviewed_provider_setup(
+        &mut self,
+        draft: crate::provider_setup::ProviderSetupDraft,
+    ) {
+        self.reviewed_provider_setup = Some(draft);
+        self.clear_preflight();
+    }
+
+    /// Build a fresh digest-bound bundle from the current reviewed wizard and
+    /// nested benchmark selections. No file is changed by this operation.
+    pub fn prepare_preflight(&mut self) -> Result<(), String> {
+        let values = self.wizard.values();
+        let selection = Self::wizard_configuration_selection(&values)?;
+        let draft = if let Some(draft) = self.reviewed_provider_setup.clone() {
+            draft
+        } else {
+            if self.authoritative_provider_catalog_seen {
+                return Err(
+                    "review the current provider catalog before preparing preflight".into(),
+                );
+            }
+            crate::provider_setup::ProviderSetupDraft::from_selection_for_development(
+                selection.clone(),
+            )
+            .map_err(|error| format!("provider review invalid: {error:?}"))?
+        };
+        if draft.selection() != &selection {
+            return Err("provider review no longer matches wizard selection".into());
+        }
+        let benchmark_selection = self
+            .benchmark_selection
+            .as_ref()
+            .ok_or_else(|| "benchmark catalog unavailable".to_owned())?;
+        let campaign = benchmark_selection
+            .campaign_handoff(benchmark_selection.catalog().generation())
+            .map_err(|error| format!("benchmark selection invalid: {error:?}"))?;
+        let input = crate::configuration_materialization::MaterializationInput {
+            provider: selection,
+            provider_catalog_generation: draft.catalog_generation(),
+            provider_catalog_digest: draft.catalog_digest().to_owned(),
+            benchmark: campaign,
+            asb_protocol: "asb-control".into(),
+            asb_version: "development".into(),
+        };
+        let bundle = crate::configuration_materialization::MaterializedBundle::build(
+            input,
+            &draft,
+            benchmark_selection.catalog(),
+            draft.catalog_generation(),
+            benchmark_selection.catalog().generation(),
+        )
+        .map_err(|error| format!("preflight rejected: {error:?}"))?;
+        self.preflight = Some(bundle.preflight_summary());
+        self.preflight_bundle = Some(bundle);
+        self.preflight_error = None;
+        Ok(())
+    }
+
+    /// Apply the pending preflight bundle to the private materialization store
+    /// beside the configured frontend file.
+    pub fn apply_preflight(&mut self) -> Result<(), String> {
+        let mut formal = crate::formal_state::FormalUiState::new(80, 24)
+            .map_err(|error| format!("formal preflight model unavailable: {error:?}"))?;
+        formal
+            .apply(crate::formal_state::FormalEvent::OpenConfiguration, None)
+            .and_then(|_| formal.apply(crate::formal_state::FormalEvent::ApplyPreflight, None))
+            .map_err(|error| format!("formal preflight transition unavailable: {error:?}"))?;
+        let bundle = self
+            .preflight_bundle
+            .as_ref()
+            .ok_or_else(|| "prepare preflight before applying".to_owned())?;
+        let path = self
+            .configuration_path
+            .as_ref()
+            .ok_or_else(|| "no local configuration store is configured".to_owned())?;
+        let root = path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("materialized");
+        let store = crate::configuration_materialization::MaterializedBundleStore::new(root);
+        store
+            .apply(bundle)
+            .map_err(|error| format!("preflight apply failed: {error:?}"))?;
+        Ok(())
+    }
+
+    /// Apply a validated materialized bundle through its atomic store and only
+    /// then expose the secret-free preflight projection to the renderer.
+    pub fn apply_materialized_bundle(
+        &mut self,
+        bundle: &crate::configuration_materialization::MaterializedBundle,
+        store: &crate::configuration_materialization::MaterializedBundleStore,
+    ) -> Result<(), crate::configuration_materialization::MaterializationError> {
+        store.apply(bundle)?;
+        self.preflight = Some(bundle.preflight_summary());
+        Ok(())
+    }
+
     fn apply_configuration_edit_buffer(&mut self) {
         let Some(id) = self.configuration_draft.focused() else {
             return;
@@ -542,6 +668,8 @@ impl WorkspaceState {
     /// Replace presentation data only after it has passed the typed control
     /// projection. No renderer input can mutate ASB state through this method.
     pub fn apply_live_snapshot(&mut self, snapshot: LiveSnapshot) {
+        self.authoritative_provider_catalog_seen =
+            snapshot.agent_catalog.is_some() || snapshot.provider_catalog.is_some();
         if let Some(catalog) = snapshot.measurement_catalog.as_ref()
             && let Some(selection) = selection_from_catalog(catalog, self.selection.as_ref())
         {
@@ -565,6 +693,17 @@ impl WorkspaceState {
             self.wizard_formal = WizardFormalState::new_with_catalog(catalog)
                 .expect("validated live wizard catalog must satisfy the state model");
             self.development_catalog_fallback = false;
+        }
+        if self.authoritative_provider_catalog_seen
+            && let (Some(agents), Some(providers)) = (
+                snapshot.agent_catalog.as_ref(),
+                snapshot.provider_catalog.as_ref(),
+            )
+        {
+            match Self::wizard_provider_setup_draft(&self.wizard.values(), agents, providers) {
+                Ok(draft) => self.set_reviewed_provider_setup(draft),
+                Err(_) => self.reviewed_provider_setup = None,
+            }
         }
         // An authoritative, valid-but-unconfigured runner is the explicit
         // first-run signal. Route it into the wizard after the initial
@@ -787,6 +926,24 @@ impl WorkspaceState {
             }
             let _ = self.save_configuration();
             return UiAction::None;
+        }
+        if self.screen == Screen::Configuration && key.code == KeyCode::Char('V') {
+            if let Ok(mut formal) = crate::formal_state::FormalUiState::new(80, 24) {
+                let _ = formal.apply(crate::formal_state::FormalEvent::OpenConfiguration, None);
+                let _ = formal.apply(crate::formal_state::FormalEvent::OpenPreflight, None);
+            }
+            if let Err(error) = self.prepare_preflight() {
+                self.preflight_error = Some(error);
+            }
+            return UiAction::Control(crate::actions::UiAction::OpenPreflight);
+        }
+        if self.screen == Screen::Configuration && key.code == KeyCode::Char('A') {
+            if let Err(error) = self.apply_preflight() {
+                self.preflight_error = Some(error);
+            } else {
+                self.preflight_error = None;
+            }
+            return UiAction::Control(crate::actions::UiAction::ApplyPreflight);
         }
         match key.code {
             KeyCode::Char('f') if self.screen == Screen::Configuration => {
@@ -1637,7 +1794,11 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
         width: columns[0].width,
         height: 2.min(columns[0].height),
     };
-    let detail = state.configuration_edit_error.as_deref().unwrap_or("");
+    let detail = state
+        .preflight_error
+        .as_deref()
+        .or(state.configuration_edit_error.as_deref())
+        .unwrap_or("");
     frame.render_widget(
         Paragraph::new(format!("{status}  {detail}")).style(muted(policy)),
         footer,
@@ -1691,6 +1852,28 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
                     "Providers: {} available",
                     catalog.providers.len()
                 )));
+            }
+            if let Some(preflight) = &state.preflight {
+                lines.push(Line::from("Preflight: ready (review before apply)"));
+                lines.push(Line::from(format!(
+                    "  {} / {}  agents={} pool={} measures={}",
+                    preflight.provider_id,
+                    preflight.model_id,
+                    preflight.agent_count,
+                    preflight.pool_id,
+                    preflight.measure_count
+                )));
+                lines.push(Line::from(format!(
+                    "  digest={}{}",
+                    &preflight.digest_sha256[..8.min(preflight.digest_sha256.len())],
+                    if preflight.development_only {
+                        " (development-only)"
+                    } else {
+                        ""
+                    }
+                )));
+            } else {
+                lines.push(Line::from("Preflight: not prepared (V prepare, A apply)"));
             }
             lines
         },

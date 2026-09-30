@@ -20,6 +20,7 @@ const MODEL_JSON: &str = include_str!("../docs/ui-state-model.json");
 // parity gate checks these IDs against the authored model.
 pub const RENDERED_ELEMENT_BINDINGS: &[&str] = &[
     "configuration.control_status",
+    "configuration.preflight",
     "wizard.controls",
     "benchmarks.search",
     "benchmarks.pool",
@@ -71,6 +72,8 @@ pub enum FormalEvent {
     OpenHelp,
     GoBack,
     SaveConfiguration,
+    OpenPreflight,
+    ApplyPreflight,
     Resize { columns: u16, lines: u16 },
     Focus(&'static str),
 }
@@ -87,6 +90,8 @@ impl FormalEvent {
             Self::OpenHelp => Some("open_help"),
             Self::GoBack => Some("go_back"),
             Self::SaveConfiguration => Some("save_configuration"),
+            Self::OpenPreflight => Some("open_preflight"),
+            Self::ApplyPreflight => Some("apply_preflight"),
             Self::Resize { .. } | Self::Focus(_) => None,
         }
     }
@@ -189,6 +194,10 @@ impl FormalUiState {
                 };
                 let expected_effects: &[&str] = if event == FormalEvent::SaveConfiguration {
                     &["configuration_persisted", "focus_reset"]
+                } else if event == FormalEvent::OpenPreflight {
+                    &["preflight_opened", "focus_reset"]
+                } else if event == FormalEvent::ApplyPreflight {
+                    &["configuration_materialized", "focus_reset"]
                 } else if event == FormalEvent::GoBack {
                     &["route_restored", "focus_reset"]
                 } else if event == FormalEvent::OpenHelp {
@@ -302,6 +311,10 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["dimensions_changed", "layout_recomputed", "focus_preserved"].as_slice()
         } else if transition.event == "save_configuration" {
             ["configuration_persisted", "focus_reset"].as_slice()
+        } else if transition.event == "open_preflight" {
+            ["preflight_opened", "focus_reset"].as_slice()
+        } else if transition.event == "apply_preflight" {
+            ["configuration_materialized", "focus_reset"].as_slice()
         } else if matches!(
             transition.event.as_str(),
             "edit_configuration" | "backspace_configuration"

@@ -87,6 +87,33 @@ fn provider_setup_review_and_single_apply_are_declared_in_the_formal_model() {
 }
 
 #[test]
+fn materialized_campaigns_remain_bound_to_catalog_membership() {
+    let measure = asb_tui::selection::BenchmarkMeasure::new("m", "Measure", "count", true).unwrap();
+    let benchmark =
+        asb_tui::selection::BenchmarkDefinition::new("b", "Benchmark", vec![measure]).unwrap();
+    let group = asb_tui::selection::BenchmarkGroup::new("g", "Group", vec![benchmark]).unwrap();
+    let pool = asb_tui::selection::BenchmarkPool::new("p", "Pool", vec![group]).unwrap();
+    let catalog = asb_tui::selection::BenchmarkCatalog::new(
+        asb_tui::control_codec::Revision(1),
+        "a".repeat(64),
+        vec![pool],
+    )
+    .unwrap();
+    let valid = asb_tui::selection::CampaignSelection {
+        generation: asb_tui::control_codec::Revision(1),
+        catalog_digest: "a".repeat(64),
+        pool_id: "p".into(),
+        group_ids: vec!["g".into()],
+        benchmark_ids: vec!["b".into()],
+        measure_ids: vec!["m".into()],
+    };
+    assert!(catalog.validate_campaign(&valid).is_ok());
+    let mut invalid = valid;
+    invalid.measure_ids = vec!["unknown".into()];
+    assert!(catalog.validate_campaign(&invalid).is_err());
+}
+
+#[test]
 fn focus_and_resize_are_bounded_and_atomic() {
     let mut state = FormalUiState::new(100, 30).unwrap();
     state

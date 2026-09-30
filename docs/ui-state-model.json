@@ -3,7 +3,7 @@
   "model": "asb-tui.ui-state",
   "authentication_handoff": "Provider secrets are enrolled through an approved external keychain/helper; the wizard accepts only credential_helper:<endpoint_sha256>:<locator_sha256>.",
   "auth_status_after_enrollment": "After helper enrollment or invocation, the wizard reads runner-authored status and projects only digest metadata before applying provider/model configuration.",
-  "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable. Provider setup review is catalog-bound and applies at most once for the observed generation.",
+  "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable. Provider setup review is catalog-bound and applies at most once for the observed generation. Materialized benchmark campaigns remain bound to the reviewed pool, group, benchmark, and available-measure membership.",
   "initial": "landing",
   "layouts": ["wide", "compact", "tiny"],
   "state_fields": ["route", "focus", "hover", "query", "selection", "benchmark_catalog", "benchmark_selection", "benchmark_catalog_generation", "measurement_catalog", "connection", "capabilities", "provider_catalog", "provider_catalog_generation", "live_setup_catalog", "development_catalog_fallback", "configuration", "auth_status", "recording_campaign", "recording_estimate", "recording_campaign_lifecycle", "recording_dispatch_action", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "provider_setup_review", "configuration_persistence"],
@@ -49,6 +49,8 @@
     {"action":"toggle_benchmark","element":"benchmarks.row","key":"b"}
     ,{"action":"focus_configuration","element":"configuration.entry","key":"Enter"}
     ,{"action":"save_configuration","element":"configuration.entry","key":"Ctrl-S"}
+    ,{"action":"open_preflight","element":"configuration.preflight","key":"V"}
+    ,{"action":"apply_preflight","element":"configuration.preflight","key":"A"}
     ,{"action":"edit_configuration","element":"configuration.entry","key":"Character"}
     ,{"action":"backspace_configuration","element":"configuration.entry","key":"Backspace"}
     ,{"action":"commit_configuration_edit","element":"configuration.entry","key":"Enter"}
@@ -69,7 +71,7 @@
     {"id":"landing","elements":["landing.primary","navigation","status.connection"]},
     {"id":"wizard","elements":["wizard.agent","wizard.provider","wizard.model","wizard.configuration","wizard.authentication","wizard.recording","wizard.replay","wizard.review","wizard.controls","navigation"]},
     {"id":"measurement_selection","elements":["benchmarks.search","benchmarks.pool","benchmarks.group_toggle","benchmarks.row","measures.search","measures.row","measures.group_toggle","navigation"]},
-    {"id":"configuration","elements":["configuration.entry","configuration.search","configuration.control_status","navigation"]},
+    {"id":"configuration","elements":["configuration.entry","configuration.search","configuration.control_status","configuration.preflight","navigation"]},
     {"id":"run_control","elements":["run.status","run.start","run.cancel","navigation"]},
     {"id":"recent_runs","elements":["runs.row","runs.refresh","navigation"]},
     {"id":"reports","elements":["reports.row","reports.compare","navigation"]},
@@ -87,6 +89,7 @@
     {"id":"configuration.entry","route":"configuration","role":"editable","help_id":"configuration.entry","focusable":true,"hoverable":true,"parent":null},
     {"id":"configuration.search","route":"configuration","role":"editable","help_id":"configuration.search","focusable":true,"hoverable":true,"parent":null},
     {"id":"configuration.control_status","route":"configuration","role":"status","help_id":"configuration.control_status","focusable":false,"hoverable":true,"parent":null},
+    {"id":"configuration.preflight","route":"configuration","role":"status","help_id":"configuration.preflight","focusable":true,"hoverable":true,"parent":null},
     {"id":"run.status","route":"run_control","role":"status","help_id":"run.status","focusable":false,"hoverable":true,"parent":null},
     {"id":"run.start","route":"run_control","role":"action","help_id":"run.start","focusable":true,"hoverable":true,"parent":null},
     {"id":"run.cancel","route":"run_control","role":"action","help_id":"run.cancel","focusable":true,"hoverable":true,"parent":null},
@@ -157,6 +160,8 @@
     ,{"event":"edit_configuration","from":"configuration","to":"configuration","effects":["configuration_draft_changed"]}
     ,{"event":"backspace_configuration","from":"configuration","to":"configuration","effects":["configuration_draft_changed"]}
     ,{"event":"commit_configuration_edit","from":"configuration","to":"configuration","effects":["configuration_draft_changed","focus_reset"]}
+    ,{"event":"open_preflight","from":"configuration","to":"configuration","effects":["preflight_opened","focus_reset"]}
+    ,{"event":"apply_preflight","from":"configuration","to":"configuration","effects":["configuration_materialized","focus_reset"]}
   ],
   "help": [
     {"id":"screen.landing","text":"Choose a benchmark task or open another screen."},
@@ -179,6 +184,7 @@
     {"id":"configuration.entry","text":"Edit this setting and press Ctrl-S to apply the validated local draft through the local configuration store."},
     {"id":"configuration.search","text":"Type to find a configuration setting by name or description."},
     {"id":"configuration.control_status","text":"Inspect provider model, credential-free authentication status, and recording readiness reported by the authenticated runner."},
+    {"id":"configuration.preflight","text":"Review the digest, provider, model, agents, benchmark pool, and measures before applying the materialized configuration."},
     {"id":"run.status","text":"Shows whether the benchmark is idle, running, complete, or failed."},
     {"id":"run.start","text":"Start a benchmark using the current configuration and measures."},
     {"id":"run.cancel","text":"Stop the active benchmark while preserving its partial record."},

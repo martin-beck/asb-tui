@@ -29,6 +29,7 @@ pub enum ProviderSetupError {
 pub struct ProviderSetupDraft {
     selection: ConfigurationSelection,
     catalog_generation: Revision,
+    catalog_digest: String,
     configuration_label: String,
 }
 
@@ -73,6 +74,7 @@ impl ProviderSetupDraft {
                 ..selection
             },
             catalog_generation: Revision(1),
+            catalog_digest: "0".repeat(MAX_DIGEST_BYTES),
             configuration_label: "development defaults".into(),
         })
     }
@@ -112,6 +114,7 @@ impl ProviderSetupDraft {
         Ok(Self {
             selection,
             catalog_generation: providers.generation,
+            catalog_digest: providers.catalog_sha256.clone(),
             configuration_label: label,
         })
     }
@@ -124,6 +127,11 @@ impl ProviderSetupDraft {
     #[must_use]
     pub const fn catalog_generation(&self) -> Revision {
         self.catalog_generation
+    }
+
+    #[must_use]
+    pub fn catalog_digest(&self) -> &str {
+        &self.catalog_digest
     }
 
     #[must_use]

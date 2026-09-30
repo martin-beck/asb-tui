@@ -276,6 +276,63 @@ impl BenchmarkCatalog {
             .flat_map(|b| b.measures.iter())
             .map(|m| m.id())
     }
+
+    /// Validate a previously reviewed handoff against this exact catalog.
+    /// This closes the boundary for callers that receive a serialized
+    /// campaign rather than constructing it through `campaign_handoff`.
+    pub fn validate_campaign(&self, campaign: &CampaignSelection) -> Result<(), SelectionError> {
+        if campaign.generation != self.generation || campaign.catalog_digest != self.digest {
+            return Err(SelectionError::StaleCatalog);
+        }
+        let pool = self
+            .pools
+            .iter()
+            .find(|pool| pool.id() == campaign.pool_id)
+            .ok_or(SelectionError::UnknownPool)?;
+        let groups = pool
+            .groups
+            .iter()
+            .map(|group| group.id())
+            .collect::<BTreeSet<_>>();
+        for id in &campaign.group_ids {
+            if !groups.contains(&id.as_str()) {
+                return Err(SelectionError::UnknownGroup);
+            }
+        }
+        for id in &campaign.benchmark_ids {
+            if !pool
+                .groups
+                .iter()
+                .flat_map(|g| g.benchmarks())
+                .any(|b| b.id() == id)
+            {
+                return Err(SelectionError::UnknownBenchmark);
+            }
+        }
+        let measures = pool
+            .groups
+            .iter()
+            .flat_map(|g| g.benchmarks())
+            .flat_map(|b| b.measures())
+            .collect::<Vec<_>>();
+        let mut seen = BTreeSet::new();
+        for id in &campaign.measure_ids {
+            if !seen.insert(id.as_str()) {
+                return Err(SelectionError::DuplicateId);
+            }
+            let measure = measures
+                .iter()
+                .find(|measure| measure.id() == id)
+                .ok_or(SelectionError::UnknownMeasure)?;
+            if !measure.available() {
+                return Err(SelectionError::UnavailableMeasure);
+            }
+        }
+        if campaign.measure_ids.is_empty() {
+            return Err(SelectionError::NoSelection);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
