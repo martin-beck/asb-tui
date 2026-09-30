@@ -114,8 +114,8 @@ pub fn execute_input(mut input: impl Read) -> RouterResponse {
         return error("router_identity_invalid", Some(envelope.current_main));
     }
     if let Some((expected_commit, expected_tree)) = request_identity(&envelope.request)
-        && (expected_commit != envelope.current_main.asb_source_commit
-            || expected_tree != envelope.current_main.asb_source_tree)
+        && (expected_commit != envelope.current_main.tui_source_commit
+            || expected_tree != envelope.current_main.tui_source_tree)
     {
         return error("router_identity_stale", Some(envelope.current_main));
     }
@@ -219,7 +219,7 @@ mod tests {
             .replace("CHANNEL", "dev")
             .replace(
                 r#"{"operation":"status","schema_version":1,"install_root":"/tmp"}"#,
-                r#"{"operation":"install","schema_version":1,"install_root":"/tmp","manifest":"/tmp/m","signature":"/tmp/s","artifacts":"/tmp/a","target":"x86_64-unknown-linux-gnu","asb_version":"0.1.0","protocol_version":1,"expected_release":"v0.1.0","expected_source_commit":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","expected_source_tree":"ffffffffffffffffffffffffffffffffffffffff","expected_executable_sha256":"1111111111111111111111111111111111111111111111111111111111111111"}"#,
+                r#"{"operation":"install","schema_version":1,"install_root":"/tmp","manifest":"/tmp/m","signature":"/tmp/s","artifacts":"/tmp/a","target":"x86_64-unknown-linux-gnu","asb_version":"0.1.0","protocol_version":1,"expected_release":"v0.1.0","expected_source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_source_tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","expected_executable_sha256":"1111111111111111111111111111111111111111111111111111111111111111"}"#,
             );
         assert_eq!(
             execute_input(stale_install.as_bytes()).lifecycle.code,
