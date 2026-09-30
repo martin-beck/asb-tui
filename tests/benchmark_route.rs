@@ -1,3 +1,6 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+// SPDX-License-Identifier: MIT
+
 use asb_tui::{
     benchmark_route::{CampaignError, CampaignStage, GuidedCampaign, GuidedCatalog, ReplayMode},
     reports::{Artifact, MeasureResult, MeasureStatus, Report, RunId},
