@@ -108,7 +108,11 @@ pub fn execute_input(mut input: impl Read) -> FixtureResponse {
 mod tests {
     use super::{FixtureResponse, evaluate_fixture, execute_input};
 
-    type MismatchCase = (&'static str, &'static str, fn(&mut super::FixtureRequest));
+    struct MismatchCase {
+        code: &'static str,
+        recovery: &'static str,
+        mutate: fn(&mut super::FixtureRequest),
+    }
 
     fn request() -> super::FixtureRequest {
         super::FixtureRequest {
@@ -142,34 +146,39 @@ mod tests {
 
     #[test]
     fn each_mismatch_stops_before_execution_with_one_recovery() {
-        let cases: [MismatchCase; 5] = [
-            (
-                "asb_version_mismatch",
-                "refresh_version",
-                |value: &mut super::FixtureRequest| value.asb_version = "fixture-0".into(),
-            ),
-            (
-                "catalog_mismatch",
-                "refresh_catalog",
-                |value: &mut super::FixtureRequest| value.catalog_version = 6,
-            ),
-            (
-                "development_bundle_unavailable",
-                "repair_bundle",
-                |value: &mut super::FixtureRequest| value.bundle_available = false,
-            ),
-            (
-                "development_broker_unavailable",
-                "retry_broker",
-                |value: &mut super::FixtureRequest| value.broker_available = false,
-            ),
-            (
-                "development_protocol_mismatch",
-                "retry_broker",
-                |value: &mut super::FixtureRequest| value.protocol_version = Some(2),
-            ),
+        let cases = [
+            MismatchCase {
+                code: "asb_version_mismatch",
+                recovery: "refresh_version",
+                mutate: |value| value.asb_version = "fixture-0".into(),
+            },
+            MismatchCase {
+                code: "catalog_mismatch",
+                recovery: "refresh_catalog",
+                mutate: |value| value.catalog_version = 6,
+            },
+            MismatchCase {
+                code: "development_bundle_unavailable",
+                recovery: "repair_bundle",
+                mutate: |value| value.bundle_available = false,
+            },
+            MismatchCase {
+                code: "development_broker_unavailable",
+                recovery: "retry_broker",
+                mutate: |value| value.broker_available = false,
+            },
+            MismatchCase {
+                code: "development_protocol_mismatch",
+                recovery: "retry_broker",
+                mutate: |value| value.protocol_version = Some(2),
+            },
         ];
-        for (code, recovery, mutate) in cases {
+        for MismatchCase {
+            code,
+            recovery,
+            mutate,
+        } in cases
+        {
             let mut value = request();
             mutate(&mut value);
             let result = evaluate_fixture(value);

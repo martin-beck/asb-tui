@@ -57,6 +57,12 @@ fn report(run_id: &str, value: f64) -> Report {
     }
 }
 
+struct MismatchCase {
+    code: &'static str,
+    recovery: &'static str,
+    mutate: fn(&mut FixtureRequest),
+}
+
 fn temporary_install_root() -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!(
         "asb-tui-ar1327-{}-{}",
@@ -172,21 +178,34 @@ fn clean_fixture_composes_install_wizard_benchmark_replay_and_comparison() {
 
 #[test]
 fn mismatch_fixtures_are_non_executable_and_offer_one_recovery() {
-    let cases: [(&str, &str, fn(&mut FixtureRequest)); 4] = [
-        ("asb_version_mismatch", "refresh_version", |value| {
-            value.asb_version = "fixture-0".into()
-        }),
-        ("catalog_mismatch", "refresh_catalog", |value| {
-            value.catalog_version = 6
-        }),
-        ("development_bundle_unavailable", "repair_bundle", |value| {
-            value.bundle_available = false
-        }),
-        ("development_protocol_mismatch", "retry_broker", |value| {
-            value.protocol_version = Some(2)
-        }),
+    let cases = [
+        MismatchCase {
+            code: "asb_version_mismatch",
+            recovery: "refresh_version",
+            mutate: |value| value.asb_version = "fixture-0".into(),
+        },
+        MismatchCase {
+            code: "catalog_mismatch",
+            recovery: "refresh_catalog",
+            mutate: |value| value.catalog_version = 6,
+        },
+        MismatchCase {
+            code: "development_bundle_unavailable",
+            recovery: "repair_bundle",
+            mutate: |value| value.bundle_available = false,
+        },
+        MismatchCase {
+            code: "development_protocol_mismatch",
+            recovery: "retry_broker",
+            mutate: |value| value.protocol_version = Some(2),
+        },
     ];
-    for (code, recovery, mutate) in cases {
+    for MismatchCase {
+        code,
+        recovery,
+        mutate,
+    } in cases
+    {
         let mut request = fixture_request();
         mutate(&mut request);
         let response = evaluate_fixture(request);

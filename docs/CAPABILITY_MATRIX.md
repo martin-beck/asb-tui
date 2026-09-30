@@ -14,6 +14,7 @@
 | Linux x86_64 qualification | Source CI only | Required on exact release |
 | Linux AArch64 qualification | Contract/emulation evidence only | Required on exact release |
 | Installation, upgrade, rollback, removal | Development lifecycle and onboarding fixtures available | Live end-to-end qualification remains future work |
+| Clean development install-to-comparison journey | Executable credential-free fixture harness with mismatch recovery | Local development evidence only; live ASB/provider qualification remains future work |
 
 Green source CI proves the checked-in contracts and tests at its exact revision. It does not prove
 that ASB exposes the proposed protocol, that source-tested rendering is platform-qualified, that
