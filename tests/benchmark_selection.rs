@@ -32,6 +32,26 @@ fn catalog(generation: u64) -> BenchmarkCatalog {
                 ],
             )
             .unwrap(),
+            BenchmarkPool::new(
+                "extended",
+                "Extended pool",
+                vec![
+                    BenchmarkGroup::new(
+                        "safety",
+                        "Safety",
+                        vec![
+                            BenchmarkDefinition::new(
+                                "guarded",
+                                "Guarded",
+                                vec![measure("guarded.policy", true)],
+                            )
+                            .unwrap(),
+                        ],
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
         ],
     )
     .unwrap()
@@ -80,9 +100,49 @@ fn hidden_measurements_are_not_changed_and_generation_is_fenced() {
 }
 
 #[test]
+fn nested_group_and_benchmark_states_are_tri_state_and_pool_scoped() {
+    let mut selection = BenchmarkSelection::new(catalog(4)).unwrap();
+    assert_eq!(
+        selection.group_state("quality").unwrap(),
+        NodeSelection::None
+    );
+    assert_eq!(
+        selection.benchmark_state("assistant").unwrap(),
+        NodeSelection::None
+    );
+    selection
+        .set_measure_selected("assistant.quality", true)
+        .unwrap();
+    assert_eq!(
+        selection.group_state("quality").unwrap(),
+        NodeSelection::Partial
+    );
+    assert_eq!(
+        selection.benchmark_state("assistant").unwrap(),
+        NodeSelection::Partial
+    );
+    selection.set_group_selected("quality", true).unwrap();
+    assert_eq!(
+        selection.group_state("quality").unwrap(),
+        NodeSelection::All
+    );
+    assert_eq!(
+        selection.benchmark_state("assistant").unwrap(),
+        NodeSelection::All
+    );
+    selection.select_pool("extended").unwrap();
+    assert_eq!(
+        selection.set_measure_selected("assistant.quality", true),
+        Err(SelectionError::UnknownMeasure)
+    );
+    assert!(selection.selected_measure_ids().is_empty());
+}
+
+#[test]
 fn empty_and_unavailable_choices_fail_closed() {
     let unavailable = BenchmarkMeasure::new("x.measure", "Measure", "count", false).unwrap();
-    let bench = BenchmarkDefinition::new("bench", "Bench", vec![unavailable]).unwrap();
+    let available = BenchmarkMeasure::new("x.other", "Other", "count", true).unwrap();
+    let bench = BenchmarkDefinition::new("bench", "Bench", vec![unavailable, available]).unwrap();
     let cat = BenchmarkCatalog::new(
         Revision(1),
         "catalog",
@@ -98,12 +158,12 @@ fn empty_and_unavailable_choices_fail_closed() {
     .unwrap();
     let mut selection = BenchmarkSelection::new(cat).unwrap();
     assert_eq!(
-        selection.set_measure_selected("x.measure", true),
+        selection.set_benchmark_selected("bench", true),
         Err(SelectionError::UnavailableMeasure)
     );
+    assert!(!selection.is_measure_selected("x.other"));
     assert_eq!(
         selection.campaign_handoff(Revision(1)),
         Err(SelectionError::NoSelection)
     );
-    assert_eq!(NodeSelection::Partial, NodeSelection::Partial);
 }

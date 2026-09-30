@@ -285,6 +285,14 @@ pub enum NodeSelection {
     All,
 }
 
+fn node_state(selected: usize, visible: usize) -> NodeSelection {
+    match selected {
+        0 => NodeSelection::None,
+        value if value == visible && visible > 0 => NodeSelection::All,
+        _ => NodeSelection::Partial,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CampaignSelection {
     pub generation: Revision,
@@ -372,26 +380,35 @@ impl BenchmarkSelection {
         }) {
             return Err(SelectionError::UnknownBenchmark);
         }
+        if selected
+            && measure_ids.iter().any(|measure_id| {
+                !self.measure_in_active_pool(measure_id)
+                    || self
+                        .measure(measure_id)
+                        .is_some_and(|measure| !measure.available())
+            })
+        {
+            return Err(SelectionError::UnavailableMeasure);
+        }
+        for measure_id in &measure_ids {
+            if selected {
+                self.selected_measures.insert(measure_id.clone());
+            } else {
+                self.selected_measures.remove(measure_id);
+            }
+        }
         if selected {
             self.selected_benchmarks.insert(id.to_owned());
         } else {
             self.selected_benchmarks.remove(id);
         }
-        for measure_id in measure_ids {
-            self.set_measure_selected(&measure_id, selected)?;
-        }
         Ok(())
     }
     pub fn set_measure_selected(&mut self, id: &str, selected: bool) -> Result<(), SelectionError> {
-        let measure = self
-            .catalog
-            .pools
-            .iter()
-            .flat_map(|p| p.groups.iter())
-            .flat_map(|g| g.benchmarks.iter())
-            .flat_map(|b| b.measures.iter())
-            .find(|m| m.id() == id)
-            .ok_or(SelectionError::UnknownMeasure)?;
+        if !self.measure_in_active_pool(id) {
+            return Err(SelectionError::UnknownMeasure);
+        }
+        let measure = self.measure(id).ok_or(SelectionError::UnknownMeasure)?;
         if !measure.available() && selected {
             return Err(SelectionError::UnavailableMeasure);
         }
@@ -402,14 +419,82 @@ impl BenchmarkSelection {
         }
         Ok(())
     }
+
+    pub fn benchmark_state(&self, id: &str) -> Result<NodeSelection, SelectionError> {
+        let benchmark = self
+            .catalog
+            .benchmark(id)
+            .ok_or(SelectionError::UnknownBenchmark)?;
+        if !self.benchmark_in_active_pool(id) {
+            return Err(SelectionError::UnknownBenchmark);
+        }
+        let visible = benchmark
+            .measures()
+            .iter()
+            .filter(|measure| measure.available() && self.measure_matches(measure.id()))
+            .collect::<Vec<_>>();
+        Ok(node_state(
+            visible
+                .iter()
+                .filter(|measure| self.is_measure_selected(measure.id()))
+                .count(),
+            visible.len(),
+        ))
+    }
+
+    pub fn group_state(&self, id: &str) -> Result<NodeSelection, SelectionError> {
+        let group = self
+            .catalog
+            .pools
+            .iter()
+            .find(|pool| pool.id() == self.pool_id)
+            .and_then(|pool| pool.groups.iter().find(|group| group.id() == id))
+            .ok_or(SelectionError::UnknownGroup)?;
+        let (selected, visible) = group
+            .benchmarks()
+            .iter()
+            .flat_map(|benchmark| benchmark.measures())
+            .filter(|measure| measure.available() && self.measure_matches(measure.id()))
+            .fold((0, 0), |(selected, visible), measure| {
+                (
+                    selected + usize::from(self.is_measure_selected(measure.id())),
+                    visible + 1,
+                )
+            });
+        Ok(node_state(selected, visible))
+    }
+
+    pub fn set_group_selected(&mut self, id: &str, selected: bool) -> Result<(), SelectionError> {
+        let measure_ids = self
+            .catalog
+            .pools
+            .iter()
+            .find(|pool| pool.id() == self.pool_id)
+            .and_then(|pool| pool.groups.iter().find(|group| group.id() == id))
+            .ok_or(SelectionError::UnknownGroup)?
+            .benchmarks()
+            .iter()
+            .flat_map(|benchmark| benchmark.measures())
+            .filter(|measure| measure.available() && self.measure_matches(measure.id()))
+            .map(|measure| measure.id().to_owned())
+            .collect::<Vec<_>>();
+        for measure_id in measure_ids {
+            if selected {
+                self.selected_measures.insert(measure_id);
+            } else {
+                self.selected_measures.remove(&measure_id);
+            }
+        }
+        self.refresh_benchmark_flags();
+        Ok(())
+    }
     #[must_use]
     pub fn is_measure_selected(&self, id: &str) -> bool {
         self.selected_measures.contains(id)
     }
     #[must_use]
     pub fn selected_measure_ids(&self) -> Vec<&str> {
-        self.catalog
-            .all_measure_ids()
+        self.active_measure_ids()
             .filter(|id| self.selected_measures.contains(*id))
             .collect()
     }
@@ -434,6 +519,115 @@ impl BenchmarkSelection {
             })
             .map(|(_, _, m)| m.id())
             .collect()
+    }
+
+    fn measure(&self, id: &str) -> Option<&BenchmarkMeasure> {
+        self.catalog
+            .pools
+            .iter()
+            .flat_map(|p| p.groups.iter())
+            .flat_map(|g| g.benchmarks.iter())
+            .flat_map(|b| b.measures.iter())
+            .find(|measure| measure.id() == id)
+    }
+
+    fn measure_in_active_pool(&self, id: &str) -> bool {
+        self.catalog.pools.iter().any(|pool| {
+            pool.id() == self.pool_id
+                && pool
+                    .groups
+                    .iter()
+                    .flat_map(|group| group.benchmarks.iter())
+                    .flat_map(|benchmark| benchmark.measures.iter())
+                    .any(|measure| measure.id() == id)
+        })
+    }
+
+    fn benchmark_in_active_pool(&self, id: &str) -> bool {
+        self.catalog.pools.iter().any(|pool| {
+            pool.id() == self.pool_id
+                && pool
+                    .groups
+                    .iter()
+                    .flat_map(|group| group.benchmarks.iter())
+                    .any(|benchmark| benchmark.id() == id)
+        })
+    }
+
+    fn active_measure_ids(&self) -> impl Iterator<Item = &str> {
+        self.catalog
+            .pools
+            .iter()
+            .filter(|pool| pool.id() == self.pool_id)
+            .flat_map(|pool| pool.groups.iter())
+            .flat_map(|group| group.benchmarks.iter())
+            .flat_map(|benchmark| benchmark.measures.iter())
+            .map(|measure| measure.id())
+    }
+
+    fn measure_matches(&self, id: &str) -> bool {
+        let query = self.query.to_ascii_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+        let Some(measure) = self.measure(id) else {
+            return false;
+        };
+        self.catalog
+            .pools
+            .iter()
+            .filter(|pool| pool.id() == self.pool_id)
+            .flat_map(|pool| pool.groups.iter())
+            .flat_map(|group| {
+                group
+                    .benchmarks
+                    .iter()
+                    .map(move |benchmark| (group, benchmark))
+            })
+            .find_map(|(group, benchmark)| {
+                benchmark
+                    .measures()
+                    .iter()
+                    .any(|candidate| candidate.id() == id)
+                    .then_some(
+                        [
+                            group.id(),
+                            group.name(),
+                            benchmark.id(),
+                            benchmark.name(),
+                            measure.id(),
+                            measure.name(),
+                        ]
+                        .iter()
+                        .any(|value| value.to_ascii_lowercase().contains(&query)),
+                    )
+            })
+            .unwrap_or(false)
+    }
+
+    fn refresh_benchmark_flags(&mut self) {
+        self.selected_benchmarks = self
+            .catalog
+            .pools
+            .iter()
+            .filter(|pool| pool.id() == self.pool_id)
+            .flat_map(|pool| pool.groups.iter())
+            .flat_map(|group| group.benchmarks.iter())
+            .filter(|benchmark| {
+                benchmark
+                    .measures()
+                    .iter()
+                    .filter(|measure| measure.available())
+                    .count()
+                    > 0
+                    && benchmark
+                        .measures()
+                        .iter()
+                        .filter(|measure| measure.available())
+                        .all(|measure| self.is_measure_selected(measure.id()))
+            })
+            .map(|benchmark| benchmark.id().to_owned())
+            .collect();
     }
     /// Build the exact immutable campaign input. The caller must provide the
     /// generation it reviewed; a refreshed catalog can never be used silently.
