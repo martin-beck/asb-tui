@@ -75,6 +75,8 @@ pub struct WorkspaceState {
     pub config_cursor: usize,
     /// Secret-free materialization preflight shown before configuration apply.
     pub preflight: Option<crate::configuration_materialization::PreflightSummary>,
+    preflight_bundle: Option<crate::configuration_materialization::MaterializedBundle>,
+    preflight_error: Option<String>,
     pub report_cursor: usize,
     configuration_draft: crate::configuration::ConfigurationDraft,
     configuration_path: Option<PathBuf>,
@@ -174,6 +176,8 @@ impl Default for WorkspaceState {
             ],
             config_cursor: 0,
             preflight: None,
+            preflight_bundle: None,
+            preflight_error: None,
             report_cursor: 0,
             configuration_draft: crate::configuration::ConfigurationDraft::new(
                 crate::configuration::Configuration::default(),
@@ -424,6 +428,74 @@ impl WorkspaceState {
 
     pub fn clear_preflight(&mut self) {
         self.preflight = None;
+        self.preflight_bundle = None;
+        self.preflight_error = None;
+    }
+
+    /// Build a fresh digest-bound bundle from the current reviewed wizard and
+    /// nested benchmark selections. No file is changed by this operation.
+    pub fn prepare_preflight(&mut self) -> Result<(), String> {
+        let values = self.wizard.values();
+        let selection = Self::wizard_configuration_selection(&values)?;
+        let draft = crate::provider_setup::ProviderSetupDraft::from_selection_for_development(
+            selection.clone(),
+        )
+        .map_err(|error| format!("provider review invalid: {error:?}"))?;
+        let benchmark_selection = self
+            .benchmark_selection
+            .as_ref()
+            .ok_or_else(|| "benchmark catalog unavailable".to_owned())?;
+        let campaign = benchmark_selection
+            .campaign_handoff(benchmark_selection.catalog().generation())
+            .map_err(|error| format!("benchmark selection invalid: {error:?}"))?;
+        let input = crate::configuration_materialization::MaterializationInput {
+            provider: selection,
+            provider_catalog_generation: draft.catalog_generation(),
+            provider_catalog_digest: draft.catalog_digest().to_owned(),
+            benchmark: campaign,
+            asb_protocol: "asb-control".into(),
+            asb_version: "development".into(),
+        };
+        let bundle = crate::configuration_materialization::MaterializedBundle::build(
+            input,
+            &draft,
+            benchmark_selection.catalog(),
+            draft.catalog_generation(),
+            benchmark_selection.catalog().generation(),
+        )
+        .map_err(|error| format!("preflight rejected: {error:?}"))?;
+        self.preflight = Some(bundle.preflight_summary());
+        self.preflight_bundle = Some(bundle);
+        self.preflight_error = None;
+        Ok(())
+    }
+
+    /// Apply the pending preflight bundle to the private materialization store
+    /// beside the configured frontend file.
+    pub fn apply_preflight(&mut self) -> Result<(), String> {
+        let mut formal = crate::formal_state::FormalUiState::new(80, 24)
+            .map_err(|error| format!("formal preflight model unavailable: {error:?}"))?;
+        formal
+            .apply(crate::formal_state::FormalEvent::OpenConfiguration, None)
+            .and_then(|_| formal.apply(crate::formal_state::FormalEvent::ApplyPreflight, None))
+            .map_err(|error| format!("formal preflight transition unavailable: {error:?}"))?;
+        let bundle = self
+            .preflight_bundle
+            .as_ref()
+            .ok_or_else(|| "prepare preflight before applying".to_owned())?;
+        let path = self
+            .configuration_path
+            .as_ref()
+            .ok_or_else(|| "no local configuration store is configured".to_owned())?;
+        let root = path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("materialized");
+        let store = crate::configuration_materialization::MaterializedBundleStore::new(root);
+        store
+            .apply(bundle)
+            .map_err(|error| format!("preflight apply failed: {error:?}"))?;
+        Ok(())
     }
 
     /// Apply a validated materialized bundle through its atomic store and only
@@ -820,6 +892,17 @@ impl WorkspaceState {
             if let Ok(mut formal) = crate::formal_state::FormalUiState::new(80, 24) {
                 let _ = formal.apply(crate::formal_state::FormalEvent::OpenConfiguration, None);
                 let _ = formal.apply(crate::formal_state::FormalEvent::OpenPreflight, None);
+            }
+            if let Err(error) = self.prepare_preflight() {
+                self.preflight_error = Some(error);
+            }
+            return UiAction::None;
+        }
+        if self.screen == Screen::Configuration && key.code == KeyCode::Char('A') {
+            if let Err(error) = self.apply_preflight() {
+                self.preflight_error = Some(error);
+            } else {
+                self.preflight_error = None;
             }
             return UiAction::None;
         }
@@ -1672,7 +1755,11 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
         width: columns[0].width,
         height: 2.min(columns[0].height),
     };
-    let detail = state.configuration_edit_error.as_deref().unwrap_or("");
+    let detail = state
+        .preflight_error
+        .as_deref()
+        .or(state.configuration_edit_error.as_deref())
+        .unwrap_or("");
     frame.render_widget(
         Paragraph::new(format!("{status}  {detail}")).style(muted(policy)),
         footer,
@@ -1747,7 +1834,7 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
                     }
                 )));
             } else {
-                lines.push(Line::from("Preflight: not prepared (press V)"));
+                lines.push(Line::from("Preflight: not prepared (V prepare, A apply)"));
             }
             lines
         },

@@ -207,6 +207,7 @@ impl MaterializedBundleStore {
     }
     pub fn load(&self) -> Result<Option<MaterializedBundle>, MaterializationError> {
         let path = self.root.join("bundle.json");
+        let stage = self.root.join(".bundle.stage");
         if self.root.exists()
             && fs::symlink_metadata(&self.root)
                 .map_err(io_error)?
@@ -215,17 +216,21 @@ impl MaterializedBundleStore {
         {
             return Err(MaterializationError::Invalid("symlink root"));
         }
-        if !path.exists() {
+        let (read_path, recover_stage) = if path.exists() {
+            (path.clone(), false)
+        } else if stage.exists() {
+            (stage.clone(), true)
+        } else {
             return Ok(None);
-        }
-        if fs::symlink_metadata(&path)
+        };
+        if fs::symlink_metadata(&read_path)
             .map_err(io_error)?
             .file_type()
             .is_symlink()
         {
             return Err(MaterializationError::Invalid("symlink bundle"));
         }
-        let bytes = fs::read(&path).map_err(io_error)?;
+        let bytes = fs::read(&read_path).map_err(io_error)?;
         if bytes.len() > MAX_FILE_BYTES {
             return Err(MaterializationError::Invalid("bundle size"));
         }
@@ -243,11 +248,15 @@ impl MaterializedBundleStore {
         if digest != expected {
             return Err(MaterializationError::Invalid("bundle digest"));
         }
-        Ok(Some(MaterializedBundle {
+        let bundle = MaterializedBundle {
             document,
             canonical_json,
             digest_sha256: digest,
-        }))
+        };
+        if recover_stage {
+            fs::rename(&stage, &path).map_err(io_error)?;
+        }
+        Ok(Some(bundle))
     }
     pub fn apply(&self, bundle: &MaterializedBundle) -> Result<(), MaterializationError> {
         if !bundle_is_self_consistent(bundle)? {
@@ -284,6 +293,11 @@ impl MaterializedBundleStore {
                 .is_symlink()
         {
             return Err(MaterializationError::Invalid("symlink bundle"));
+        }
+        if stage.exists() && !target.exists() {
+            // A prior process may have completed the staged write but not the
+            // rename. Validate and recover it before replacing anything.
+            let _ = self.load()?;
         }
         let _ = fs::remove_file(&stage);
         fs::write(&stage, bytes).map_err(io_error)?;
@@ -470,8 +484,35 @@ mod tests {
         store.apply(&bundle).unwrap();
         store.apply(&bundle).unwrap();
         assert_eq!(store.load().unwrap(), Some(bundle.clone()));
+        let mut invalid = bundle.clone();
+        invalid.digest_sha256 = "0".repeat(64);
+        assert!(store.apply(&invalid).is_err());
+        assert_eq!(store.load().unwrap(), Some(bundle.clone()));
         std::fs::write(root.join("bundle.json"), b"{}\n").unwrap();
         assert!(store.load().is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interrupted_stage_is_recovered_without_losing_bundle() {
+        let (value, draft) = input();
+        let catalog = benchmark_catalog();
+        let bundle =
+            MaterializedBundle::build(value, &draft, &catalog, Revision(1), Revision(3)).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "asb-tui-materialized-recovery-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".bundle.stage"), &bundle.canonical_json).unwrap();
+        let store = MaterializedBundleStore::new(&root);
+        assert_eq!(store.load().unwrap(), Some(bundle.clone()));
+        assert!(root.join("bundle.json").exists());
+        assert!(!root.join(".bundle.stage").exists());
+        std::fs::write(root.join(".bundle.stage"), b"corrupt").unwrap();
+        store.apply(&bundle).unwrap();
+        assert_eq!(store.load().unwrap(), Some(bundle));
         let _ = std::fs::remove_dir_all(root);
     }
 

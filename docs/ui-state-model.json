@@ -50,6 +50,7 @@
     ,{"action":"focus_configuration","element":"configuration.entry","key":"Enter"}
     ,{"action":"save_configuration","element":"configuration.entry","key":"Ctrl-S"}
     ,{"action":"open_preflight","element":"configuration.preflight","key":"V"}
+    ,{"action":"apply_preflight","element":"configuration.preflight","key":"A"}
     ,{"action":"edit_configuration","element":"configuration.entry","key":"Character"}
     ,{"action":"backspace_configuration","element":"configuration.entry","key":"Backspace"}
     ,{"action":"commit_configuration_edit","element":"configuration.entry","key":"Enter"}
@@ -160,6 +161,7 @@
     ,{"event":"backspace_configuration","from":"configuration","to":"configuration","effects":["configuration_draft_changed"]}
     ,{"event":"commit_configuration_edit","from":"configuration","to":"configuration","effects":["configuration_draft_changed","focus_reset"]}
     ,{"event":"open_preflight","from":"configuration","to":"configuration","effects":["preflight_opened","focus_reset"]}
+    ,{"event":"apply_preflight","from":"configuration","to":"configuration","effects":["configuration_materialized","focus_reset"]}
   ],
   "help": [
     {"id":"screen.landing","text":"Choose a benchmark task or open another screen."},

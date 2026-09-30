@@ -73,6 +73,7 @@ pub enum FormalEvent {
     GoBack,
     SaveConfiguration,
     OpenPreflight,
+    ApplyPreflight,
     Resize { columns: u16, lines: u16 },
     Focus(&'static str),
 }
@@ -90,6 +91,7 @@ impl FormalEvent {
             Self::GoBack => Some("go_back"),
             Self::SaveConfiguration => Some("save_configuration"),
             Self::OpenPreflight => Some("open_preflight"),
+            Self::ApplyPreflight => Some("apply_preflight"),
             Self::Resize { .. } | Self::Focus(_) => None,
         }
     }
@@ -194,6 +196,8 @@ impl FormalUiState {
                     &["configuration_persisted", "focus_reset"]
                 } else if event == FormalEvent::OpenPreflight {
                     &["preflight_opened", "focus_reset"]
+                } else if event == FormalEvent::ApplyPreflight {
+                    &["configuration_materialized", "focus_reset"]
                 } else if event == FormalEvent::GoBack {
                     &["route_restored", "focus_reset"]
                 } else if event == FormalEvent::OpenHelp {
@@ -309,6 +313,8 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["configuration_persisted", "focus_reset"].as_slice()
         } else if transition.event == "open_preflight" {
             ["preflight_opened", "focus_reset"].as_slice()
+        } else if transition.event == "apply_preflight" {
+            ["configuration_materialized", "focus_reset"].as_slice()
         } else if matches!(
             transition.event.as_str(),
             "edit_configuration" | "backspace_configuration"
