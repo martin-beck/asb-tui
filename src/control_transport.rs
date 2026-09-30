@@ -265,13 +265,14 @@ fn validate_credential_free_profile(value: &serde_json::Value) -> Result<(), Tra
     const MAX_DEPTH: usize = 16;
     const MAX_NODES: usize = 4096;
     const FORBIDDEN: &[&str] = &[
-        "api_key",
-        "access_token",
+        "apikey",
+        "accesstoken",
         "password",
-        "private_key",
+        "privatekey",
         "secret",
-        "helper_path",
-        "executable_path",
+        "helperpath",
+        "executablepath",
+        "token",
     ];
 
     fn walk(
@@ -288,7 +289,11 @@ fn validate_credential_free_profile(value: &serde_json::Value) -> Result<(), Tra
         match value {
             serde_json::Value::Object(fields) => {
                 for (key, child) in fields {
-                    let normalized = key.to_ascii_lowercase().replace('-', "_");
+                    let normalized: String = key
+                        .chars()
+                        .filter(|character| *character != '_' && *character != '-')
+                        .flat_map(char::to_lowercase)
+                        .collect();
                     if FORBIDDEN.iter().any(|name| normalized == *name) {
                         return Err(TransportError::Codec(CodecError::InvalidValue(
                             "credential-free profile",
@@ -1596,6 +1601,14 @@ mod tests {
         assert_eq!(
             validate_credential_free_profile(&serde_json::json!({
                 "nested": {"password": "secret"}
+            })),
+            Err(TransportError::Codec(CodecError::InvalidValue(
+                "credential-free profile"
+            )))
+        );
+        assert_eq!(
+            validate_credential_free_profile(&serde_json::json!({
+                "credential": {"apiKey": "sk-secret", "token": "raw"}
             })),
             Err(TransportError::Codec(CodecError::InvalidValue(
                 "credential-free profile"

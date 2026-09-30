@@ -53,6 +53,8 @@ def main() -> int:
         errors.append("helper transport lacks nested profile boundary validation")
     if "validate_credential_free_profile(&profile)?" not in transport:
         errors.append("helper transport does not validate profile before serialization")
+    if '"token"' not in transport or "filter(|character|" not in transport:
+        errors.append("helper profile guard does not cover token and camelCase field forms")
 
     configuration = (ROOT / "src/configuration.rs").read_text(encoding="utf-8")
     if "fn reject_secret_shapes" not in configuration:
