@@ -650,6 +650,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(target);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_bundle_and_stage_are_rejected() {
+        let (value, draft) = input();
+        let bundle = MaterializedBundle::build(
+            value,
+            &draft,
+            &benchmark_catalog(),
+            Revision(1),
+            Revision(3),
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "asb-tui-materialized-target-link-{}",
+            std::process::id()
+        ));
+        let elsewhere = root.with_extension("elsewhere");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("file"), b"safe").unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("file"), root.join("bundle.json")).unwrap();
+        let store = MaterializedBundleStore::new(&root);
+        assert!(store.apply(&bundle).is_err());
+        std::fs::remove_file(root.join("bundle.json")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("file"), root.join(".bundle.stage")).unwrap();
+        assert!(store.apply(&bundle).is_err());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(elsewhere);
+    }
+
+    #[test]
+    fn stale_provider_generation_and_digest_are_rejected() {
+        let (mut value, draft) = input();
+        let catalog = benchmark_catalog();
+        value.provider_catalog_generation = Revision(2);
+        assert_eq!(
+            MaterializedBundle::build(value.clone(), &draft, &catalog, Revision(1), Revision(3)),
+            Err(MaterializationError::StaleProviderCatalog)
+        );
+        let (mut value, draft) = input();
+        value.provider_catalog_digest = "1".repeat(64);
+        assert_eq!(
+            MaterializedBundle::build(value, &draft, &catalog, Revision(1), Revision(3)),
+            Err(MaterializationError::StaleProviderCatalog)
+        );
+    }
+
     fn benchmark_catalog() -> BenchmarkCatalog {
         let measure = crate::selection::BenchmarkMeasure::new(
             "quality.correctness",
