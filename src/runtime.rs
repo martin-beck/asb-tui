@@ -412,6 +412,16 @@ fn run_interactive_loop(
                         && let (Some(control), Some(projection)) =
                             (control.as_deref_mut(), projection.as_deref_mut())
                     {
+                        if matches!(
+                            control_action,
+                            crate::actions::UiAction::OpenPreflight
+                                | crate::actions::UiAction::ApplyPreflight
+                        ) {
+                            // These are local, renderer-owned configuration
+                            // actions. They must not enter the ASB recording
+                            // dispatcher, which only accepts backend calls.
+                            continue;
+                        }
                         if recording_state.is_none()
                             && let Some(configuration) = workspace
                                 .live
