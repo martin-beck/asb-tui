@@ -39,6 +39,9 @@ fn report(name: &str, provenance: &str, stale: bool) -> Report {
         artifacts: vec![],
         command_argv: vec!["asb".into(), "run".into(), "--name".into(), name.into()],
         stale,
+        evidence: EvidenceKind::Live,
+        status: ReportStatus::Complete,
+        compatibility_key: "provider/model/catalog/config".into(),
     }
 }
 
@@ -185,4 +188,49 @@ fn command_projection_rejects_private_paths_credentials_and_environment_expansio
             Err(ValidationError::SensitiveCommand)
         );
     }
+}
+
+#[test]
+fn presentation_keeps_evidence_and_actionable_partial_measures() {
+    let mut candidate = report("a", "live:runner", false);
+    candidate.status = ReportStatus::Partial;
+    candidate.evidence = EvidenceKind::Development;
+    candidate.measures.insert(
+        "tokens".into(),
+        MeasureResult {
+            value: None,
+            unit: "tokens".into(),
+            status: MeasureStatus::Missing,
+        },
+    );
+    let view = candidate.presentation().unwrap();
+    assert_eq!(view.evidence, EvidenceKind::Development);
+    assert_eq!(view.status, ReportStatus::Partial);
+    let missing = view.measures.iter().find(|m| m.name == "tokens").unwrap();
+    assert_eq!(
+        missing.next_action.as_deref(),
+        Some("rerun with this measure selected")
+    );
+}
+
+#[test]
+fn comparison_rejects_different_provider_model_or_catalog_identity() {
+    let a = report("a", "same", false);
+    let mut b = report("b", "same", false);
+    b.compatibility_key = "other-provider/model/catalog/config".into();
+    let comparison = compare(&[a, b], &[id("a"), id("b")]).unwrap();
+    assert!(!comparison.compatible);
+    assert!(
+        comparison
+            .confounders
+            .iter()
+            .any(|item| item.contains("provider/model"))
+    );
+}
+
+#[test]
+fn non_finite_measure_values_are_rejected() {
+    let mut candidate = report("a", "p", false);
+    candidate.measures.get_mut("latency").unwrap().value = Some(f64::NAN);
+    assert_eq!(candidate.validate(), Err(ValidationError::InvalidValue));
 }
