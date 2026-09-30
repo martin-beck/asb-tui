@@ -155,6 +155,21 @@ fn comparison_reports_conflicts_and_command_is_quoted() {
 }
 
 #[test]
+fn comparison_rejects_mixed_live_and_replay_evidence() {
+    let a = report("a", "same", false);
+    let mut b = report("b", "same", false);
+    b.evidence = EvidenceKind::Replay;
+    let comparison = compare(&[a, b], &[id("a"), id("b")]).unwrap();
+    assert!(!comparison.compatible);
+    assert!(
+        comparison
+            .confounders
+            .iter()
+            .any(|item| item == "evidence kind differs")
+    );
+}
+
+#[test]
 fn bounded_page_retention_is_enforced() {
     let mut state = RecentRuns::default();
     for n in 0..(MAX_RETAINED_PAGES + 2) {
@@ -180,6 +195,9 @@ fn command_projection_rejects_private_paths_credentials_and_environment_expansio
         "$ASB_TOKEN",
         "--password",
         "super-secret",
+        "--api-key",
+        "--authorization",
+        "Bearer abc123",
     ] {
         let mut candidate = report("a", "p", false);
         candidate.command_argv = vec!["asb".into(), forbidden.into()];

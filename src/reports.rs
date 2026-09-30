@@ -355,6 +355,10 @@ impl Report {
                 || lower.contains("password")
                 || lower.contains("secret")
                 || lower.contains("credential")
+                || lower.contains("api-key")
+                || lower.contains("apikey")
+                || lower.contains("authorization")
+                || lower.contains("bearer")
                 || (index > 0 && self.command_argv[index - 1].starts_with("--") && arg.len() > 96)
         }) {
             return Err(ValidationError::SensitiveCommand);
@@ -448,6 +452,7 @@ pub fn compare(reports: &[Report], selected: &[RunId]) -> Result<Comparison, Com
     }
     let provenance = chosen[0].provenance.as_str();
     let compatibility_key = chosen[0].compatibility_key.as_str();
+    let evidence = &chosen[0].evidence;
     let mut confounders = Vec::new();
     if chosen.iter().any(|r| r.provenance != provenance) {
         confounders.push("provenance differs".into());
@@ -457,6 +462,9 @@ pub fn compare(reports: &[Report], selected: &[RunId]) -> Result<Comparison, Com
         .any(|r| r.compatibility_key != compatibility_key)
     {
         confounders.push("provider/model/catalog/configuration differs".into());
+    }
+    if chosen.iter().any(|r| r.evidence != *evidence) {
+        confounders.push("evidence kind differs".into());
     }
     let common: BTreeSet<_> =
         chosen
