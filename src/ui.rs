@@ -12,7 +12,10 @@ use crate::{
     },
     help::document_help_text,
     live_projection::{Connection, LiveSnapshot},
-    selection::{MAX_QUERY_BYTES, Measurement, MeasurementSelection},
+    selection::{
+        BenchmarkCatalog, BenchmarkDefinition, BenchmarkGroup, BenchmarkMeasure, BenchmarkPool,
+        BenchmarkSelection, MAX_QUERY_BYTES, Measurement, MeasurementSelection, NodeSelection,
+    },
     startup::{self, StartupInput},
     terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
     wizard::{self, FormalEvent, Wizard, WizardFormalState},
@@ -66,6 +69,9 @@ pub struct WorkspaceState {
     pub search: String,
     pub measure_cursor: usize,
     pub measures: Vec<MeasureRow>,
+    /// Generation-bound nested benchmark catalog used by the production
+    /// picker; the flat rows are a rendering projection only.
+    benchmark_selection: Option<BenchmarkSelection>,
     pub config_cursor: usize,
     pub report_cursor: usize,
     configuration_draft: crate::configuration::ConfigurationDraft,
@@ -96,12 +102,14 @@ pub struct WorkspaceState {
 pub struct MeasureRow {
     pub id: String,
     pub group: String,
+    pub benchmark: String,
     pub name: String,
     pub selected: bool,
 }
 
 impl Default for WorkspaceState {
     fn default() -> Self {
+        let benchmark_selection = default_benchmark_selection();
         Self {
             screen: Screen::Landing,
             wizard: Wizard::default(),
@@ -116,30 +124,35 @@ impl Default for WorkspaceState {
                 MeasureRow {
                     id: "quality.correctness".into(),
                     group: "Quality".into(),
+                    benchmark: "Quality".into(),
                     name: "Correctness".into(),
                     selected: true,
                 },
                 MeasureRow {
                     id: "quality.consistency".into(),
                     group: "Quality".into(),
+                    benchmark: "Quality".into(),
                     name: "Consistency".into(),
                     selected: true,
                 },
                 MeasureRow {
                     id: "efficiency.latency".into(),
                     group: "Efficiency".into(),
+                    benchmark: "Efficiency".into(),
                     name: "Latency".into(),
                     selected: true,
                 },
                 MeasureRow {
                     id: "efficiency.token_usage".into(),
                     group: "Efficiency".into(),
+                    benchmark: "Efficiency".into(),
                     name: "Token usage".into(),
                     selected: false,
                 },
                 MeasureRow {
                     id: "safety.policy_adherence".into(),
                     group: "Safety".into(),
+                    benchmark: "Safety".into(),
                     name: "Policy adherence".into(),
                     selected: false,
                 },
@@ -157,6 +170,7 @@ impl Default for WorkspaceState {
             configuration_edit_error: None,
             live: None,
             selection: None,
+            benchmark_selection: Some(benchmark_selection),
             layout: ResponsiveLayout::from_dimensions(None, None),
         }
     }
@@ -499,6 +513,19 @@ impl WorkspaceState {
         self.layout
     }
 
+    /// Return the exact nested benchmark handoff currently reviewed by the
+    /// user. The generation check prevents a refreshed catalog from changing
+    /// a campaign between review and dispatch.
+    pub fn benchmark_campaign_handoff(
+        &self,
+        expected_generation: crate::control_codec::Revision,
+    ) -> Result<crate::selection::CampaignSelection, crate::selection::SelectionError> {
+        self.benchmark_selection
+            .as_ref()
+            .ok_or(crate::selection::SelectionError::NoSelection)?
+            .campaign_handoff(expected_generation)
+    }
+
     /// Replace presentation data only after it has passed the typed control
     /// projection. No renderer input can mutate ASB state through this method.
     pub fn apply_live_snapshot(&mut self, snapshot: LiveSnapshot) {
@@ -506,6 +533,7 @@ impl WorkspaceState {
             && let Some(selection) = selection_from_catalog(catalog, self.selection.as_ref())
         {
             self.selection = Some(selection);
+            self.benchmark_selection = None;
             self.sync_measure_projection();
         }
         // Populate a first-run wizard from the authenticated control-plane
@@ -748,7 +776,9 @@ impl WorkspaceState {
             KeyCode::Char('e') if self.screen == Screen::Reports => {
                 UiAction::Control(crate::actions::UiAction::EstimateRecording)
             }
-            KeyCode::Char('P') => UiAction::Control(crate::actions::UiAction::PlanRecording),
+            KeyCode::Char('P') if self.screen != Screen::Measures => {
+                UiAction::Control(crate::actions::UiAction::PlanRecording)
+            }
             KeyCode::Char('C') => {
                 UiAction::Control(crate::actions::UiAction::ConfirmRecordingCapture)
             }
@@ -841,6 +871,14 @@ impl WorkspaceState {
                 self.toggle_current_measure();
                 UiAction::None
             }
+            KeyCode::Char('P') if self.screen == Screen::Measures => {
+                self.select_next_benchmark_pool();
+                UiAction::None
+            }
+            KeyCode::Char('b') if self.screen == Screen::Measures => {
+                self.toggle_current_benchmark();
+                UiAction::None
+            }
             KeyCode::Char('g') if self.screen == Screen::Measures => {
                 self.toggle_visible_group();
                 UiAction::None
@@ -854,6 +892,9 @@ impl WorkspaceState {
                     if let Some(selection) = self.selection.as_mut() {
                         let _ = selection.set_query(self.search.clone());
                     }
+                    if let Some(selection) = self.benchmark_selection.as_mut() {
+                        let _ = selection.set_query(self.search.clone());
+                    }
                     self.sync_measure_projection();
                 }
                 self.measure_cursor = 0;
@@ -862,6 +903,9 @@ impl WorkspaceState {
             KeyCode::Backspace if self.screen == Screen::Measures => {
                 self.search.pop();
                 if let Some(selection) = self.selection.as_mut() {
+                    let _ = selection.set_query(self.search.clone());
+                }
+                if let Some(selection) = self.benchmark_selection.as_mut() {
                     let _ = selection.set_query(self.search.clone());
                 }
                 self.sync_measure_projection();
@@ -897,6 +941,16 @@ impl WorkspaceState {
     }
 
     fn visible_indices(&self) -> Vec<usize> {
+        if let Some(selection) = self.benchmark_selection.as_ref() {
+            let visible = selection.visible_measure_ids();
+            return self
+                .measures
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| visible.iter().any(|id| *id == row.id))
+                .map(|(index, _)| index)
+                .collect();
+        }
         let query = self.search.to_ascii_lowercase();
         self.measures
             .iter()
@@ -924,10 +978,16 @@ impl WorkspaceState {
                 .map(|measurement| MeasureRow {
                     id: measurement.id().to_owned(),
                     group: measurement.group().to_owned(),
+                    benchmark: measurement.group().to_owned(),
                     name: measurement.name().to_owned(),
                     selected: selection.is_selected(measurement.id()),
                 })
                 .collect();
+        }
+        if let Some(selection) = self.benchmark_selection.as_ref() {
+            for row in &mut self.measures {
+                row.selected = selection.is_measure_selected(&row.id);
+            }
         }
         self.clamp_measure_cursor();
     }
@@ -936,7 +996,12 @@ impl WorkspaceState {
         let Some(index) = self.visible_indices().get(self.measure_cursor).copied() else {
             return;
         };
-        if let Some(selection) = self.selection.as_mut() {
+        if let Some(selection) = self.benchmark_selection.as_mut() {
+            let id = self.measures[index].id.clone();
+            let selected = !selection.is_measure_selected(&id);
+            let _ = selection.set_measure_selected(&id, selected);
+            self.sync_measure_projection();
+        } else if let Some(selection) = self.selection.as_mut() {
             let Some(measurement) = selection
                 .measurements()
                 .iter()
@@ -959,6 +1024,13 @@ impl WorkspaceState {
             return;
         };
         let group = self.measures[current].group.clone();
+        if let Some(selection) = self.benchmark_selection.as_mut() {
+            let group = self.measures[current].group.to_ascii_lowercase();
+            let select = selection.group_state(&group) != Ok(NodeSelection::All);
+            let _ = selection.set_group_selected(&group, select);
+            self.sync_measure_projection();
+            return;
+        }
         if let Some(selection) = self.selection.as_mut() {
             let select = selection
                 .visible_groups()
@@ -977,6 +1049,36 @@ impl WorkspaceState {
         for index in members {
             self.measures[index].selected = select;
         }
+    }
+
+    fn toggle_current_benchmark(&mut self) {
+        let Some(index) = self.visible_indices().get(self.measure_cursor).copied() else {
+            return;
+        };
+        let benchmark = self.measures[index].benchmark.to_ascii_lowercase();
+        let Some(selection) = self.benchmark_selection.as_mut() else {
+            return;
+        };
+        let select = selection.benchmark_state(&benchmark) != Ok(NodeSelection::All);
+        let _ = selection.set_benchmark_selected(&benchmark, select);
+        self.sync_measure_projection();
+    }
+
+    fn select_next_benchmark_pool(&mut self) {
+        let Some(selection) = self.benchmark_selection.as_mut() else {
+            return;
+        };
+        let pools = selection.catalog().pools();
+        if pools.len() < 2 {
+            return;
+        }
+        let current = pools
+            .iter()
+            .position(|pool| pool.id() == selection.pool_id())
+            .unwrap_or(0);
+        let next = pools[(current + 1) % pools.len()].id().to_owned();
+        let _ = selection.select_pool(&next);
+        self.sync_measure_projection();
     }
 
     fn report_entry_count(&self) -> usize {
@@ -1096,6 +1198,82 @@ fn selection_from_catalog(
         }
     }
     Some(selection)
+}
+
+fn default_benchmark_selection() -> BenchmarkSelection {
+    let measure = |id: &str, name: &str| {
+        BenchmarkMeasure::new(id, name, "development", true)
+            .expect("development benchmark measure is bounded")
+    };
+    let pool = BenchmarkPool::new(
+        "development",
+        "Development benchmark pool",
+        vec![
+            BenchmarkGroup::new(
+                "quality",
+                "Quality",
+                vec![
+                    BenchmarkDefinition::new(
+                        "quality",
+                        "Quality benchmark",
+                        vec![
+                            measure("quality.correctness", "Correctness"),
+                            measure("quality.consistency", "Consistency"),
+                        ],
+                    )
+                    .expect("development benchmark is bounded"),
+                ],
+            )
+            .expect("development group is bounded"),
+            BenchmarkGroup::new(
+                "efficiency",
+                "Efficiency",
+                vec![
+                    BenchmarkDefinition::new(
+                        "efficiency",
+                        "Efficiency benchmark",
+                        vec![
+                            measure("efficiency.latency", "Latency"),
+                            measure("efficiency.token_usage", "Token usage"),
+                        ],
+                    )
+                    .expect("development benchmark is bounded"),
+                ],
+            )
+            .expect("development group is bounded"),
+            BenchmarkGroup::new(
+                "safety",
+                "Safety",
+                vec![
+                    BenchmarkDefinition::new(
+                        "safety",
+                        "Safety benchmark",
+                        vec![measure("safety.policy_adherence", "Policy adherence")],
+                    )
+                    .expect("development benchmark is bounded"),
+                ],
+            )
+            .expect("development group is bounded"),
+        ],
+    )
+    .expect("development pool is bounded");
+    let catalog = BenchmarkCatalog::new(
+        crate::control_codec::Revision(1),
+        "development-benchmark-catalog-v1",
+        vec![pool],
+    )
+    .expect("development catalog is bounded");
+    let mut selection = BenchmarkSelection::new(catalog).expect("development selection is valid");
+    for id in [
+        "quality.correctness",
+        "quality.consistency",
+        "efficiency.latency",
+    ] {
+        selection
+            .set_measure_selected(id, true)
+            .expect("development measure is selectable");
+    }
+    selection
 }
 
 fn next_screen(screen: Screen) -> Screen {
@@ -1253,7 +1431,10 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
             let row = &state.measures[*i];
             ListItem::new(Line::from(vec![
                 Span::styled(if row.selected { "[x] " } else { "[ ] " }, accent(policy)),
-                Span::styled(format!("{} / {}", row.group, row.name), Style::default()),
+                Span::styled(
+                    format!("{} / {} / {}", row.group, row.benchmark, row.name),
+                    Style::default(),
+                ),
             ]))
         })
         .collect();
@@ -1261,7 +1442,10 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
     ls.select((state.measure_cursor < items.len()).then_some(state.measure_cursor));
     frame.render_stateful_widget(
         List::new(items)
-            .block(panel(" Measures - Space item, g group ", policy))
+            .block(panel(
+                " Pool > Group > Benchmark > Measure - Space item, b benchmark, g group, P pool ",
+                policy,
+            ))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
         list_area,
         &mut ls,
@@ -1275,8 +1459,9 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
                 state.measures.iter().filter(|m| m.selected).count()
             )),
             Line::from(""),
-            Line::from("Up/Down navigate   Space item   g group"),
-            Line::from("Type to search"),
+            Line::from("Up/Down navigate   Space measure"),
+            Line::from("b benchmark   g group   P pool"),
+            Line::from("Type to search nested catalog"),
         ])
         .block(panel(" Selection ", policy))
         .wrap(Wrap { trim: true }),
@@ -1600,6 +1785,46 @@ mod tests {
         assert!(s.help);
         s.handle_key(key(KeyCode::Esc));
         assert!(!s.help);
+    }
+
+    #[test]
+    fn nested_benchmark_picker_keys_drive_pool_group_benchmark_and_measure_state() {
+        let mut state = WorkspaceState::default();
+        state.handle_key(key(KeyCode::Char('2')));
+        // The production picker is backed by the nested catalog, not the
+        // legacy flat row list. Benchmark toggle clears both quality measures.
+        state.handle_key(key(KeyCode::Char('b')));
+        assert!(!state.measures[0].selected);
+        assert!(!state.measures[1].selected);
+        // Group toggle restores only the active group's visible measures.
+        state.handle_key(key(KeyCode::Char('g')));
+        assert!(state.measures[0].selected && state.measures[1].selected);
+        // Search narrows the nested projection without dropping hidden state.
+        for character in "latency".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(state.visible_indices().len(), 1);
+        assert!(state.measures[2].selected);
+        // Pool selection is a handled production action even when only one
+        // development pool is available; it never mutates the campaign.
+        assert_eq!(state.handle_key(key(KeyCode::Char('P'))), UiAction::None);
+        let handoff = state
+            .benchmark_campaign_handoff(crate::control_codec::Revision(1))
+            .expect("nested picker produces an exact campaign handoff");
+        assert_eq!(handoff.pool_id, "development");
+        assert_eq!(handoff.measure_ids.len(), 3);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Pool > Group > Benchmark > Measure"));
     }
 
     #[test]

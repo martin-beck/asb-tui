@@ -23,6 +23,12 @@ measure identifiers plus catalog digest. `GuidedCampaign::start_with_handoff`
 requires the reviewed generation and carries that digest into the launch intent,
 so a refreshed catalog is rejected instead of silently changing a run.
 
+When an authoritative runner publishes the legacy measurement catalog, the
+frontend replaces the development fallback with that validated snapshot and
+clears its nested draft. This is an explicit source transition (the visible
+catalog rows and generation change together), never a merge of stale choices;
+the user must review and select the new catalog before dispatch.
+
 ASB remains authoritative for execution, recording lifecycle, run history, and
 reports. The route performs no network or provider work. A renderer dispatches
 the returned intent through the existing control client, projects the terminal
