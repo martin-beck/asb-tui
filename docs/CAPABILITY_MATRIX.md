@@ -9,7 +9,7 @@
 | Signed dependency closure and SPDX SBOM | Available for source audit | Required in release bundle |
 | Bundle authentication and bounded acquisition | Implemented and tested with synthetic fixtures | Required against published artifacts |
 | Transactional lifecycle and recovery | Implemented and tested locally | Development router fixture is available; live ASB router remains future qualification |
-| Top-level `asb tui` routing | Development router and onboarding commands available | Live ASB routing remains future qualification |
+| Top-level `asb tui` routing | Development router and onboarding commands available; no supported public workflow | Live ASB routing remains future qualification |
 | Ratatui/Crossterm interactive UI | Implemented and source-tested | Required to be platform-qualified |
 | Linux x86_64 qualification | Source CI only | Required on exact release |
 | Linux AArch64 qualification | Contract/emulation evidence only | Required on exact release |
