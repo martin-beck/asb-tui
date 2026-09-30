@@ -28,6 +28,7 @@ pub mod formal_state;
 pub mod help;
 pub mod identity_adapter;
 pub mod landing;
+pub mod launch_statistics;
 pub mod lifecycle;
 pub mod live_projection;
 pub mod provider_catalog;

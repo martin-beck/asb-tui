@@ -164,6 +164,22 @@ fn every_route_declares_an_executable_resize_transition() {
 }
 
 #[test]
+fn run_control_lifecycle_actions_are_formally_executable() {
+    let all = capabilities();
+    let mut state = FormalUiState::new(100, 30).unwrap();
+    state
+        .apply(FormalEvent::OpenMeasurementSelection, Some(&all))
+        .unwrap();
+    state
+        .apply(FormalEvent::OpenRunControl, Some(&all))
+        .unwrap();
+    state.apply(FormalEvent::StartRun, Some(&all)).unwrap();
+    state.apply(FormalEvent::CancelRun, Some(&all)).unwrap();
+    state.apply(FormalEvent::Reconnect, Some(&all)).unwrap();
+    assert_eq!(state.route(), Route::RunControl);
+}
+
+#[test]
 fn recording_dispatch_actions_are_declared_in_the_formal_model() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();

@@ -74,6 +74,9 @@ pub enum FormalEvent {
     SaveConfiguration,
     OpenPreflight,
     ApplyPreflight,
+    StartRun,
+    CancelRun,
+    Reconnect,
     Resize { columns: u16, lines: u16 },
     Focus(&'static str),
 }
@@ -92,6 +95,9 @@ impl FormalEvent {
             Self::SaveConfiguration => Some("save_configuration"),
             Self::OpenPreflight => Some("open_preflight"),
             Self::ApplyPreflight => Some("apply_preflight"),
+            Self::StartRun => Some("start_run"),
+            Self::CancelRun => Some("cancel_run"),
+            Self::Reconnect => Some("reconnect"),
             Self::Resize { .. } | Self::Focus(_) => None,
         }
     }
@@ -202,6 +208,11 @@ impl FormalUiState {
                     &["route_restored", "focus_reset"]
                 } else if event == FormalEvent::OpenHelp {
                     &["return_route_saved", "route_changed", "focus_reset"]
+                } else if matches!(
+                    event,
+                    FormalEvent::StartRun | FormalEvent::CancelRun | FormalEvent::Reconnect
+                ) {
+                    &["run_state_changed"]
                 } else {
                     &["route_changed", "focus_reset"]
                 };
@@ -356,6 +367,11 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["route_restored", "focus_reset"].as_slice()
         } else if transition.event == "open_help" {
             ["return_route_saved", "route_changed", "focus_reset"].as_slice()
+        } else if matches!(
+            transition.event.as_str(),
+            "start_run" | "cancel_run" | "reconnect"
+        ) {
+            ["run_state_changed"].as_slice()
         } else {
             ["route_changed", "focus_reset"].as_slice()
         };
