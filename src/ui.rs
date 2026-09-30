@@ -37,6 +37,7 @@ pub enum Screen {
     Wizard,
     Measures,
     Configuration,
+    RunControl,
     Reports,
     Help,
 }
@@ -78,6 +79,9 @@ pub struct WorkspaceState {
     preflight_bundle: Option<crate::configuration_materialization::MaterializedBundle>,
     preflight_error: Option<String>,
     reviewed_provider_setup: Option<crate::provider_setup::ProviderSetupDraft>,
+    /// Generation-bound launch state; populated only from a reviewed
+    /// materialization and retained across reconnect/cancellation.
+    pub(crate) launch_state: Option<crate::launch_statistics::LaunchState>,
     pub report_cursor: usize,
     configuration_draft: crate::configuration::ConfigurationDraft,
     configuration_path: Option<PathBuf>,
@@ -182,6 +186,7 @@ impl Default for WorkspaceState {
             preflight_bundle: None,
             preflight_error: None,
             reviewed_provider_setup: None,
+            launch_state: None,
             report_cursor: 0,
             configuration_draft: crate::configuration::ConfigurationDraft::new(
                 crate::configuration::Configuration::default(),
@@ -201,6 +206,23 @@ impl Default for WorkspaceState {
 }
 
 impl WorkspaceState {
+    /// Keep run-control key handling coupled to the executable state model.
+    /// The runtime owns the durable launch state; this bounded check ensures a
+    /// UI action is only emitted when its documented route transition exists.
+    fn run_control_formal(&self, event: crate::formal_state::FormalEvent) -> bool {
+        let Ok(mut formal) = crate::formal_state::FormalUiState::new(100, 30) else {
+            return false;
+        };
+        formal
+            .apply(
+                crate::formal_state::FormalEvent::OpenMeasurementSelection,
+                None,
+            )
+            .and_then(|_| formal.apply(crate::formal_state::FormalEvent::OpenRunControl, None))
+            .and_then(|_| formal.apply(event, None))
+            .is_ok()
+    }
+
     /// Load a bounded local configuration store for the configuration screen.
     /// This performs no ASB probing or backend acknowledgement.
     pub fn with_configuration_store(
@@ -434,6 +456,7 @@ impl WorkspaceState {
         self.preflight = None;
         self.preflight_bundle = None;
         self.preflight_error = None;
+        self.launch_state = None;
     }
 
     /// Supply the catalog-bound provider review produced by the authenticated
@@ -444,6 +467,35 @@ impl WorkspaceState {
     ) {
         self.reviewed_provider_setup = Some(draft);
         self.clear_preflight();
+    }
+
+    /// Expose the validated bundle to the authenticated launch seam without
+    /// exposing any credential material or allowing mutation of the bundle.
+    pub(crate) fn preflight_bundle(
+        &self,
+    ) -> Option<&crate::configuration_materialization::MaterializedBundle> {
+        self.preflight_bundle.as_ref()
+    }
+
+    pub(crate) fn launch_state_mut(
+        &mut self,
+    ) -> Option<&mut crate::launch_statistics::LaunchState> {
+        self.launch_state.as_mut()
+    }
+
+    pub(crate) fn launch_state(&self) -> Option<&crate::launch_statistics::LaunchState> {
+        self.launch_state.as_ref()
+    }
+
+    pub(crate) fn install_launch_state(&mut self) -> Result<(), String> {
+        let bundle = self
+            .preflight_bundle
+            .as_ref()
+            .ok_or_else(|| "prepare configuration preflight before launching".to_owned())?;
+        self.launch_state = Some(crate::launch_statistics::LaunchState::new(
+            bundle.launch_binding(),
+        ));
+        Ok(())
     }
 
     /// Build a fresh digest-bound bundle from the current reviewed wizard and
@@ -724,6 +776,12 @@ impl WorkspaceState {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> UiAction {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.screen == Screen::RunControl {
+                if self.run_control_formal(crate::formal_state::FormalEvent::CancelRun) {
+                    return UiAction::Control(crate::actions::UiAction::CancelRun);
+                }
+                return UiAction::None;
+            }
             return UiAction::Quit;
         }
         if self.help {
@@ -945,6 +1003,15 @@ impl WorkspaceState {
             }
             return UiAction::Control(crate::actions::UiAction::ApplyPreflight);
         }
+        if self.screen == Screen::RunControl && key.code == KeyCode::Char('x') {
+            if self.run_control_formal(crate::formal_state::FormalEvent::Reconnect) {
+                if let Some(launch) = self.launch_state_mut() {
+                    launch.reconnect_started();
+                }
+                return UiAction::Control(crate::actions::UiAction::Reconnect);
+            }
+            return UiAction::None;
+        }
         match key.code {
             KeyCode::Char('f') if self.screen == Screen::Configuration => {
                 UiAction::Control(crate::actions::UiAction::RefreshProviderCatalog)
@@ -981,6 +1048,10 @@ impl WorkspaceState {
                 self.screen = Screen::Configuration;
                 UiAction::None
             }
+            KeyCode::Char('s') => {
+                self.screen = Screen::RunControl;
+                UiAction::None
+            }
             KeyCode::Char('w') => {
                 self.open_wizard();
                 UiAction::None
@@ -988,6 +1059,18 @@ impl WorkspaceState {
             KeyCode::Char('4') => {
                 self.screen = Screen::Reports;
                 UiAction::None
+            }
+            KeyCode::Enter if self.screen == Screen::RunControl => {
+                if self.run_control_formal(crate::formal_state::FormalEvent::StartRun)
+                    && self.install_launch_state().is_ok()
+                    && self
+                        .launch_state_mut()
+                        .is_some_and(|launch| launch.begin_launch().is_ok())
+                {
+                    UiAction::Control(crate::actions::UiAction::StartRun)
+                } else {
+                    UiAction::None
+                }
             }
             KeyCode::Tab | KeyCode::Right => {
                 self.screen = next_screen(self.screen);
@@ -1556,7 +1639,8 @@ fn next_screen(screen: Screen) -> Screen {
         Screen::Landing => Screen::Measures,
         Screen::Wizard => Screen::Measures,
         Screen::Measures => Screen::Configuration,
-        Screen::Configuration => Screen::Reports,
+        Screen::Configuration => Screen::RunControl,
+        Screen::RunControl => Screen::Reports,
         Screen::Reports | Screen::Help => Screen::Landing,
     }
 }
@@ -1566,7 +1650,9 @@ fn previous_screen(screen: Screen) -> Screen {
         Screen::Wizard => Screen::Landing,
         Screen::Measures => Screen::Landing,
         Screen::Configuration => Screen::Measures,
-        Screen::Reports | Screen::Help => Screen::Configuration,
+        Screen::RunControl => Screen::Configuration,
+        Screen::Reports => Screen::RunControl,
+        Screen::Help => Screen::Configuration,
     }
 }
 
@@ -1591,13 +1677,14 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
             Constraint::Length(2),
         ])
         .split(area);
-    let titles = ["1 Home", "2 Measures", "3 Configure", "4 Reports"];
+    let titles = ["1 Home", "2 Measures", "3 Configure", "s Run", "4 Reports"];
     let selected = match state.screen {
         Screen::Landing => 0,
         Screen::Wizard => 2,
         Screen::Measures => 1,
         Screen::Configuration => 2,
-        Screen::Reports => 3,
+        Screen::RunControl => 3,
+        Screen::Reports => 4,
         Screen::Help => 0,
     };
     frame.render_widget(
@@ -1616,6 +1703,7 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
         Screen::Wizard => unreachable!("wizard is rendered before workspace layout"),
         Screen::Measures => measures(frame, chunks[1], state, policy),
         Screen::Configuration => configuration(frame, chunks[1], state, policy),
+        Screen::RunControl => run_control(frame, chunks[1], state, policy),
         Screen::Reports => reports(frame, chunks[1], state, policy),
         Screen::Help => landing(frame, chunks[1], state, policy),
     }
@@ -1886,6 +1974,57 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
     );
 }
 
+fn run_control(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
+    let lines = if let Some(launch) = state.launch_state.as_ref() {
+        let mut lines = vec![Line::from(format!(
+            "State: {:?}  connection: {:?}",
+            launch.state(),
+            launch.connection()
+        ))];
+        if let Some(stats) = launch.statistics() {
+            lines.push(Line::from(format!(
+                "Run {} / attempt {} | {}% ({}/{}) complete | failed={}",
+                stats.run_id.0,
+                stats.attempt_id.0,
+                stats.bounded_progress_percent(),
+                stats.completed_measures,
+                stats.total_measures,
+                stats.failed_measures
+            )));
+            lines.push(Line::from(format!(
+                "Throughput: {} | latency: {} | provenance: {:?}",
+                stats
+                    .throughput_per_second
+                    .map_or_else(|| "unavailable".into(), |value| format!("{value}/s")),
+                stats
+                    .latency_millis
+                    .map_or_else(|| "unavailable".into(), |value| format!("{value} ms")),
+                stats.provenance
+            )));
+            if let Some(reason) = &stats.unavailable_reason {
+                lines.push(Line::from(format!("Unavailable: {reason}")));
+            }
+        } else {
+            lines.push(Line::from("No authoritative run event received yet."));
+        }
+        lines
+    } else {
+        vec![
+            Line::from("No reviewed configuration is ready to launch."),
+            Line::from("Open Configuration, press V to prepare and A to apply preflight."),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(
+                " Run control - Enter start | Ctrl-C cancel | x reconnect ",
+                policy,
+            ))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
 fn reports(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
     let entries: Vec<String> = state.live.as_ref().map_or_else(
         || {
@@ -1930,6 +2069,7 @@ fn footer(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: Ren
         Screen::Wizard => "Enter next   Esc back   q cancel",
         Screen::Measures => "Up/Down move   Space item   g group   type search",
         Screen::Configuration => "Up/Down move   Enter edit   Ctrl-S save",
+        Screen::RunControl => "Enter start   Ctrl-C cancel   x reconnect",
         Screen::Reports => "Up/Down move   Enter open/compare",
         Screen::Help => "Esc close help",
     };
@@ -1949,7 +2089,7 @@ fn help_overlay(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled("Keyboard help", accent(policy))),
-            Line::from("1-4  switch workspace"),
+            Line::from("1-4 / s  switch workspace"),
             Line::from("Tab / arrows  navigate"),
             Line::from("Up/Down  move selection"),
             Line::from("Space  toggle measure"),
@@ -1985,7 +2125,7 @@ fn wizard_help_overlay(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy, 
 }
 fn render_compact(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
     frame.render_widget(
-        Paragraph::new("ASB | 1 Home 2 Measures 3 Config 4 Reports\n? help | q quit")
+        Paragraph::new("ASB | 1 Home 2 Measures 3 Config s Run 4 Reports\n? help | q quit")
             .style(accent(policy)),
         area,
     );
@@ -2229,6 +2369,7 @@ mod tests {
                 groups: Vec::new(),
                 measurements: Vec::new(),
             }),
+            benchmark_catalog: None,
             auth_status: None,
             agent_catalog: None,
             agent_lifecycle: None,
@@ -2287,6 +2428,7 @@ mod tests {
                     evidence_limits: vec![],
                 }],
             }),
+            benchmark_catalog: None,
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,
@@ -2348,6 +2490,7 @@ mod tests {
             latest_revision: Some(Revision(1)),
             capabilities: None,
             measurement_catalog: None,
+            benchmark_catalog: None,
             auth_status: None,
             agent_catalog: Some(crate::agent_catalog::AgentCatalog {
                 runner_instance_id: "runner".into(),
@@ -2484,6 +2627,7 @@ mod tests {
             latest_revision: Some(Revision(1)),
             capabilities: None,
             measurement_catalog: None,
+            benchmark_catalog: None,
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,
@@ -2674,6 +2818,7 @@ mod tests {
             latest_revision: Some(Revision(7)),
             capabilities: None,
             measurement_catalog: None,
+            benchmark_catalog: None,
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,

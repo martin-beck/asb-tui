@@ -17,6 +17,31 @@ use std::{collections::BTreeMap, fmt};
 
 pub const MAX_PROJECTED_RUNS: usize = 256;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveBenchmarkCatalog {
+    pub generation: Revision,
+    pub catalog_sha256: String,
+    pub pools: Vec<LiveBenchmarkPool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveBenchmarkPool {
+    pub id: String,
+    pub groups: Vec<LiveBenchmarkGroup>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveBenchmarkGroup {
+    pub id: String,
+    pub benchmarks: Vec<LiveBenchmarkEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveBenchmarkEntry {
+    pub id: String,
+    pub measure_ids: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Connection {
     #[default]
@@ -31,6 +56,7 @@ pub struct LiveSnapshot {
     pub latest_revision: Option<Revision>,
     pub capabilities: Option<crate::control_codec::Capabilities>,
     pub measurement_catalog: Option<MeasurementCatalog>,
+    pub benchmark_catalog: Option<LiveBenchmarkCatalog>,
     pub agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
     pub agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     pub provider_catalog: Option<ProviderCatalog>,
@@ -73,6 +99,7 @@ pub struct ControlProjection {
     negotiated: Option<Negotiated>,
     capabilities: Option<crate::control_codec::Capabilities>,
     measurement_catalog: Option<MeasurementCatalog>,
+    benchmark_catalog: Option<LiveBenchmarkCatalog>,
     agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
     agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     provider_catalog: Option<ProviderCatalog>,
@@ -158,6 +185,37 @@ impl ControlProjection {
                     return Err(ProjectionError::UnexpectedResult);
                 }
                 self.measurement_catalog = Some(value.catalog.clone());
+            }
+            (ControlCall::BenchmarkCatalog, ControlResult::BenchmarkCatalog(value)) => {
+                value
+                    .validate()
+                    .map_err(|_| ProjectionError::InvalidResponse)?;
+                self.benchmark_catalog = Some(LiveBenchmarkCatalog {
+                    generation: value.generation,
+                    catalog_sha256: value.catalog_sha256.clone(),
+                    pools: value
+                        .pools
+                        .iter()
+                        .map(|pool| LiveBenchmarkPool {
+                            id: pool.id.clone(),
+                            groups: pool
+                                .groups
+                                .iter()
+                                .map(|group| LiveBenchmarkGroup {
+                                    id: group.id.clone(),
+                                    benchmarks: group
+                                        .benchmarks
+                                        .iter()
+                                        .map(|benchmark| LiveBenchmarkEntry {
+                                            id: benchmark.id.clone(),
+                                            measure_ids: benchmark.measure_ids.clone(),
+                                        })
+                                        .collect(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                });
             }
             (ControlCall::AgentCatalog(_), ControlResult::AgentCatalog(value)) => {
                 if self.negotiated.as_ref().is_none_or(|session| {
@@ -388,6 +446,7 @@ impl ControlProjection {
             latest_revision: self.negotiated.as_ref().map(|value| value.latest_revision),
             capabilities: self.capabilities.clone(),
             measurement_catalog: self.measurement_catalog.clone(),
+            benchmark_catalog: self.benchmark_catalog.clone(),
             agent_catalog: self.agent_catalog.clone(),
             agent_lifecycle: self.agent_lifecycle.clone(),
             provider_catalog: self.provider_catalog.clone(),
@@ -703,6 +762,40 @@ mod tests {
                 .measurements
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn benchmark_catalog_response_is_projected_with_generation_and_membership() {
+        use crate::control_codec::{
+            BenchmarkCatalogEntry, BenchmarkCatalogGroup, BenchmarkCatalogPool,
+        };
+        let call = ControlCall::BenchmarkCatalog;
+        let mut publication = crate::control_codec::BenchmarkCatalogPublication {
+            generation: Revision(7),
+            catalog_sha256: String::new(),
+            pools: vec![BenchmarkCatalogPool {
+                id: "pool".into(),
+                groups: vec![BenchmarkCatalogGroup {
+                    id: "latency".into(),
+                    benchmarks: vec![BenchmarkCatalogEntry {
+                        id: "latency".into(),
+                        measure_ids: vec!["latency.first_response".into()],
+                    }],
+                }],
+            }],
+        };
+        publication.catalog_sha256 = publication.computed_digest().unwrap();
+        let response = response(2, ControlResult::BenchmarkCatalog(publication));
+        let mut projection = connected_projection();
+        projection
+            .apply(&request(call, 2), &response, ControlLimits::default())
+            .unwrap();
+        let catalog = projection.snapshot().benchmark_catalog.unwrap();
+        assert_eq!(catalog.generation, Revision(7));
+        assert_eq!(
+            catalog.pools[0].groups[0].benchmarks[0].measure_ids[0],
+            "latency.first_response"
         );
     }
 
