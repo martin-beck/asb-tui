@@ -97,6 +97,7 @@ pub struct WorkspaceState {
     /// new wizard restarts this gate; a failed apply cannot be replayed.
     pub(crate) provider_setup_apply: crate::provider_setup::AtomicProviderSetup,
     development_catalog_fallback: bool,
+    authoritative_provider_catalog_seen: bool,
     /// Last validated dimensions received from the terminal event stream.
     /// Rendering still uses the frame's authoritative area, so a missed
     /// event cannot make the renderer allocate from stale dimensions.
@@ -125,6 +126,7 @@ impl Default for WorkspaceState {
             wizard_completion: None,
             provider_setup_apply: Default::default(),
             development_catalog_fallback: false,
+            authoritative_provider_catalog_seen: false,
             help: false,
             search: String::new(),
             measure_cursor: 0,
@@ -452,6 +454,11 @@ impl WorkspaceState {
         let draft = if let Some(draft) = self.reviewed_provider_setup.clone() {
             draft
         } else {
+            if self.authoritative_provider_catalog_seen {
+                return Err(
+                    "review the current provider catalog before preparing preflight".into(),
+                );
+            }
             crate::provider_setup::ProviderSetupDraft::from_selection_for_development(
                 selection.clone(),
             )
@@ -661,6 +668,8 @@ impl WorkspaceState {
     /// Replace presentation data only after it has passed the typed control
     /// projection. No renderer input can mutate ASB state through this method.
     pub fn apply_live_snapshot(&mut self, snapshot: LiveSnapshot) {
+        self.authoritative_provider_catalog_seen =
+            snapshot.agent_catalog.is_some() && snapshot.provider_catalog.is_some();
         if let Some(catalog) = snapshot.measurement_catalog.as_ref()
             && let Some(selection) = selection_from_catalog(catalog, self.selection.as_ref())
         {
@@ -684,6 +693,17 @@ impl WorkspaceState {
             self.wizard_formal = WizardFormalState::new_with_catalog(catalog)
                 .expect("validated live wizard catalog must satisfy the state model");
             self.development_catalog_fallback = false;
+        }
+        if self.authoritative_provider_catalog_seen
+            && let (Some(agents), Some(providers)) = (
+                snapshot.agent_catalog.as_ref(),
+                snapshot.provider_catalog.as_ref(),
+            )
+        {
+            match Self::wizard_provider_setup_draft(&self.wizard.values(), agents, providers) {
+                Ok(draft) => self.set_reviewed_provider_setup(draft),
+                Err(_) => self.reviewed_provider_setup = None,
+            }
         }
         // An authoritative, valid-but-unconfigured runner is the explicit
         // first-run signal. Route it into the wizard after the initial

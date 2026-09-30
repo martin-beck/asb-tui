@@ -51,11 +51,13 @@ pub enum UiAction {
     WizardDevelopmentSelectFixture,
     WizardDevelopmentSelectNone,
     WizardDevelopmentRestart,
+    OpenPreflight,
+    ApplyPreflight,
 }
 
 impl UiAction {
     /// Every action, in stable display order.
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 38] = [
         Self::Quit,
         Self::GoBack,
         Self::OpenLanding,
@@ -92,6 +94,8 @@ impl UiAction {
         Self::WizardDevelopmentSelectFixture,
         Self::WizardDevelopmentSelectNone,
         Self::WizardDevelopmentRestart,
+        Self::OpenPreflight,
+        Self::ApplyPreflight,
     ];
 
     /// Stable machine-readable action identifier for recordings and help
@@ -134,6 +138,8 @@ impl UiAction {
             Self::WizardDevelopmentSelectFixture => "wizard_development_select_fixture",
             Self::WizardDevelopmentSelectNone => "wizard_development_select_none",
             Self::WizardDevelopmentRestart => "wizard_development_restart",
+            Self::OpenPreflight => "open_preflight",
+            Self::ApplyPreflight => "apply_preflight",
         }
     }
 }
@@ -286,6 +292,7 @@ const fn action_context_route(action: UiAction) -> Route {
         | UiAction::WizardDevelopmentSelectNone
         | UiAction::WizardDevelopmentRestart => Route::Configuration,
         UiAction::RefreshProviderCatalog => Route::Configuration,
+        UiAction::OpenPreflight | UiAction::ApplyPreflight => Route::Configuration,
         UiAction::RefreshRuns => Route::RecentRuns,
         UiAction::CompareRuns => Route::Reports,
         _ => Route::Landing,
@@ -550,6 +557,20 @@ fn descriptor(
             ActionContext::Route(Route::Configuration),
             None,
         ),
+        UiAction::OpenPreflight => (
+            KeyChord::Char('V'),
+            "Open preflight",
+            "Build and show the reviewed configuration summary before applying it",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
+        UiAction::ApplyPreflight => (
+            KeyChord::Char('A'),
+            "Apply preflight",
+            "Persist the reviewed configuration bundle atomically",
+            ActionContext::Route(Route::Configuration),
+            None,
+        ),
     };
     let relevant = match context {
         ActionContext::Global => true,
@@ -606,6 +627,8 @@ fn action_backend_status(
             | UiAction::WizardDevelopmentSelectFixture
             | UiAction::WizardDevelopmentSelectNone
             | UiAction::WizardDevelopmentRestart
+            | UiAction::OpenPreflight
+            | UiAction::ApplyPreflight
             | UiAction::FocusBenchmarkSearch
             | UiAction::SelectBenchmarkPool
             | UiAction::ToggleBenchmarkGroup
@@ -680,7 +703,7 @@ mod tests {
                 .any(|d| d.action == UiAction::ToggleMeasure)
         );
         assert!(!descriptors.iter().any(|d| d.action == UiAction::StartRun));
-        assert_eq!(UiAction::ALL.len(), 36);
+        assert_eq!(UiAction::ALL.len(), 38);
         for action in UiAction::ALL {
             assert!(
                 ActionRegistry::search(action.id())
