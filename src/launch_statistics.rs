@@ -724,4 +724,214 @@ mod tests {
         );
         assert!(state.statistics().is_none());
     }
+
+    #[test]
+    fn launch_validation_reports_each_live_catalog_boundary() {
+        let bundle = reviewed_bundle();
+        let mut missing = snapshot();
+        missing.benchmark_catalog = None;
+        assert_eq!(
+            LaunchRequest::new(&bundle, &missing, "launch-key"),
+            Err(LaunchValidationError::BenchmarkCatalogUnavailable)
+        );
+        let mut stale = snapshot();
+        stale.benchmark_catalog.as_mut().unwrap().generation = Revision(8);
+        assert_eq!(
+            LaunchRequest::new(&bundle, &stale, "launch-key"),
+            Err(LaunchValidationError::BenchmarkCatalogGenerationMismatch)
+        );
+        let mut wrong_pool = snapshot();
+        wrong_pool.benchmark_catalog.as_mut().unwrap().pools[0].id = "other".into();
+        assert_eq!(
+            LaunchRequest::new(&bundle, &wrong_pool, "launch-key"),
+            Err(LaunchValidationError::InvalidBenchmarkSelection)
+        );
+    }
+
+    #[test]
+    fn launch_request_rejects_empty_or_invalid_idempotency_keys() {
+        let bundle = reviewed_bundle();
+        assert_eq!(
+            LaunchRequest::new(&bundle, &snapshot(), ""),
+            Err(LaunchValidationError::EmptyId("idempotency key"))
+        );
+        assert!(matches!(
+            LaunchRequest::new(&bundle, &snapshot(), "bad key"),
+            Err(LaunchValidationError::InvalidId("idempotency key"))
+        ));
+    }
+
+    #[test]
+    fn launch_validation_fails_closed_for_every_selection_and_connection_fence() {
+        let bundle = reviewed_bundle();
+        let mut cases = Vec::new();
+        let mut invalid_generation = bundle.clone();
+        invalid_generation.document.benchmark.generation = Revision(0);
+        cases.push((
+            invalid_generation,
+            snapshot(),
+            LaunchValidationError::InvalidBundle,
+        ));
+
+        let mut provider_digest = snapshot();
+        provider_digest
+            .provider_catalog
+            .as_mut()
+            .unwrap()
+            .catalog_sha256 = "d".repeat(64);
+        cases.push((
+            bundle.clone(),
+            provider_digest,
+            LaunchValidationError::ProviderCatalogDigestMismatch,
+        ));
+
+        let mut benchmark_digest = snapshot();
+        benchmark_digest
+            .benchmark_catalog
+            .as_mut()
+            .unwrap()
+            .catalog_sha256 = "d".repeat(64);
+        cases.push((
+            bundle.clone(),
+            benchmark_digest,
+            LaunchValidationError::InvalidBenchmarkSelection,
+        ));
+
+        let mut disconnected = snapshot();
+        disconnected.connection = Connection::Disconnected;
+        cases.push((
+            bundle.clone(),
+            disconnected,
+            LaunchValidationError::Disconnected,
+        ));
+
+        let mut missing_config = snapshot();
+        missing_config.configuration = None;
+        cases.push((
+            bundle.clone(),
+            missing_config,
+            LaunchValidationError::ConfigurationUnavailable,
+        ));
+
+        let mut unconfigured = snapshot();
+        unconfigured.configuration.as_mut().unwrap().configured = false;
+        cases.push((
+            bundle.clone(),
+            unconfigured,
+            LaunchValidationError::ConfigurationMismatch,
+        ));
+
+        for (candidate, live, expected) in cases {
+            assert_eq!(validate_binding(&candidate, &live), Err(expected));
+        }
+
+        let mut duplicate = bundle.clone();
+        duplicate
+            .document
+            .benchmark
+            .measure_ids
+            .push("latency.first_response".into());
+        assert_eq!(
+            validate_binding(&duplicate, &snapshot()),
+            Err(LaunchValidationError::InvalidBundle)
+        );
+        let mut empty = bundle.clone();
+        empty.document.benchmark.group_ids.clear();
+        assert_eq!(
+            validate_binding(&empty, &snapshot()),
+            Err(LaunchValidationError::InvalidBundle)
+        );
+        let mut wrong_group = snapshot();
+        wrong_group.benchmark_catalog.as_mut().unwrap().pools[0].groups[0].id = "other".into();
+        assert_eq!(
+            validate_binding(&bundle, &wrong_group),
+            Err(LaunchValidationError::InvalidBenchmarkSelection)
+        );
+        let mut wrong_benchmark = snapshot();
+        wrong_benchmark.benchmark_catalog.as_mut().unwrap().pools[0].groups[0].benchmarks[0].id =
+            "other".into();
+        assert_eq!(
+            validate_binding(&bundle, &wrong_benchmark),
+            Err(LaunchValidationError::InvalidBenchmarkSelection)
+        );
+        let mut wrong_measure = snapshot();
+        wrong_measure.benchmark_catalog.as_mut().unwrap().pools[0].groups[0].benchmarks[0]
+            .measure_ids = vec!["other".into()];
+        assert_eq!(
+            validate_binding(&bundle, &wrong_measure),
+            Err(LaunchValidationError::InvalidBenchmarkSelection)
+        );
+    }
+
+    #[test]
+    fn launch_state_covers_reconnect_attempt_identity_and_summary_projection() {
+        let mut state = LaunchState::new(binding());
+        assert_eq!(state.connection(), RunConnection::Connected);
+        assert_eq!(state.active_run_attempt(), None);
+        assert_eq!(state.request_cancel(), Err(RunEventError::StaleRevision));
+        state.reconnect_started();
+        assert_eq!(state.begin_launch(), Err(RunEventError::StaleRevision));
+        state.reconnect_complete(Some(Revision(3)));
+        state.begin_launch().unwrap();
+
+        let mut prepared = event(4, PublicRunState::Prepared);
+        state.apply_event(prepared.clone()).unwrap();
+        prepared.revision = Revision(5);
+        prepared.run_id = RunId("other".into());
+        assert_eq!(state.apply_event(prepared), Err(RunEventError::WrongRun));
+        let mut wrong_attempt = event(6, PublicRunState::Running);
+        wrong_attempt.attempt_id = AttemptId("other".into());
+        assert_eq!(
+            state.apply_event(wrong_attempt),
+            Err(RunEventError::WrongAttempt)
+        );
+
+        let mut out_of_bounds = event(7, PublicRunState::Running);
+        out_of_bounds.completed_measures = 3;
+        assert_eq!(
+            state.apply_event(out_of_bounds),
+            Err(RunEventError::ProgressOutOfBounds)
+        );
+        let mut failed_bounds = event(8, PublicRunState::Running);
+        failed_bounds.failed_measures = 3;
+        assert_eq!(
+            state.apply_event(failed_bounds),
+            Err(RunEventError::ProgressOutOfBounds)
+        );
+
+        state.disconnected();
+        assert_eq!(state.connection(), RunConnection::Disconnected);
+        assert_eq!(
+            state.apply_event(event(9, PublicRunState::Running)),
+            Err(RunEventError::StaleRevision)
+        );
+        state.reconnect_complete(None);
+        assert_eq!(state.connection(), RunConnection::Connected);
+        state.request_cancel().unwrap();
+        let summary = crate::control_codec::RunSummary {
+            revision: Revision(10),
+            run_id: RunId("run".into()),
+            attempt_id: AttemptId("attempt".into()),
+            state: PublicRunState::Failed,
+            created_revision: Revision(1),
+            plan_sha256: "a".repeat(64),
+        };
+        state.observe_summary(&summary).unwrap();
+        assert_eq!(state.state(), &RunState::Failed);
+        assert_eq!(state.statistics().unwrap().bounded_progress_percent(), 100);
+
+        let mut empty = LaunchState::new({
+            let mut b = binding();
+            b.measure_ids.clear();
+            b
+        });
+        empty.begin_launch().unwrap();
+        let summary = crate::control_codec::RunSummary {
+            state: PublicRunState::Running,
+            revision: Revision(1),
+            ..summary
+        };
+        empty.observe_summary(&summary).unwrap();
+        assert_eq!(empty.statistics().unwrap().bounded_progress_percent(), 0);
+    }
 }
