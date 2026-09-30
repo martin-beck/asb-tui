@@ -206,6 +206,23 @@ impl Default for WorkspaceState {
 }
 
 impl WorkspaceState {
+    /// Keep run-control key handling coupled to the executable state model.
+    /// The runtime owns the durable launch state; this bounded check ensures a
+    /// UI action is only emitted when its documented route transition exists.
+    fn run_control_formal(&self, event: crate::formal_state::FormalEvent) -> bool {
+        let Ok(mut formal) = crate::formal_state::FormalUiState::new(100, 30) else {
+            return false;
+        };
+        formal
+            .apply(
+                crate::formal_state::FormalEvent::OpenMeasurementSelection,
+                None,
+            )
+            .and_then(|_| formal.apply(crate::formal_state::FormalEvent::OpenRunControl, None))
+            .and_then(|_| formal.apply(event, None))
+            .is_ok()
+    }
+
     /// Load a bounded local configuration store for the configuration screen.
     /// This performs no ASB probing or backend acknowledgement.
     pub fn with_configuration_store(
@@ -756,7 +773,10 @@ impl WorkspaceState {
     pub fn handle_key(&mut self, key: KeyEvent) -> UiAction {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.screen == Screen::RunControl {
-                return UiAction::Control(crate::actions::UiAction::CancelRun);
+                if self.run_control_formal(crate::formal_state::FormalEvent::CancelRun) {
+                    return UiAction::Control(crate::actions::UiAction::CancelRun);
+                }
+                return UiAction::None;
             }
             return UiAction::Quit;
         }
@@ -980,10 +1000,13 @@ impl WorkspaceState {
             return UiAction::Control(crate::actions::UiAction::ApplyPreflight);
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('x') {
-            if let Some(launch) = self.launch_state_mut() {
-                launch.reconnect_started();
+            if self.run_control_formal(crate::formal_state::FormalEvent::Reconnect) {
+                if let Some(launch) = self.launch_state_mut() {
+                    launch.reconnect_started();
+                }
+                return UiAction::Control(crate::actions::UiAction::Reconnect);
             }
-            return UiAction::Control(crate::actions::UiAction::Reconnect);
+            return UiAction::None;
         }
         match key.code {
             KeyCode::Char('f') if self.screen == Screen::Configuration => {
@@ -1034,7 +1057,8 @@ impl WorkspaceState {
                 UiAction::None
             }
             KeyCode::Enter if self.screen == Screen::RunControl => {
-                if self.install_launch_state().is_ok()
+                if self.run_control_formal(crate::formal_state::FormalEvent::StartRun)
+                    && self.install_launch_state().is_ok()
                     && self
                         .launch_state_mut()
                         .is_some_and(|launch| launch.begin_launch().is_ok())
