@@ -33,6 +33,50 @@ pub struct ProviderSetupDraft {
 }
 
 impl ProviderSetupDraft {
+    /// Wrap an already validated selection for a disconnected development
+    /// fixture. The production/negotiated path should use
+    /// [`Self::from_wizard_values`] so catalog membership is checked.
+    pub fn from_selection_for_development(
+        selection: ConfigurationSelection,
+    ) -> Result<Self, ProviderSetupError> {
+        if selection.agent_ids.is_empty()
+            || selection.agent_ids.len() > 64
+            || selection.agent_ids.iter().any(|id| !is_safe_id(id))
+        {
+            return Err(ProviderSetupError::Invalid(
+                "agent selection is invalid".into(),
+            ));
+        }
+        let provider_id = bounded_id("provider", &selection.provider_id)?;
+        let model_id = bounded_id("model", &selection.model_id)?;
+        if matches!(
+            selection.auth_method,
+            ProviderAuthMethod::CredentialReference
+        ) != selection.credential_reference_sha256.is_some()
+        {
+            return Err(ProviderSetupError::Invalid(
+                "credential reference does not match authentication method".into(),
+            ));
+        }
+        if let Some(digest) = selection.credential_reference_sha256.as_deref()
+            && (digest.len() != MAX_DIGEST_BYTES
+                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Err(ProviderSetupError::Invalid(
+                "credential reference must be a SHA-256 digest".into(),
+            ));
+        }
+        Ok(Self {
+            selection: ConfigurationSelection {
+                provider_id,
+                model_id,
+                ..selection
+            },
+            catalog_generation: Revision(1),
+            configuration_label: "development defaults".into(),
+        })
+    }
+
     /// Build a draft from wizard values after validating every value against
     /// the authoritative agent/provider catalog. No network or credentials are
     /// consulted here.
