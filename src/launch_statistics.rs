@@ -767,47 +767,100 @@ mod tests {
         let mut cases = Vec::new();
         let mut invalid_generation = bundle.clone();
         invalid_generation.document.benchmark.generation = Revision(0);
-        cases.push((invalid_generation, snapshot(), LaunchValidationError::InvalidBundle));
+        cases.push((
+            invalid_generation,
+            snapshot(),
+            LaunchValidationError::InvalidBundle,
+        ));
 
         let mut provider_digest = snapshot();
-        provider_digest.provider_catalog.as_mut().unwrap().catalog_sha256 = "d".repeat(64);
-        cases.push((bundle.clone(), provider_digest, LaunchValidationError::ProviderCatalogDigestMismatch));
+        provider_digest
+            .provider_catalog
+            .as_mut()
+            .unwrap()
+            .catalog_sha256 = "d".repeat(64);
+        cases.push((
+            bundle.clone(),
+            provider_digest,
+            LaunchValidationError::ProviderCatalogDigestMismatch,
+        ));
 
         let mut benchmark_digest = snapshot();
-        benchmark_digest.benchmark_catalog.as_mut().unwrap().catalog_sha256 = "d".repeat(64);
-        cases.push((bundle.clone(), benchmark_digest, LaunchValidationError::InvalidBenchmarkSelection));
+        benchmark_digest
+            .benchmark_catalog
+            .as_mut()
+            .unwrap()
+            .catalog_sha256 = "d".repeat(64);
+        cases.push((
+            bundle.clone(),
+            benchmark_digest,
+            LaunchValidationError::InvalidBenchmarkSelection,
+        ));
 
         let mut disconnected = snapshot();
         disconnected.connection = Connection::Disconnected;
-        cases.push((bundle.clone(), disconnected, LaunchValidationError::Disconnected));
+        cases.push((
+            bundle.clone(),
+            disconnected,
+            LaunchValidationError::Disconnected,
+        ));
 
         let mut missing_config = snapshot();
         missing_config.configuration = None;
-        cases.push((bundle.clone(), missing_config, LaunchValidationError::ConfigurationUnavailable));
+        cases.push((
+            bundle.clone(),
+            missing_config,
+            LaunchValidationError::ConfigurationUnavailable,
+        ));
 
         let mut unconfigured = snapshot();
         unconfigured.configuration.as_mut().unwrap().configured = false;
-        cases.push((bundle.clone(), unconfigured, LaunchValidationError::ConfigurationMismatch));
+        cases.push((
+            bundle.clone(),
+            unconfigured,
+            LaunchValidationError::ConfigurationMismatch,
+        ));
 
         for (candidate, live, expected) in cases {
             assert_eq!(validate_binding(&candidate, &live), Err(expected));
         }
 
         let mut duplicate = bundle.clone();
-        duplicate.document.benchmark.measure_ids.push("latency.first_response".into());
-        assert_eq!(validate_binding(&duplicate, &snapshot()), Err(LaunchValidationError::InvalidBundle));
+        duplicate
+            .document
+            .benchmark
+            .measure_ids
+            .push("latency.first_response".into());
+        assert_eq!(
+            validate_binding(&duplicate, &snapshot()),
+            Err(LaunchValidationError::InvalidBundle)
+        );
         let mut empty = bundle.clone();
         empty.document.benchmark.group_ids.clear();
-        assert_eq!(validate_binding(&empty, &snapshot()), Err(LaunchValidationError::InvalidBundle));
+        assert_eq!(
+            validate_binding(&empty, &snapshot()),
+            Err(LaunchValidationError::InvalidBundle)
+        );
         let mut wrong_group = snapshot();
         wrong_group.benchmark_catalog.as_mut().unwrap().pools[0].groups[0].id = "other".into();
-        assert_eq!(validate_binding(&bundle, &wrong_group), Err(LaunchValidationError::InvalidBenchmarkSelection));
+        assert_eq!(
+            validate_binding(&bundle, &wrong_group),
+            Err(LaunchValidationError::InvalidBenchmarkSelection)
+        );
         let mut wrong_benchmark = snapshot();
-        wrong_benchmark.benchmark_catalog.as_mut().unwrap().pools[0].groups[0].benchmarks[0].id = "other".into();
-        assert_eq!(validate_binding(&bundle, &wrong_benchmark), Err(LaunchValidationError::InvalidBenchmarkSelection));
+        wrong_benchmark.benchmark_catalog.as_mut().unwrap().pools[0].groups[0].benchmarks[0].id =
+            "other".into();
+        assert_eq!(
+            validate_binding(&bundle, &wrong_benchmark),
+            Err(LaunchValidationError::InvalidBenchmarkSelection)
+        );
         let mut wrong_measure = snapshot();
-        wrong_measure.benchmark_catalog.as_mut().unwrap().pools[0].groups[0].benchmarks[0].measure_ids = vec!["other".into()];
-        assert_eq!(validate_binding(&bundle, &wrong_measure), Err(LaunchValidationError::InvalidBenchmarkSelection));
+        wrong_measure.benchmark_catalog.as_mut().unwrap().pools[0].groups[0].benchmarks[0]
+            .measure_ids = vec!["other".into()];
+        assert_eq!(
+            validate_binding(&bundle, &wrong_measure),
+            Err(LaunchValidationError::InvalidBenchmarkSelection)
+        );
     }
 
     #[test]
@@ -828,18 +881,30 @@ mod tests {
         assert_eq!(state.apply_event(prepared), Err(RunEventError::WrongRun));
         let mut wrong_attempt = event(6, PublicRunState::Running);
         wrong_attempt.attempt_id = AttemptId("other".into());
-        assert_eq!(state.apply_event(wrong_attempt), Err(RunEventError::WrongAttempt));
+        assert_eq!(
+            state.apply_event(wrong_attempt),
+            Err(RunEventError::WrongAttempt)
+        );
 
         let mut out_of_bounds = event(7, PublicRunState::Running);
         out_of_bounds.completed_measures = 3;
-        assert_eq!(state.apply_event(out_of_bounds), Err(RunEventError::ProgressOutOfBounds));
+        assert_eq!(
+            state.apply_event(out_of_bounds),
+            Err(RunEventError::ProgressOutOfBounds)
+        );
         let mut failed_bounds = event(8, PublicRunState::Running);
         failed_bounds.failed_measures = 3;
-        assert_eq!(state.apply_event(failed_bounds), Err(RunEventError::ProgressOutOfBounds));
+        assert_eq!(
+            state.apply_event(failed_bounds),
+            Err(RunEventError::ProgressOutOfBounds)
+        );
 
         state.disconnected();
         assert_eq!(state.connection(), RunConnection::Disconnected);
-        assert_eq!(state.apply_event(event(9, PublicRunState::Running)), Err(RunEventError::StaleRevision));
+        assert_eq!(
+            state.apply_event(event(9, PublicRunState::Running)),
+            Err(RunEventError::StaleRevision)
+        );
         state.reconnect_complete(None);
         assert_eq!(state.connection(), RunConnection::Connected);
         state.request_cancel().unwrap();
@@ -861,7 +926,11 @@ mod tests {
             b
         });
         empty.begin_launch().unwrap();
-        let summary = crate::control_codec::RunSummary { state: PublicRunState::Running, revision: Revision(1), ..summary };
+        let summary = crate::control_codec::RunSummary {
+            state: PublicRunState::Running,
+            revision: Revision(1),
+            ..summary
+        };
         empty.observe_summary(&summary).unwrap();
         assert_eq!(empty.statistics().unwrap().bounded_progress_percent(), 0);
     }

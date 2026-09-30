@@ -2808,40 +2808,71 @@ mod tests {
             value
         };
         let mut empty_generation = publication(vec![BenchmarkCatalogPool {
-            id: "pool".into(), groups: vec![group()],
+            id: "pool".into(),
+            groups: vec![group()],
         }]);
         empty_generation.generation = Revision(0);
         empty_generation.catalog_sha256 = empty_generation.computed_digest().unwrap();
-        assert_eq!(empty_generation.validate(), Err(CodecError::InvalidValue("benchmark_catalog.digest")));
+        assert_eq!(
+            empty_generation.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.digest"))
+        );
 
         let mut empty_pools = publication(Vec::new());
         empty_pools.catalog_sha256 = empty_pools.computed_digest().unwrap();
-        assert_eq!(empty_pools.validate(), Err(CodecError::InvalidValue("benchmark_catalog.digest")));
+        assert_eq!(
+            empty_pools.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.digest"))
+        );
 
-        let mut empty_group = publication(vec![BenchmarkCatalogPool { id: "pool".into(), groups: Vec::new() }]);
+        let mut empty_group = publication(vec![BenchmarkCatalogPool {
+            id: "pool".into(),
+            groups: Vec::new(),
+        }]);
         empty_group.catalog_sha256 = empty_group.computed_digest().unwrap();
-        assert_eq!(empty_group.validate(), Err(CodecError::InvalidValue("benchmark_catalog.pool")));
+        assert_eq!(
+            empty_group.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.pool"))
+        );
 
         let mut duplicate_pool = publication(vec![
-            BenchmarkCatalogPool { id: "pool".into(), groups: vec![group()] },
-            BenchmarkCatalogPool { id: "pool".into(), groups: vec![group()] },
+            BenchmarkCatalogPool {
+                id: "pool".into(),
+                groups: vec![group()],
+            },
+            BenchmarkCatalogPool {
+                id: "pool".into(),
+                groups: vec![group()],
+            },
         ]);
         duplicate_pool.catalog_sha256 = duplicate_pool.computed_digest().unwrap();
-        assert_eq!(duplicate_pool.validate(), Err(CodecError::InvalidValue("benchmark_catalog.pool")));
+        assert_eq!(
+            duplicate_pool.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.pool"))
+        );
 
         let mut duplicate_group = publication(vec![BenchmarkCatalogPool {
-            id: "pool".into(), groups: vec![group(), group()],
+            id: "pool".into(),
+            groups: vec![group(), group()],
         }]);
         duplicate_group.catalog_sha256 = duplicate_group.computed_digest().unwrap();
-        assert_eq!(duplicate_group.validate(), Err(CodecError::InvalidValue("benchmark_catalog.group")));
+        assert_eq!(
+            duplicate_group.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.group"))
+        );
 
         let mut duplicate_benchmark = publication(vec![BenchmarkCatalogPool {
-            id: "pool".into(), groups: vec![BenchmarkCatalogGroup {
-                id: "group".into(), benchmarks: vec![entry(), entry()],
+            id: "pool".into(),
+            groups: vec![BenchmarkCatalogGroup {
+                id: "group".into(),
+                benchmarks: vec![entry(), entry()],
             }],
         }]);
         duplicate_benchmark.catalog_sha256 = duplicate_benchmark.computed_digest().unwrap();
-        assert_eq!(duplicate_benchmark.validate(), Err(CodecError::InvalidValue("benchmark_catalog.benchmark")));
+        assert_eq!(
+            duplicate_benchmark.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.benchmark"))
+        );
     }
 
     #[test]
@@ -2854,7 +2885,8 @@ mod tests {
                 groups: vec![BenchmarkCatalogGroup {
                     id: "group".into(),
                     benchmarks: vec![BenchmarkCatalogEntry {
-                        id: "benchmark".into(), measure_ids: vec!["measure".into()],
+                        id: "benchmark".into(),
+                        measure_ids: vec!["measure".into()],
                     }],
                 }],
             }],
@@ -2862,28 +2894,46 @@ mod tests {
         let mut invalid = publication.clone();
         invalid.pools[0].id.clear();
         invalid.catalog_sha256 = invalid.computed_digest().unwrap();
-        assert_eq!(invalid.validate(), Err(CodecError::InvalidValue("benchmark_catalog.pool")));
+        assert_eq!(
+            invalid.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.pool"))
+        );
         invalid = publication.clone();
         invalid.pools[0].groups[0].id.clear();
         invalid.catalog_sha256 = invalid.computed_digest().unwrap();
-        assert_eq!(invalid.validate(), Err(CodecError::InvalidValue("benchmark_catalog.group")));
+        assert_eq!(
+            invalid.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.group"))
+        );
         invalid = publication.clone();
         invalid.pools[0].groups[0].benchmarks[0].id.clear();
         invalid.catalog_sha256 = invalid.computed_digest().unwrap();
-        assert_eq!(invalid.validate(), Err(CodecError::InvalidValue("benchmark_catalog.benchmark")));
+        assert_eq!(
+            invalid.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.benchmark"))
+        );
         invalid = publication.clone();
         invalid.pools[0].groups[0].benchmarks[0].measure_ids = vec![String::new()];
         invalid.catalog_sha256 = invalid.computed_digest().unwrap();
-        assert_eq!(invalid.validate(), Err(CodecError::InvalidValue("benchmark_catalog.measure")));
+        assert_eq!(
+            invalid.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.measure"))
+        );
         invalid = publication.clone();
         invalid.pools[0].groups[0].benchmarks[0].measure_ids.clear();
         invalid.catalog_sha256 = invalid.computed_digest().unwrap();
-        assert_eq!(invalid.validate(), Err(CodecError::InvalidValue("benchmark_catalog.benchmark")));
+        assert_eq!(
+            invalid.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.benchmark"))
+        );
 
         publication.catalog_sha256 = publication.computed_digest().unwrap();
         let call = ControlCall::BenchmarkCatalog;
         let request = ControlRequest {
-            jsonrpc: JSONRPC_VERSION.into(), id: RequestId(99), timeout_ms: 1_000, call,
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(99),
+            timeout_ms: 1_000,
+            call,
         };
         request.validate(ControlLimits::default()).unwrap();
         let encoded = serde_json::to_string(&request).unwrap();
