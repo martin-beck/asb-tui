@@ -184,10 +184,56 @@ pub enum ControlCall {
 pub const CONTROL_BENCHMARK_CATALOG_V1: ControlVersion = V1_7;
 
 impl ControlCall {
+    /// Stable wire operation name used by the cross-project compatibility
+    /// matrix and diagnostics. This is intentionally independent of Rust
+    /// variant names and never includes request data.
+    #[must_use]
+    pub const fn operation_name(&self) -> &'static str {
+        match self {
+            Self::Negotiate(_) => "negotiate",
+            Self::Capabilities => "capabilities",
+            Self::MeasurementCatalog => "measurement_catalog",
+            Self::BenchmarkCatalog => "benchmark_catalog",
+            Self::AgentCatalog(_) => "agent_catalog",
+            Self::AgentInstall(_) => "agent_install",
+            Self::AgentStatus(_) => "agent_status",
+            Self::AgentCancel(_) => "agent_cancel",
+            Self::AgentRetry(_) => "agent_retry",
+            Self::AgentRemove(_) => "agent_remove",
+            Self::AuthEnroll(_) => "auth_enroll",
+            Self::AuthStatus(_) => "auth_status",
+            Self::AuthRotate(_) => "auth_rotate",
+            Self::AuthRevoke(_) => "auth_revoke",
+            Self::AuthHelperInvoke(_) => "auth_helper_invoke",
+            Self::ValidateSettings { .. } => "validate_settings",
+            Self::CreatePlan(_) => "create_plan",
+            Self::Launch(_) => "launch",
+            Self::Status { .. } => "status",
+            Self::Cancel(_) => "cancel",
+            Self::History(_) => "history",
+            Self::Repeat(_) => "repeat",
+            Self::Analyze { .. } => "analyze",
+            Self::Events(_) => "events",
+            Self::ArtifactMetadata { .. } => "artifact_metadata",
+            Self::ProviderCatalog(_) => "provider_catalog",
+            Self::ConfigurationStatus(_) => "configuration_status",
+            Self::ConfigurationApply(_) => "configuration_apply",
+            Self::RecordingCampaignPlan(_) => "recording_campaign_plan",
+            Self::RecordingCampaignStatus(_) => "recording_campaign_status",
+            Self::RecordingCampaignEstimate(_) => "recording_campaign_estimate",
+            Self::RecordingCampaignExecute(_) => "recording_campaign_execute",
+            Self::RecordingCampaignProgress(_) => "recording_campaign_progress",
+            Self::RecordingCampaignCancel(_) => "recording_campaign_cancel",
+            Self::RecordingCampaignReconcile(_) => "recording_campaign_reconcile",
+            Self::RecordingCampaignOfflineDefault(_) => "recording_campaign_offline_default",
+        }
+    }
+
     /// Earliest exact wire version that defines this operation.
     #[must_use]
     pub const fn minimum_version(&self) -> Option<ControlVersion> {
         match self {
+            Self::MeasurementCatalog => Some(CONTROL_MEASUREMENT_CATALOG_V1),
             Self::BenchmarkCatalog => Some(CONTROL_BENCHMARK_CATALOG_V1),
             Self::ProviderCatalog(_)
             | Self::ConfigurationStatus(_)
