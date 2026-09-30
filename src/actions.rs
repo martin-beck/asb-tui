@@ -28,6 +28,10 @@ pub enum UiAction {
     FocusSearch,
     ToggleAllMeasures,
     ToggleMeasure,
+    FocusBenchmarkSearch,
+    SelectBenchmarkPool,
+    ToggleBenchmarkGroup,
+    ToggleBenchmark,
     StartRun,
     CancelRun,
     RefreshRuns,
@@ -51,7 +55,7 @@ pub enum UiAction {
 
 impl UiAction {
     /// Every action, in stable display order.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 36] = [
         Self::Quit,
         Self::GoBack,
         Self::OpenLanding,
@@ -65,6 +69,10 @@ impl UiAction {
         Self::FocusSearch,
         Self::ToggleAllMeasures,
         Self::ToggleMeasure,
+        Self::FocusBenchmarkSearch,
+        Self::SelectBenchmarkPool,
+        Self::ToggleBenchmarkGroup,
+        Self::ToggleBenchmark,
         Self::StartRun,
         Self::CancelRun,
         Self::RefreshRuns,
@@ -103,6 +111,10 @@ impl UiAction {
             Self::FocusSearch => "focus_search",
             Self::ToggleAllMeasures => "toggle_all_measures",
             Self::ToggleMeasure => "toggle_measure",
+            Self::FocusBenchmarkSearch => "focus_benchmark_search",
+            Self::SelectBenchmarkPool => "select_benchmark_pool",
+            Self::ToggleBenchmarkGroup => "toggle_benchmark_group",
+            Self::ToggleBenchmark => "toggle_benchmark",
             Self::StartRun => "start_run",
             Self::CancelRun => "cancel_run",
             Self::RefreshRuns => "refresh_runs",
@@ -252,7 +264,12 @@ impl ActionRegistry {
 const fn action_context_route(action: UiAction) -> Route {
     match action {
         UiAction::FocusSearch => Route::Help,
-        UiAction::ToggleAllMeasures | UiAction::ToggleMeasure => Route::MeasurementSelection,
+        UiAction::ToggleAllMeasures
+        | UiAction::ToggleMeasure
+        | UiAction::FocusBenchmarkSearch
+        | UiAction::SelectBenchmarkPool
+        | UiAction::ToggleBenchmarkGroup
+        | UiAction::ToggleBenchmark => Route::MeasurementSelection,
         UiAction::StartRun | UiAction::CancelRun => Route::RunControl,
         UiAction::EstimateRecording
         | UiAction::PlanRecording
@@ -369,6 +386,34 @@ fn descriptor(
             KeyChord::Space,
             "Toggle measure",
             "Select or deselect the focused measure",
+            ActionContext::Route(Route::MeasurementSelection),
+            None,
+        ),
+        UiAction::FocusBenchmarkSearch => (
+            KeyChord::Char('/'),
+            "Search catalog",
+            "Focus nested pool, group, benchmark, and measure search",
+            ActionContext::Route(Route::MeasurementSelection),
+            None,
+        ),
+        UiAction::SelectBenchmarkPool => (
+            KeyChord::Char('P'),
+            "Select pool",
+            "Choose the benchmark pool for this campaign",
+            ActionContext::Route(Route::MeasurementSelection),
+            None,
+        ),
+        UiAction::ToggleBenchmarkGroup => (
+            KeyChord::Char('g'),
+            "Toggle group",
+            "Select or clear visible benchmarks in the focused group",
+            ActionContext::Route(Route::MeasurementSelection),
+            None,
+        ),
+        UiAction::ToggleBenchmark => (
+            KeyChord::Char('b'),
+            "Toggle benchmark",
+            "Select or clear every available measure in the focused benchmark",
             ActionContext::Route(Route::MeasurementSelection),
             None,
         ),
@@ -560,7 +605,11 @@ fn action_backend_status(
             | UiAction::WizardDevelopmentReset
             | UiAction::WizardDevelopmentSelectFixture
             | UiAction::WizardDevelopmentSelectNone
-            | UiAction::WizardDevelopmentRestart => None,
+            | UiAction::WizardDevelopmentRestart
+            | UiAction::FocusBenchmarkSearch
+            | UiAction::SelectBenchmarkPool
+            | UiAction::ToggleBenchmarkGroup
+            | UiAction::ToggleBenchmark => None,
             _ => Some(ActionDisabledReason::NotNegotiated),
         };
     };
@@ -584,7 +633,14 @@ fn action_backend_status(
         {
             Some(ActionDisabledReason::Planning)
         }
-        UiAction::ToggleAllMeasures | UiAction::ToggleMeasure if !caps.planning => {
+        UiAction::ToggleAllMeasures
+        | UiAction::ToggleMeasure
+        | UiAction::FocusBenchmarkSearch
+        | UiAction::SelectBenchmarkPool
+        | UiAction::ToggleBenchmarkGroup
+        | UiAction::ToggleBenchmark
+            if !caps.planning =>
+        {
             Some(ActionDisabledReason::Planning)
         }
         _ => None,
@@ -624,7 +680,7 @@ mod tests {
                 .any(|d| d.action == UiAction::ToggleMeasure)
         );
         assert!(!descriptors.iter().any(|d| d.action == UiAction::StartRun));
-        assert_eq!(UiAction::ALL.len(), 32);
+        assert_eq!(UiAction::ALL.len(), 36);
         for action in UiAction::ALL {
             assert!(
                 ActionRegistry::search(action.id())

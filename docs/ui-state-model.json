@@ -6,7 +6,7 @@
   "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable. Provider setup review is catalog-bound and applies at most once for the observed generation.",
   "initial": "landing",
   "layouts": ["wide", "compact", "tiny"],
-  "state_fields": ["route", "focus", "hover", "query", "selection", "measurement_catalog", "connection", "capabilities", "provider_catalog", "provider_catalog_generation", "live_setup_catalog", "development_catalog_fallback", "configuration", "auth_status", "recording_campaign", "recording_estimate", "recording_campaign_lifecycle", "recording_dispatch_action", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "provider_setup_review", "configuration_persistence"],
+  "state_fields": ["route", "focus", "hover", "query", "selection", "benchmark_catalog", "benchmark_selection", "benchmark_catalog_generation", "measurement_catalog", "connection", "capabilities", "provider_catalog", "provider_catalog_generation", "live_setup_catalog", "development_catalog_fallback", "configuration", "auth_status", "recording_campaign", "recording_estimate", "recording_campaign_lifecycle", "recording_dispatch_action", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "provider_setup_review", "configuration_persistence"],
   "bindings": [
     {"action":"quit","element":"navigation","key":"q"},
     {"action":"go_back","element":"navigation","key":"Esc"},
@@ -42,7 +42,11 @@
     {"action":"focus_measure_search","element":"measures.search","key":"/"},
     {"action":"toggle_measure","element":"measures.row","key":"Space"},
     {"action":"toggle_all_measures","element":"measures.group_toggle","key":"a"},
-    {"action":"toggle_group","element":"measures.group_toggle","key":"g"}
+    {"action":"toggle_group","element":"measures.group_toggle","key":"g"},
+    {"action":"focus_benchmark_search","element":"benchmarks.search","key":"/"},
+    {"action":"select_benchmark_pool","element":"benchmarks.pool","key":"P"},
+    {"action":"toggle_benchmark_group","element":"benchmarks.group_toggle","key":"g"},
+    {"action":"toggle_benchmark","element":"benchmarks.row","key":"b"}
     ,{"action":"focus_configuration","element":"configuration.entry","key":"Enter"}
     ,{"action":"save_configuration","element":"configuration.entry","key":"Ctrl-S"}
     ,{"action":"edit_configuration","element":"configuration.entry","key":"Character"}
@@ -64,7 +68,7 @@
   "routes": [
     {"id":"landing","elements":["landing.primary","navigation","status.connection"]},
     {"id":"wizard","elements":["wizard.agent","wizard.provider","wizard.model","wizard.configuration","wizard.authentication","wizard.recording","wizard.replay","wizard.review","wizard.controls","navigation"]},
-    {"id":"measurement_selection","elements":["measures.search","measures.row","measures.group_toggle","navigation"]},
+    {"id":"measurement_selection","elements":["benchmarks.search","benchmarks.pool","benchmarks.group_toggle","benchmarks.row","measures.search","measures.row","measures.group_toggle","navigation"]},
     {"id":"configuration","elements":["configuration.entry","configuration.search","configuration.control_status","navigation"]},
     {"id":"run_control","elements":["run.status","run.start","run.cancel","navigation"]},
     {"id":"recent_runs","elements":["runs.row","runs.refresh","navigation"]},
@@ -76,6 +80,10 @@
     {"id":"measures.search","route":"measurement_selection","role":"editable","help_id":"measures.search","focusable":true,"hoverable":true,"parent":null},
     {"id":"measures.row","route":"measurement_selection","role":"selectable","help_id":"measures.row","focusable":true,"hoverable":true,"parent":null},
     {"id":"measures.group_toggle","route":"measurement_selection","role":"action","help_id":"measures.group_toggle","focusable":true,"hoverable":true,"parent":null},
+    {"id":"benchmarks.search","route":"measurement_selection","role":"editable","help_id":"benchmarks.search","focusable":true,"hoverable":true,"parent":null},
+    {"id":"benchmarks.pool","route":"measurement_selection","role":"selectable","help_id":"benchmarks.pool","focusable":true,"hoverable":true,"parent":null},
+    {"id":"benchmarks.group_toggle","route":"measurement_selection","role":"action","help_id":"benchmarks.group_toggle","focusable":true,"hoverable":true,"parent":null},
+    {"id":"benchmarks.row","route":"measurement_selection","role":"selectable","help_id":"benchmarks.row","focusable":true,"hoverable":true,"parent":null},
     {"id":"configuration.entry","route":"configuration","role":"editable","help_id":"configuration.entry","focusable":true,"hoverable":true,"parent":null},
     {"id":"configuration.search","route":"configuration","role":"editable","help_id":"configuration.search","focusable":true,"hoverable":true,"parent":null},
     {"id":"configuration.control_status","route":"configuration","role":"status","help_id":"configuration.control_status","focusable":false,"hoverable":true,"parent":null},
@@ -164,6 +172,10 @@
     {"id":"measures.search","text":"Type to filter benchmark measures by group or name."},
     {"id":"measures.row","text":"Select or clear this measure for the benchmark."},
     {"id":"measures.group_toggle","text":"Select or clear every visible measure in this group."},
+    {"id":"benchmarks.search","text":"Search the nested pool, group, benchmark, and measure catalog."},
+    {"id":"benchmarks.pool","text":"Choose the benchmark pool whose groups and benchmarks are visible."},
+    {"id":"benchmarks.group_toggle","text":"Select or clear visible benchmarks and their available measures."},
+    {"id":"benchmarks.row","text":"Select a benchmark and include its available measures in the campaign."},
     {"id":"configuration.entry","text":"Edit this setting and press Ctrl-S to apply the validated local draft through the local configuration store."},
     {"id":"configuration.search","text":"Type to find a configuration setting by name or description."},
     {"id":"configuration.control_status","text":"Inspect provider model, credential-free authentication status, and recording readiness reported by the authenticated runner."},

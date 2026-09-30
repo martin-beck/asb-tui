@@ -3,7 +3,12 @@
 
 use asb_tui::{
     benchmark_route::{CampaignError, CampaignStage, GuidedCampaign, GuidedCatalog, ReplayMode},
+    control_codec::Revision,
     reports::{Artifact, MeasureResult, MeasureStatus, Report, RunId},
+    selection::{
+        BenchmarkCatalog, BenchmarkDefinition, BenchmarkGroup, BenchmarkMeasure, BenchmarkPool,
+        BenchmarkSelection,
+    },
 };
 use std::collections::BTreeMap;
 
@@ -74,6 +79,30 @@ fn catalog_backed_route_rejects_unsupported_choices() {
     route.add_agent("agent-a").unwrap();
     route.add_measure("quality.correctness").unwrap();
     route.review().unwrap();
+}
+
+#[test]
+fn exact_nested_handoff_is_generation_bound_at_campaign_start() {
+    let measure =
+        BenchmarkMeasure::new("quality.correctness", "Correctness", "score", true).unwrap();
+    let benchmark = BenchmarkDefinition::new("quality", "Quality", vec![measure]).unwrap();
+    let group = BenchmarkGroup::new("core", "Core", vec![benchmark]).unwrap();
+    let pool = BenchmarkPool::new("standard", "Standard", vec![group]).unwrap();
+    let catalog = BenchmarkCatalog::new(Revision(7), "digest-7", vec![pool]).unwrap();
+    let mut picker = BenchmarkSelection::new(catalog).unwrap();
+    picker.set_benchmark_selected("quality", true).unwrap();
+    let handoff = picker.campaign_handoff(Revision(7)).unwrap();
+    let mut route = GuidedCampaign::new("quality").unwrap();
+    route.add_agent("agent-a").unwrap();
+    assert_eq!(
+        route.start_with_handoff(handoff.clone(), Revision(6)),
+        Err(CampaignError::StaleCatalog)
+    );
+    let intent = route.start_with_handoff(handoff, Revision(7)).unwrap();
+    assert_eq!(intent.catalog_generation, Some(Revision(7)));
+    assert_eq!(intent.catalog_digest.as_deref(), Some("digest-7"));
+    assert_eq!(intent.benchmark_ids, ["quality"]);
+    assert_eq!(intent.measures, ["quality.correctness"]);
 }
 
 fn id(value: &str) -> RunId {

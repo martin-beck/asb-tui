@@ -14,6 +14,21 @@ The route has three explicit execution modes:
 - `OfflineReplay` requires a recording identifier and produces a replay intent
   marked `offline_only`; it cannot be started through the live launch method.
 
+Before review, the measurement screen can use `selection::BenchmarkSelection`.
+It projects a generation-bound nested catalog of pool → group → benchmark →
+measure nodes. Search matches any visible node without changing hidden choices;
+pool, group, and benchmark toggles are deterministic, and unavailable measures
+remain excluded. `campaign_handoff` emits the exact pool, group, benchmark, and
+measure identifiers plus catalog digest. `GuidedCampaign::start_with_handoff`
+requires the reviewed generation and carries that digest into the launch intent,
+so a refreshed catalog is rejected instead of silently changing a run.
+
+When an authoritative runner publishes the legacy measurement catalog, the
+frontend replaces the development fallback with that validated snapshot and
+clears its nested draft. This is an explicit source transition (the visible
+catalog rows and generation change together), never a merge of stale choices;
+the user must review and select the new catalog before dispatch.
+
 ASB remains authoritative for execution, recording lifecycle, run history, and
 reports. The route performs no network or provider work. A renderer dispatches
 the returned intent through the existing control client, projects the terminal
@@ -22,6 +37,7 @@ completion and delegates compatibility checks to `reports::compare`, which
 retains provenance and measure-set conflicts instead of ranking incomparable
 runs.
 
-The selection and replay guarantees are covered by
-`tests/benchmark_route.rs`; the existing reports and development-journey tests
-cover bounded history, strict replay, and comparison behavior.
+The nested selection and generation-recovery guarantees are covered by
+`tests/benchmark_selection.rs` and `tests/benchmark_route.rs`; the existing
+reports and development-journey tests cover bounded history, strict replay,
+and comparison behavior.
