@@ -9,7 +9,9 @@ use asb_tui::{
     recording_campaign::{
         CampaignObservation, CampaignPhase, RecordingAction, RecordingCampaignModel, WorkloadScope,
     },
-    reports::{Artifact, MeasureResult, MeasureStatus, Report, RunId, compare},
+    reports::{
+        Artifact, EvidenceKind, MeasureResult, MeasureStatus, Report, ReportStatus, RunId, compare,
+    },
     wizard::{StartupRoute, Step, Wizard, startup_route},
     wizard_catalog::{OptionKind, WizardCatalog},
 };
@@ -35,6 +37,9 @@ fn report(run_id: &str, value: f64) -> Report {
         }],
         command_argv: vec!["asb".into(), "replay".into(), "--offline".into()],
         stale: false,
+        evidence: EvidenceKind::Replay,
+        status: ReportStatus::Complete,
+        compatibility_key: "development/provider/model/catalog/config".into(),
     }
 }
 

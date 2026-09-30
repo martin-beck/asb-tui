@@ -1302,11 +1302,11 @@
     },
     {
       "id": "reports.row",
-      "text": "Choose a completed run to inspect its report."
+      "text": "Choose a completed run to inspect its evidence, measures, failures, and report provenance."
     },
     {
       "id": "reports.compare",
-      "text": "Compare the selected completed runs."
+      "text": "Compare selected runs only after reviewing evidence, measure status, provenance, and compatibility warnings."
     },
     {
       "id": "help.search",

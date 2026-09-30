@@ -8,7 +8,9 @@ use asb_tui::{
     benchmark_route::{GuidedCampaign, GuidedCatalog, ReplayMode},
     development_journey::{FixtureRequest, evaluate_fixture, execute_input},
     development_onboarding, development_router,
-    reports::{Artifact, MeasureResult, MeasureStatus, Report, RunId, compare},
+    reports::{
+        Artifact, EvidenceKind, MeasureResult, MeasureStatus, Report, ReportStatus, RunId, compare,
+    },
     wizard::{Step, Wizard},
     wizard_catalog::WizardCatalog,
 };
@@ -54,6 +56,9 @@ fn report(run_id: &str, value: f64) -> Report {
         }],
         command_argv: vec!["asb".into(), "replay".into(), "--offline".into()],
         stale: false,
+        evidence: EvidenceKind::Replay,
+        status: ReportStatus::Complete,
+        compatibility_key: "development/provider/model/catalog/config".into(),
     }
 }
 

@@ -48,6 +48,28 @@ pub enum RunSource {
     StrictReplay,
 }
 
+/// The trust/availability label shown beside every result.  These labels are
+/// deliberately closed: a renderer must never silently turn a replay or an
+/// unavailable result into a live result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EvidenceKind {
+    Development,
+    Live,
+    Replay,
+    Unavailable,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReportStatus {
+    Complete,
+    Partial,
+    Failed,
+    Cancelled,
+    Unavailable,
+    Unsupported,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Integrity {
     Verified,
@@ -249,6 +271,11 @@ pub struct Report {
     pub artifacts: Vec<Artifact>,
     pub command_argv: Vec<String>,
     pub stale: bool,
+    pub evidence: EvidenceKind,
+    pub status: ReportStatus,
+    /// Digest-bound provider/model/catalog/configuration identity.  Reports
+    /// with different keys are never comparable, even if their measures fit.
+    pub compatibility_key: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -273,6 +300,7 @@ pub struct Artifact {
 impl Report {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_ascii_text("provenance", &self.provenance, MAX_TEXT_BYTES)?;
+        validate_ascii_text("compatibility_key", &self.compatibility_key, MAX_TEXT_BYTES)?;
         if self.measures.len() > MAX_MEASURES {
             return Err(ValidationError::TooMany("measures"));
         }
@@ -287,6 +315,18 @@ impl Report {
         for failure in &self.failures {
             validate_ascii_text("failure", failure, MAX_TEXT_BYTES)?;
         }
+        if self.failures.len() > MAX_MEASURES {
+            return Err(ValidationError::TooMany("failures"));
+        }
+        for (name, measure) in &self.measures {
+            validate_ascii_text("measure", name, MAX_TEXT_BYTES)?;
+            validate_ascii_text("unit", &measure.unit, MAX_TEXT_BYTES)?;
+            if let Some(value) = measure.value
+                && !value.is_finite()
+            {
+                return Err(ValidationError::InvalidValue);
+            }
+        }
         Ok(())
     }
 
@@ -294,6 +334,11 @@ impl Report {
         !self.stale
             && !self.measures.is_empty()
             && self.failures.is_empty()
+            && matches!(self.status, ReportStatus::Complete)
+            && matches!(
+                self.evidence,
+                EvidenceKind::Live | EvidenceKind::Replay | EvidenceKind::Development
+            )
             && self
                 .measures
                 .values()
@@ -310,6 +355,10 @@ impl Report {
                 || lower.contains("password")
                 || lower.contains("secret")
                 || lower.contains("credential")
+                || lower.contains("api-key")
+                || lower.contains("apikey")
+                || lower.contains("authorization")
+                || lower.contains("bearer")
                 || (index > 0 && self.command_argv[index - 1].starts_with("--") && arg.len() > 96)
         }) {
             return Err(ValidationError::SensitiveCommand);
@@ -321,6 +370,58 @@ impl Report {
             .collect::<Vec<_>>()
             .join(" "))
     }
+
+    /// Produce the bounded, renderer-neutral rows used by the final-results
+    /// screen. Missing and failed measures always carry a next action.
+    pub fn presentation(&self) -> Result<ReportPresentation, ValidationError> {
+        self.validate()?;
+        let mut measures = self
+            .measures
+            .iter()
+            .map(|(name, result)| PresentedMeasure {
+                name: name.clone(),
+                value: result.value,
+                unit: result.unit.clone(),
+                status: result.status.clone(),
+                next_action: match result.status {
+                    MeasureStatus::Complete => None,
+                    MeasureStatus::Missing => Some("rerun with this measure selected".into()),
+                    MeasureStatus::Failed => Some("inspect the failure and rerun".into()),
+                    MeasureStatus::Uncertain => Some("review uncertainty before comparing".into()),
+                },
+            })
+            .collect::<Vec<_>>();
+        measures.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(ReportPresentation {
+            run_id: self.run_id.clone(),
+            evidence: self.evidence.clone(),
+            status: self.status.clone(),
+            provenance: self.provenance.clone(),
+            measures,
+            failures: self.failures.clone(),
+            artifacts: self.artifacts.clone(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresentedMeasure {
+    pub name: String,
+    pub value: Option<f64>,
+    pub unit: String,
+    pub status: MeasureStatus,
+    pub next_action: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportPresentation {
+    pub run_id: RunId,
+    pub evidence: EvidenceKind,
+    pub status: ReportStatus,
+    pub provenance: String,
+    pub measures: Vec<PresentedMeasure>,
+    pub failures: Vec<String>,
+    pub artifacts: Vec<Artifact>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -350,9 +451,20 @@ pub fn compare(reports: &[Report], selected: &[RunId]) -> Result<Comparison, Com
         chosen.push(*report);
     }
     let provenance = chosen[0].provenance.as_str();
+    let compatibility_key = chosen[0].compatibility_key.as_str();
+    let evidence = &chosen[0].evidence;
     let mut confounders = Vec::new();
     if chosen.iter().any(|r| r.provenance != provenance) {
         confounders.push("provenance differs".into());
+    }
+    if chosen
+        .iter()
+        .any(|r| r.compatibility_key != compatibility_key)
+    {
+        confounders.push("provider/model/catalog/configuration differs".into());
+    }
+    if chosen.iter().any(|r| r.evidence != *evidence) {
+        confounders.push("evidence kind differs".into());
     }
     let common: BTreeSet<_> =
         chosen
@@ -387,6 +499,7 @@ pub enum ValidationError {
     InvalidCommand,
     NonPublicText(&'static str),
     SensitiveCommand,
+    InvalidValue,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompareError {

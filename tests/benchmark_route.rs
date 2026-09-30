@@ -4,7 +4,7 @@
 use asb_tui::{
     benchmark_route::{CampaignError, CampaignStage, GuidedCampaign, GuidedCatalog, ReplayMode},
     control_codec::Revision,
-    reports::{Artifact, MeasureResult, MeasureStatus, Report, RunId},
+    reports::{Artifact, EvidenceKind, MeasureResult, MeasureStatus, Report, ReportStatus, RunId},
     selection::{
         BenchmarkCatalog, BenchmarkDefinition, BenchmarkGroup, BenchmarkMeasure, BenchmarkPool,
         BenchmarkSelection,
@@ -129,5 +129,8 @@ fn report(value: &str, measurement: f64) -> Report {
         }],
         command_argv: vec!["asb".into(), "replay".into(), "--offline".into()],
         stale: false,
+        evidence: EvidenceKind::Replay,
+        status: ReportStatus::Complete,
+        compatibility_key: "development/provider/model/catalog/config".into(),
     }
 }
