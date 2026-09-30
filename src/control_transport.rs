@@ -17,6 +17,7 @@ use crate::{
     control_client::{AdoptedChannel, PeerCredentials, RunnerIdentity},
     launch_statistics::{LaunchRequest, LaunchState},
     live_projection::ControlProjection,
+    protocol_compatibility,
 };
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
@@ -128,19 +129,7 @@ impl FramedControlStream {
             id,
             timeout_ms: self.limits.max_timeout_ms,
             call: control_codec::ControlCall::Negotiate(NegotiateParams {
-                versions: [
-                    control_codec::V1_10,
-                    control_codec::V1_8,
-                    control_codec::V1_7,
-                    control_codec::V1_6,
-                    control_codec::V1_5,
-                    control_codec::V1_4,
-                    control_codec::V1_3,
-                    control_codec::V1_2,
-                    control_codec::V1_0,
-                ]
-                .into_iter()
-                .collect(),
+                versions: protocol_compatibility::supported_versions(),
                 limits: self.limits,
             }),
         };
@@ -154,18 +143,7 @@ impl FramedControlStream {
         };
         if (!self.expected_peer.runner_instance_id.is_empty()
             && session.runner_instance_id != self.expected_peer.runner_instance_id)
-            || ![
-                control_codec::V1_10,
-                control_codec::V1_8,
-                control_codec::V1_7,
-                control_codec::V1_6,
-                control_codec::V1_5,
-                control_codec::V1_4,
-                control_codec::V1_3,
-                control_codec::V1_2,
-                control_codec::V1_0,
-            ]
-            .contains(&session.version)
+            || protocol_compatibility::validate_version(session.version).is_err()
         {
             return Err(TransportError::NotNegotiated);
         }
@@ -179,6 +157,10 @@ impl FramedControlStream {
 
     pub fn write_request(&mut self, request: &ControlRequest) -> Result<(), TransportError> {
         request.validate(self.limits)?;
+        if let Some(version) = self.negotiated_version {
+            protocol_compatibility::validate_operation(version, &request.call)
+                .map_err(|_| TransportError::NotNegotiated)?;
+        }
         self.set_write_deadline(request.timeout_ms)?;
         let frame = control_codec::encode(request, self.limits.max_frame_bytes as usize)?;
         self.stream
