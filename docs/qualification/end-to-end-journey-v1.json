@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "journey_id": "asb-tui-end-to-end-development-journey",
+  "classification": "development/mock",
+  "network": "denied",
+  "credentials": "none",
+  "source_sha": "runtime-provided",
+  "stages": [
+    {"id": "install", "command": "asb tui install", "evidence": "development_onboarding_ready"},
+    {"id": "launch", "command": "asb tui", "evidence": "landing_or_wizard_visible"},
+    {"id": "wizard", "command": "visible selections", "evidence": "agent_provider_model_review"},
+    {"id": "benchmark_selection", "command": "visible selections", "evidence": "pool_group_benchmark_measure"},
+    {"id": "materialization", "command": "visible apply", "evidence": "configuration_digest"},
+    {"id": "preflight", "command": "visible review", "evidence": "digest_bound_summary"},
+    {"id": "launch_run", "command": "visible start", "evidence": "development_run_started"},
+    {"id": "live_statistics", "command": "visible refresh", "evidence": "progress_and_measure_statistics"},
+    {"id": "final_results", "command": "visible completion", "evidence": "final_performance_results"},
+    {"id": "history_comparison", "command": "visible compare", "evidence": "compatible_recent_runs"}
+  ],
+  "mismatch_recoveries": [
+    {"id": "version", "recovery": "refresh_version"},
+    {"id": "catalog", "recovery": "refresh_catalog"},
+    {"id": "bundle", "recovery": "repair_bundle"},
+    {"id": "protocol", "recovery": "retry_broker"}
+  ]
+}
