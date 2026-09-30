@@ -73,6 +73,8 @@ pub struct WorkspaceState {
     /// picker; the flat rows are a rendering projection only.
     benchmark_selection: Option<BenchmarkSelection>,
     pub config_cursor: usize,
+    /// Secret-free materialization preflight shown before configuration apply.
+    pub preflight: Option<crate::configuration_materialization::PreflightSummary>,
     pub report_cursor: usize,
     configuration_draft: crate::configuration::ConfigurationDraft,
     configuration_path: Option<PathBuf>,
@@ -171,6 +173,7 @@ impl Default for WorkspaceState {
                 },
             ],
             config_cursor: 0,
+            preflight: None,
             report_cursor: 0,
             configuration_draft: crate::configuration::ConfigurationDraft::new(
                 crate::configuration::Configuration::default(),
@@ -408,6 +411,31 @@ impl WorkspaceState {
     pub fn configuration_edit_value(&self) -> Option<&str> {
         self.configuration_editing
             .then_some(self.configuration_edit_buffer.as_str())
+    }
+
+    /// Replace the visible preflight projection after a validated bundle has
+    /// been built. The projection contains identifiers and counts only.
+    pub fn set_preflight(
+        &mut self,
+        summary: crate::configuration_materialization::PreflightSummary,
+    ) {
+        self.preflight = Some(summary);
+    }
+
+    pub fn clear_preflight(&mut self) {
+        self.preflight = None;
+    }
+
+    /// Apply a validated materialized bundle through its atomic store and only
+    /// then expose the secret-free preflight projection to the renderer.
+    pub fn apply_materialized_bundle(
+        &mut self,
+        bundle: &crate::configuration_materialization::MaterializedBundle,
+        store: &crate::configuration_materialization::MaterializedBundleStore,
+    ) -> Result<(), crate::configuration_materialization::MaterializationError> {
+        store.apply(bundle)?;
+        self.preflight = Some(bundle.preflight_summary());
+        Ok(())
     }
 
     fn apply_configuration_edit_buffer(&mut self) {
@@ -786,6 +814,13 @@ impl WorkspaceState {
                 return UiAction::None;
             }
             let _ = self.save_configuration();
+            return UiAction::None;
+        }
+        if self.screen == Screen::Configuration && key.code == KeyCode::Char('V') {
+            if let Ok(mut formal) = crate::formal_state::FormalUiState::new(80, 24) {
+                let _ = formal.apply(crate::formal_state::FormalEvent::OpenConfiguration, None);
+                let _ = formal.apply(crate::formal_state::FormalEvent::OpenPreflight, None);
+            }
             return UiAction::None;
         }
         match key.code {
@@ -1691,6 +1726,28 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
                     "Providers: {} available",
                     catalog.providers.len()
                 )));
+            }
+            if let Some(preflight) = &state.preflight {
+                lines.push(Line::from("Preflight: ready (review before apply)"));
+                lines.push(Line::from(format!(
+                    "  {} / {}  agents={} pool={} measures={}",
+                    preflight.provider_id,
+                    preflight.model_id,
+                    preflight.agent_count,
+                    preflight.pool_id,
+                    preflight.measure_count
+                )));
+                lines.push(Line::from(format!(
+                    "  digest={}{}",
+                    &preflight.digest_sha256[..8.min(preflight.digest_sha256.len())],
+                    if preflight.development_only {
+                        " (development-only)"
+                    } else {
+                        ""
+                    }
+                )));
+            } else {
+                lines.push(Line::from("Preflight: not prepared (press V)"));
             }
             lines
         },

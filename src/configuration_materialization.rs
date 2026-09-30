@@ -84,6 +84,34 @@ pub struct MaterializedBundle {
     pub digest_sha256: String,
 }
 
+/// Renderer-friendly, secret-free preflight projection. It is derived from a
+/// validated bundle and is safe to show before the user applies it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreflightSummary {
+    pub digest_sha256: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub agent_count: usize,
+    pub pool_id: String,
+    pub measure_count: usize,
+    pub development_only: bool,
+}
+
+impl MaterializedBundle {
+    #[must_use]
+    pub fn preflight_summary(&self) -> PreflightSummary {
+        PreflightSummary {
+            digest_sha256: self.digest_sha256.clone(),
+            provider_id: self.document.provider.provider_id.clone(),
+            model_id: self.document.provider.model_id.clone(),
+            agent_count: self.document.provider.agent_ids.len(),
+            pool_id: self.document.benchmark.pool_id.clone(),
+            measure_count: self.document.benchmark.measure_ids.len(),
+            development_only: self.document.asb_protocol == "asb-control",
+        }
+    }
+}
+
 impl MaterializedBundle {
     pub fn build(
         input: MaterializationInput,

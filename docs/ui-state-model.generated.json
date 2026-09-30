@@ -249,6 +249,11 @@
       "key": "Ctrl-S"
     },
     {
+      "action": "open_preflight",
+      "element": "configuration.preflight",
+      "key": "V"
+    },
+    {
       "action": "edit_configuration",
       "element": "configuration.entry",
       "key": "Character"
@@ -367,6 +372,7 @@
         "configuration.entry",
         "configuration.search",
         "configuration.control_status",
+        "configuration.preflight",
         "navigation"
       ]
     },
@@ -501,6 +507,15 @@
       "role": "status",
       "help_id": "configuration.control_status",
       "focusable": false,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "configuration.preflight",
+      "route": "configuration",
+      "role": "status",
+      "help_id": "configuration.preflight",
+      "focusable": true,
       "hoverable": true,
       "parent": null
     },
@@ -1131,6 +1146,15 @@
         "configuration_draft_changed",
         "focus_reset"
       ]
+    },
+    {
+      "event": "open_preflight",
+      "from": "configuration",
+      "to": "configuration",
+      "effects": [
+        "preflight_opened",
+        "focus_reset"
+      ]
     }
   ],
   "help": [
@@ -1213,6 +1237,10 @@
     {
       "id": "configuration.control_status",
       "text": "Inspect provider model, credential-free authentication status, and recording readiness reported by the authenticated runner."
+    },
+    {
+      "id": "configuration.preflight",
+      "text": "Review the digest, provider, model, agents, benchmark pool, and measures before applying the materialized configuration."
     },
     {
       "id": "run.status",
