@@ -2009,6 +2009,73 @@ mod tests {
     }
 
     #[test]
+    fn live_catalog_keeps_nested_picker_and_generation_bound_handoff() {
+        let mut state = WorkspaceState::default();
+        let snapshot = LiveSnapshot {
+            connection: Connection::Negotiated,
+            runner_instance_id: Some("runner-nested".into()),
+            latest_revision: Some(Revision(9)),
+            capabilities: None,
+            measurement_catalog: Some(MeasurementCatalog {
+                schema_version: 1,
+                catalog_sha256: "live-digest".into(),
+                groups: vec![crate::control_codec::MeasurementGroup {
+                    id: crate::control_codec::MeasurementGroupId::Latency,
+                    label: "Latency".into(),
+                    description: "timing".into(),
+                }],
+                measurements: vec![crate::control_codec::MeasurementDefinition {
+                    id: "latency.first_response".into(),
+                    name: "First response".into(),
+                    description: "time until first response".into(),
+                    group: crate::control_codec::MeasurementGroupId::Latency,
+                    quantity: crate::control_codec::MeasurementQuantity::Time,
+                    unit: "ns".into(),
+                    aggregation: crate::control_codec::MeasurementAggregation::Gauge,
+                    scope: crate::control_codec::MeasurementScope::Attempt,
+                    provenance: crate::control_codec::MeasurementProvenance {
+                        source: crate::control_codec::MeasurementSource::AsbRunnerJournal,
+                        qualification: crate::control_codec::MeasurementQualification::Implemented,
+                    },
+                    source_identity:
+                        crate::control_codec::MeasurementSourceIdentity::ProcfsProcessStat,
+                    resolution_ns: 1,
+                    overhead: crate::control_codec::MeasurementOverhead {
+                        class: crate::control_codec::MeasurementOverheadClass::Low,
+                        minimum_interval_ns: 1,
+                        requires_privilege: false,
+                    },
+                    live: crate::control_codec::MeasurementModeSupport::Supported,
+                    replay: crate::control_codec::MeasurementModeSupport::Supported,
+                    platforms: vec![],
+                    evidence_limits: vec![],
+                }],
+            }),
+            agent_catalog: None,
+            agent_lifecycle: None,
+            provider_catalog: None,
+            configuration: None,
+            auth_status: None,
+            recording_campaign: None,
+            recording_estimate: None,
+            recording_campaign_lifecycle: None,
+            runs: Vec::new(),
+        };
+        state.apply_live_snapshot(snapshot);
+        state.screen = Screen::Measures;
+        state.handle_key(key(KeyCode::Char(' ')));
+        let handoff = state
+            .benchmark_campaign_handoff(Revision(9))
+            .expect("live catalog remains nested and handoffable");
+        assert_eq!(handoff.catalog_digest, "live-digest");
+        assert_eq!(handoff.measure_ids, ["latency.first_response"]);
+        assert_eq!(
+            state.benchmark_campaign_handoff(Revision(8)),
+            Err(crate::selection::SelectionError::StaleCatalog)
+        );
+    }
+
+    #[test]
     fn live_setup_catalog_populates_wizard_choices_without_secrets() {
         let agent = crate::agent_catalog::AgentCatalogEntry {
             agent_id: "codex".into(),
