@@ -23,10 +23,10 @@ and encode requests accepted by the same ASB schema.
 
 This work proves protocol compatibility only. ASB currently returns
 `CapabilityUnavailable` for the catalog and lifecycle control calls, and does
-not expose the top-level `asb tui` router. Therefore `asb tui install` is not
-yet an installable end-to-end workflow. Release qualification remains blocked
-until ASB provides the authenticated control endpoint, the standalone client
-adopts that endpoint, and a clean-machine test exercises catalog, install,
+not expose the top-level `asb tui` router. The standalone TUI now exposes a
+development-only router fixture for local install/status lifecycle work; this is
+not live-provider or production qualification. Live qualification remains
+separate until ASB provides the control endpoint and a clean-machine test exercises catalog, install,
 progress, retry/cancel, status, and removal against the exact revisions above.
 
 The end-to-end test must assert all of the following:
