@@ -84,6 +84,26 @@ pub struct MaterializedBundle {
     pub digest_sha256: String,
 }
 
+/// Canonical, digest-bound handoff consumed by the launch/statistics route.
+/// Downstream code must validate this binding before issuing control I/O.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchBinding {
+    pub materialization_digest_sha256: String,
+    pub provider_catalog_generation: Revision,
+    pub provider_catalog_digest: String,
+    pub benchmark_catalog_generation: Revision,
+    pub benchmark_catalog_digest: String,
+    pub agent_ids: Vec<String>,
+    pub provider_id: String,
+    pub model_id: String,
+    pub pool_id: String,
+    pub group_ids: Vec<String>,
+    pub benchmark_ids: Vec<String>,
+    pub measure_ids: Vec<String>,
+    pub development_only: bool,
+}
+
 /// Renderer-friendly, secret-free preflight projection. It is derived from a
 /// validated bundle and is safe to show before the user applies it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,6 +118,25 @@ pub struct PreflightSummary {
 }
 
 impl MaterializedBundle {
+    #[must_use]
+    pub fn launch_binding(&self) -> LaunchBinding {
+        LaunchBinding {
+            materialization_digest_sha256: self.digest_sha256.clone(),
+            provider_catalog_generation: self.document.provider.catalog_generation,
+            provider_catalog_digest: self.document.provider.catalog_digest.clone(),
+            benchmark_catalog_generation: self.document.benchmark.generation,
+            benchmark_catalog_digest: self.document.benchmark.catalog_digest.clone(),
+            agent_ids: self.document.provider.agent_ids.clone(),
+            provider_id: self.document.provider.provider_id.clone(),
+            model_id: self.document.provider.model_id.clone(),
+            pool_id: self.document.benchmark.pool_id.clone(),
+            group_ids: self.document.benchmark.group_ids.clone(),
+            benchmark_ids: self.document.benchmark.benchmark_ids.clone(),
+            measure_ids: self.document.benchmark.measure_ids.clone(),
+            development_only: self.document.provider.catalog_digest == "0".repeat(64),
+        }
+    }
+
     #[must_use]
     pub fn preflight_summary(&self) -> PreflightSummary {
         PreflightSummary {
@@ -440,6 +479,29 @@ mod tests {
         assert_eq!(one, two);
         assert_eq!(one.digest_sha256.len(), 64);
         assert!(!one.canonical_json.contains("api_key"));
+    }
+
+    #[test]
+    fn launch_binding_is_complete_and_digest_bound() {
+        let (value, draft) = input();
+        let bundle = MaterializedBundle::build(
+            value,
+            &draft,
+            &benchmark_catalog(),
+            Revision(1),
+            Revision(3),
+        )
+        .unwrap();
+        let binding = bundle.launch_binding();
+        assert_eq!(binding.materialization_digest_sha256, bundle.digest_sha256);
+        assert_eq!(binding.provider_catalog_generation, Revision(1));
+        assert_eq!(binding.benchmark_catalog_generation, Revision(3));
+        assert_eq!(binding.agent_ids, vec!["codex"]);
+        assert_eq!(binding.measure_ids, vec!["quality.correctness"]);
+        assert!(binding.development_only);
+        let json = serde_json::to_string(&binding).unwrap();
+        assert!(json.contains("materialization_digest_sha256"));
+        assert!(!json.contains("api_key"));
     }
 
     #[test]
