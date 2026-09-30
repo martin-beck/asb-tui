@@ -590,6 +590,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn empty_store_and_invalid_paths_fail_closed() {
+        let root =
+            std::env::temp_dir().join(format!("asb-tui-materialized-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = MaterializedBundleStore::new(&root);
+        assert_eq!(store.load().unwrap(), None);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".bundle.stage"), b"not-json").unwrap();
+        assert!(store.load().is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_input_is_rejected_before_materialization() {
+        let (mut value, draft) = input();
+        let catalog = benchmark_catalog();
+        value.asb_protocol.clear();
+        assert!(
+            MaterializedBundle::build(value.clone(), &draft, &catalog, Revision(1), Revision(3))
+                .is_err()
+        );
+        let (mut value, draft) = input();
+        value.provider_catalog_digest = "short".into();
+        assert!(
+            MaterializedBundle::build(value.clone(), &draft, &catalog, Revision(1), Revision(3))
+                .is_err()
+        );
+        let (mut value, draft) = input();
+        value.benchmark.measure_ids.clear();
+        assert!(
+            MaterializedBundle::build(value, &draft, &catalog, Revision(1), Revision(3)).is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_store_targets_are_rejected() {
+        let (value, draft) = input();
+        let bundle = MaterializedBundle::build(
+            value,
+            &draft,
+            &benchmark_catalog(),
+            Revision(1),
+            Revision(3),
+        )
+        .unwrap();
+        let root =
+            std::env::temp_dir().join(format!("asb-tui-materialized-link-{}", std::process::id()));
+        let target = root.with_extension("target");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&root);
+        let _ = std::fs::remove_dir_all(&target);
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &root).unwrap();
+        assert!(MaterializedBundleStore::new(&root).apply(&bundle).is_err());
+        let _ = std::fs::remove_file(&root);
+        let _ = std::fs::remove_dir_all(target);
+    }
+
     fn benchmark_catalog() -> BenchmarkCatalog {
         let measure = crate::selection::BenchmarkMeasure::new(
             "quality.correctness",
