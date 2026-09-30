@@ -14,6 +14,7 @@ pub mod broker_adoption;
 pub mod bundle;
 pub mod compatibility;
 pub mod configuration;
+pub mod configuration_materialization;
 pub mod control_client;
 pub mod control_codec;
 pub mod control_transport;
