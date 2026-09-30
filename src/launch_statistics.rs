@@ -724,4 +724,40 @@ mod tests {
         );
         assert!(state.statistics().is_none());
     }
+
+    #[test]
+    fn launch_validation_reports_each_live_catalog_boundary() {
+        let bundle = reviewed_bundle();
+        let mut missing = snapshot();
+        missing.benchmark_catalog = None;
+        assert_eq!(
+            LaunchRequest::new(&bundle, &missing, "launch-key"),
+            Err(LaunchValidationError::BenchmarkCatalogUnavailable)
+        );
+        let mut stale = snapshot();
+        stale.benchmark_catalog.as_mut().unwrap().generation = Revision(8);
+        assert_eq!(
+            LaunchRequest::new(&bundle, &stale, "launch-key"),
+            Err(LaunchValidationError::BenchmarkCatalogGenerationMismatch)
+        );
+        let mut wrong_pool = snapshot();
+        wrong_pool.benchmark_catalog.as_mut().unwrap().pools[0].id = "other".into();
+        assert_eq!(
+            LaunchRequest::new(&bundle, &wrong_pool, "launch-key"),
+            Err(LaunchValidationError::InvalidBenchmarkSelection)
+        );
+    }
+
+    #[test]
+    fn launch_request_rejects_empty_or_invalid_idempotency_keys() {
+        let bundle = reviewed_bundle();
+        assert_eq!(
+            LaunchRequest::new(&bundle, &snapshot(), ""),
+            Err(LaunchValidationError::EmptyId("idempotency key"))
+        );
+        assert!(matches!(
+            LaunchRequest::new(&bundle, &snapshot(), "bad key"),
+            Err(LaunchValidationError::InvalidId("idempotency key"))
+        ));
+    }
 }

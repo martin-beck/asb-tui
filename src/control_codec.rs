@@ -2746,4 +2746,45 @@ mod tests {
         .validate(ControlLimits::default())
         .unwrap();
     }
+
+    #[test]
+    fn benchmark_catalog_digest_and_hierarchy_validation_are_fail_closed() {
+        let mut publication = BenchmarkCatalogPublication {
+            generation: Revision(3),
+            catalog_sha256: String::new(),
+            pools: vec![BenchmarkCatalogPool {
+                id: "pool".into(),
+                groups: vec![BenchmarkCatalogGroup {
+                    id: "group".into(),
+                    benchmarks: vec![BenchmarkCatalogEntry {
+                        id: "benchmark".into(),
+                        measure_ids: vec!["benchmark.measure".into()],
+                    }],
+                }],
+            }],
+        };
+        publication.catalog_sha256 = publication.computed_digest().unwrap();
+        publication.validate().unwrap();
+        assert_eq!(
+            ControlCall::BenchmarkCatalog.minimum_version(),
+            Some(CONTROL_BENCHMARK_CATALOG_V1)
+        );
+        let mut tampered = publication.clone();
+        tampered.pools[0].groups[0].benchmarks[0]
+            .measure_ids
+            .push("other".into());
+        assert_eq!(
+            tampered.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.digest"))
+        );
+        let mut duplicate = publication;
+        duplicate.pools[0].groups[0].benchmarks[0]
+            .measure_ids
+            .push("benchmark.measure".into());
+        duplicate.catalog_sha256 = duplicate.computed_digest().unwrap();
+        assert_eq!(
+            duplicate.validate(),
+            Err(CodecError::InvalidValue("benchmark_catalog.measure"))
+        );
+    }
 }
