@@ -133,6 +133,18 @@ impl Wizard {
             ..Self::default()
         }
     }
+
+    pub fn stable_with_catalog_and_adapter(
+        catalog: WizardCatalog,
+        adapter_catalog: AdapterCatalog,
+    ) -> Self {
+        Self {
+            catalog: Some(WizardCatalogState::new(catalog, OptionKind::Agent)),
+            adapter_selection: Some(SelectionSession::new(adapter_catalog)),
+            mode: WizardMode::Stable,
+            ..Self::default()
+        }
+    }
     #[must_use]
     pub const fn step(&self) -> Step {
         self.step
@@ -140,6 +152,11 @@ impl Wizard {
     #[must_use]
     pub const fn cancelled(&self) -> bool {
         self.cancelled
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> WizardMode {
+        self.mode
     }
 
     /// Return the bounded draft value for the active editable step.
