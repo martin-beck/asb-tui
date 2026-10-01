@@ -315,6 +315,11 @@ impl Wizard {
     }
     pub fn cancel(&mut self) {
         self.cancelled = true;
+        self.step = Step::Agent;
+        self.values = Default::default();
+        if let Some(catalog) = self.catalog.as_mut() {
+            catalog.reset_draft();
+        }
         self.restart_development_credential();
     }
     pub fn complete(&self) -> Result<(), WizardError> {
