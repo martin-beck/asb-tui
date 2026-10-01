@@ -415,6 +415,28 @@ fn validate_socket_ancestors(parent: &Path) -> Result<(), TransportError> {
 }
 
 impl AuthenticatedBrokerSession {
+    #[cfg(test)]
+    pub(crate) fn test_session(stream: UnixStream) -> Result<Self, TransportError> {
+        let uid = rustix::process::geteuid().as_raw();
+        let pid = std::process::id();
+        let mut transport =
+            FramedControlStream::adopt_broker(stream, uid, pid, ControlLimits::default())?;
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_12);
+        Ok(Self {
+            transport,
+            negotiated: crate::control_codec::Negotiated {
+                version: crate::control_codec::V1_12,
+                limits: ControlLimits::default(),
+                runner_instance_id: "runner-1".into(),
+                oldest_revision: Revision(1),
+                latest_revision: Revision(7),
+            },
+            continuity: None,
+            peer: BrokerPeerCredentials { uid, pid },
+        })
+    }
+
     fn ordered_bootstrap_calls(&self) -> Vec<ControlCall> {
         let mut calls = vec![ControlCall::Capabilities];
         if self.negotiated.version >= control_codec::CONTROL_BENCHMARK_CATALOG_V1 {
