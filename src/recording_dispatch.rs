@@ -90,6 +90,9 @@ impl RecordingBackend for AuthenticatedBrokerSession {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordingDispatchState {
+    /// Stable coding-agent adapter identity carried alongside recording and
+    /// replay requests; it is never inferred from a display label.
+    pub adapter_id: Option<String>,
     pub provider_id: String,
     pub model_id: String,
     pub agent_ids: Vec<String>,
@@ -111,6 +114,7 @@ impl RecordingDispatchState {
         workload_scope: WorkloadScope,
     ) -> Result<Self, RecordingModelError> {
         Ok(Self {
+            adapter_id: None,
             provider_id,
             model_id,
             agent_ids,
@@ -128,6 +132,18 @@ impl RecordingDispatchState {
 
     pub fn select_cassette(&mut self, cassette_sha256: impl Into<String>) {
         self.selected_cassette_sha256 = Some(cassette_sha256.into());
+    }
+
+    pub fn bind_adapter_id(&mut self, adapter_id: impl Into<String>) -> Result<(), String> {
+        let adapter_id = adapter_id.into();
+        if crate::adapter_catalog::AdapterCatalog::development()
+            .get(&adapter_id)
+            .is_none()
+        {
+            return Err("unknown coding-agent adapter".into());
+        }
+        self.adapter_id = Some(adapter_id);
+        Ok(())
     }
 }
 

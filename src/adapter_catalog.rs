@@ -21,6 +21,25 @@ pub struct AdapterRecord {
     pub auth_methods: BTreeSet<AuthMethod>,
 }
 
+/// A renderer-neutral choice.  Unavailable choices remain visible so the
+/// wizard can explain why a tuple cannot be selected without asking users to
+/// type opaque provider or model identifiers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdapterOption {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompatibilityOptions {
+    pub adapter_id: String,
+    pub providers: Vec<AdapterOption>,
+    pub models: Vec<AdapterOption>,
+    pub auth_methods: Vec<AdapterOption>,
+}
+
 impl AdapterRecord {
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
@@ -78,6 +97,20 @@ impl AdapterCatalog {
     }
     pub fn records(&self) -> impl Iterator<Item = &AdapterRecord> {
         self.records.values()
+    }
+
+    /// Project all known adapters for a selection widget.  Stable catalogs may
+    /// mark an adapter unavailable while retaining its explanation.
+    pub fn options(&self) -> Vec<AdapterOption> {
+        self.records
+            .values()
+            .map(|record| AdapterOption {
+                id: record.id.clone(),
+                label: record.label.clone(),
+                available: true,
+                reason: None,
+            })
+            .collect()
     }
     pub fn development() -> Self {
         Self::new([
@@ -162,6 +195,83 @@ impl SelectionSession {
     pub fn draft(&self) -> Option<&AdapterSelection> {
         self.draft.as_ref()
     }
+
+    pub fn options(&self) -> Vec<AdapterOption> {
+        self.catalog.options()
+    }
+
+    /// Return the provider/model/auth choices accepted by the selected
+    /// adapter.  The optional current tuple is used only for a human-readable
+    /// disabled reason; it never broadens the authoritative catalog.
+    pub fn compatibility_options(
+        &self,
+        adapter_id: &str,
+    ) -> Result<CompatibilityOptions, SelectionError> {
+        let adapter = self
+            .catalog
+            .get(adapter_id)
+            .ok_or(SelectionError::UnknownAdapter)?;
+        let providers = adapter
+            .providers
+            .keys()
+            .map(|id| AdapterOption {
+                id: id.clone(),
+                label: id.clone(),
+                available: true,
+                reason: None,
+            })
+            .collect();
+        let models = adapter
+            .providers
+            .values()
+            .flat_map(|models| models.iter())
+            .map(|id| AdapterOption {
+                id: id.clone(),
+                label: id.clone(),
+                available: true,
+                reason: None,
+            })
+            .collect();
+        let auth_methods = adapter
+            .auth_methods
+            .iter()
+            .map(|auth| AdapterOption {
+                id: auth_label(*auth).into(),
+                label: auth_label(*auth).into(),
+                available: true,
+                reason: None,
+            })
+            .collect();
+        Ok(CompatibilityOptions {
+            adapter_id: adapter_id.into(),
+            providers,
+            models,
+            auth_methods,
+        })
+    }
+
+    pub fn diagnostics(&self, selection: &AdapterSelection) -> String {
+        match self.validate(selection.clone()) {
+            Ok(()) => "compatible provider, model, and authentication".into(),
+            Err(SelectionError::UnknownAdapter) => {
+                format!("adapter '{}' is unavailable", selection.adapter_id)
+            }
+            Err(SelectionError::UnknownProvider) => format!(
+                "provider '{}' is not supported by {}",
+                selection.provider_id, selection.adapter_id
+            ),
+            Err(SelectionError::UnknownModel) => format!(
+                "model '{}' is not supported for provider '{}'",
+                selection.model_id, selection.provider_id
+            ),
+            Err(SelectionError::UnsupportedAuth) => format!(
+                "authentication '{}' is not supported by {}",
+                auth_label(selection.auth),
+                selection.adapter_id
+            ),
+            Err(SelectionError::InvalidSelection) => "selection is incomplete".into(),
+        }
+    }
     pub fn select(&mut self, selection: AdapterSelection) -> Result<(), SelectionError> {
         let adapter = self
             .catalog
@@ -220,6 +330,14 @@ fn valid_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'))
 }
 
+fn auth_label(auth: AuthMethod) -> &'static str {
+    match auth {
+        AuthMethod::None => "none",
+        AuthMethod::LocalDaemon => "local_daemon",
+        AuthMethod::CredentialReference => "credential_reference",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +354,38 @@ mod tests {
         let c = AdapterCatalog::development();
         assert!(c.get("opencode").is_some());
         assert!(c.get("opendesk").is_some());
+        assert_eq!(
+            c.options()
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["opencode", "opendesk"]
+        );
+    }
+
+    #[test]
+    fn compatibility_projection_and_diagnostics_are_selection_driven() {
+        let session = SelectionSession::new(AdapterCatalog::development());
+        let options = session.compatibility_options("opendesk").unwrap();
+        assert_eq!(options.adapter_id, "opendesk");
+        assert!(options.providers.iter().any(|item| item.id == "local"));
+        assert!(
+            options
+                .auth_methods
+                .iter()
+                .any(|item| item.id == "local_daemon")
+        );
+        let incompatible = AdapterSelection {
+            adapter_id: "opendesk".into(),
+            provider_id: "openrouter".into(),
+            model_id: "openai/gpt-4o".into(),
+            auth: AuthMethod::CredentialReference,
+        };
+        assert!(
+            session
+                .diagnostics(&incompatible)
+                .contains("provider 'openrouter'")
+        );
     }
     #[test]
     fn incompatible_tuples_are_rejected_without_erasing_valid_state() {
