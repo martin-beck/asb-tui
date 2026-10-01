@@ -171,6 +171,17 @@ impl ControlProjection {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_recording_lifecycle_without_benchmark_catalog(
+        lifecycle: RecordingCampaignLifecycle,
+    ) -> Self {
+        Self {
+            connection: Connection::Negotiated,
+            recording_campaign_lifecycle: Some(lifecycle),
+            ..Self::default()
+        }
+    }
+
     /// Seed the projection from the already authenticated negotiation result.
     /// This avoids fabricating a wire response while keeping all subsequent
     /// operations behind the same negotiated connection gate.

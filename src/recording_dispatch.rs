@@ -107,6 +107,7 @@ pub struct RecordingDispatchState {
     /// Number of successful bounded progress observations for this campaign.
     /// A frontend must not turn a stalled runner into an unbounded poll loop.
     progress_requests: u16,
+    progress_campaign_id: Option<String>,
 }
 
 impl RecordingDispatchState {
@@ -126,6 +127,7 @@ impl RecordingDispatchState {
             authenticated_catalog: None,
             selected_cassette_sha256: None,
             progress_requests: 0,
+            progress_campaign_id: None,
         })
     }
 
@@ -264,9 +266,10 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
     }
     let snapshot = projection.snapshot();
     let mut model = model_for_snapshot(state, &snapshot)?;
-    let workloads = workload_ids(&state.workload_scope, snapshot.benchmark_catalog.as_ref())?;
     match action {
         UiAction::EstimateRecording => {
+            let workloads =
+                workload_ids(&state.workload_scope, snapshot.benchmark_catalog.as_ref())?;
             model.request(RecordingAction::Estimate)?;
             session
                 .estimate_recording_campaign(
@@ -280,6 +283,8 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
             Ok(RecordingDispatchOutcome::EstimateRequested)
         }
         UiAction::PlanRecording => {
+            let workloads =
+                workload_ids(&state.workload_scope, snapshot.benchmark_catalog.as_ref())?;
             model.request(RecordingAction::Plan)?;
             session
                 .plan_recording_campaign(
@@ -307,13 +312,23 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
             Ok(RecordingDispatchOutcome::CaptureRequested)
         }
         UiAction::ProgressRecording => {
-            if state.progress_requests >= MAX_PROGRESS_REQUESTS {
-                return Err(RecordingDispatchError::ProgressLimitReached);
-            }
             model.request(RecordingAction::Progress)?;
             let campaign_id = campaign_id(&snapshot)?;
-            session.progress_recording_campaign(projection, campaign_id)?;
-            state.progress_requests = state.progress_requests.saturating_add(1);
+            let requests = state
+                .progress_campaign_id
+                .as_deref()
+                .filter(|known| *known == campaign_id)
+                .map_or(0, |_| state.progress_requests);
+            if requests >= MAX_PROGRESS_REQUESTS {
+                return Err(RecordingDispatchError::ProgressLimitReached);
+            }
+            session.progress_recording_campaign(projection, campaign_id.clone())?;
+            if state.progress_campaign_id.as_deref() != Some(campaign_id.as_str()) {
+                state.progress_campaign_id = Some(campaign_id);
+                state.progress_requests = 1;
+            } else {
+                state.progress_requests = requests.saturating_add(1);
+            }
             Ok(RecordingDispatchOutcome::ProgressRequested)
         }
         UiAction::CancelRecording => {
@@ -458,7 +473,7 @@ mod tests {
     }
 
     fn projection(phase: &str, covered: u16, offline_ready: bool) -> ControlProjection {
-        ControlProjection::test_recording_lifecycle(RecordingCampaignLifecycle {
+        lifecycle_projection(RecordingCampaignLifecycle {
             runner_instance_id: "runner".into(),
             generation: Revision(2),
             campaign_id: "campaign".into(),
@@ -472,6 +487,33 @@ mod tests {
             offline_ready,
             unavailable_reason: None,
         })
+    }
+
+    fn lifecycle_projection(lifecycle: RecordingCampaignLifecycle) -> ControlProjection {
+        ControlProjection::test_recording_lifecycle(lifecycle)
+    }
+
+    fn projection_without_catalog(
+        phase: &str,
+        covered: u16,
+        offline_ready: bool,
+    ) -> ControlProjection {
+        ControlProjection::test_recording_lifecycle_without_benchmark_catalog(
+            RecordingCampaignLifecycle {
+                runner_instance_id: "runner".into(),
+                generation: Revision(2),
+                campaign_id: "campaign".into(),
+                provider_id: "provider".into(),
+                model_id: "model".into(),
+                agent_ids: vec!["agent".into()],
+                workload_ids: vec!["workload".into()],
+                tuple_count: 2,
+                covered_tuple_count: covered,
+                state: phase.into(),
+                offline_ready,
+                unavailable_reason: None,
+            },
+        )
     }
 
     #[test]
@@ -735,5 +777,71 @@ mod tests {
         assert_eq!(state.adapter_id.as_deref(), Some("opendesk"));
         assert!(state.bind_adapter_id("unknown").is_err());
         assert_eq!(state.adapter_id.as_deref(), Some("opendesk"));
+    }
+
+    #[test]
+    fn lifecycle_actions_do_not_require_workload_catalog() {
+        let mut backend = FakeBackend::default();
+        let mut state = state(WorkloadScope::All);
+        let mut recording = projection_without_catalog("recording", 0, false);
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ProgressRecording,
+                &mut state,
+                &mut backend,
+                &mut recording,
+                "p".into()
+            )
+            .unwrap(),
+            RecordingDispatchOutcome::ProgressRequested
+        );
+        let mut planned = projection_without_catalog("planned", 0, false);
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::CancelRecording,
+                &mut state,
+                &mut backend,
+                &mut planned,
+                "c".into()
+            )
+            .unwrap(),
+            RecordingDispatchOutcome::CancelRequested
+        );
+    }
+
+    #[test]
+    fn progress_limit_is_per_campaign_and_failed_polls_do_not_consume_budget() {
+        let mut backend = FakeBackend::default();
+        let mut state = state(WorkloadScope::Selected(vec!["workload".into()]));
+        state.progress_campaign_id = Some("campaign".into());
+        state.progress_requests = MAX_PROGRESS_REQUESTS;
+        let mut exhausted = projection("recording", 0, false);
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ProgressRecording,
+                &mut state,
+                &mut backend,
+                &mut exhausted,
+                "p".into()
+            ),
+            Err(RecordingDispatchError::ProgressLimitReached)
+        );
+        let mut next_campaign = projection("recording", 0, false);
+        // A fresh campaign identity resets the bounded poll budget.
+        let snapshot = next_campaign.snapshot();
+        let mut lifecycle = snapshot.recording_campaign_lifecycle.unwrap();
+        lifecycle.campaign_id = "campaign-next".into();
+        next_campaign = ControlProjection::test_recording_lifecycle(lifecycle);
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ProgressRecording,
+                &mut state,
+                &mut backend,
+                &mut next_campaign,
+                "p".into()
+            ),
+            Ok(RecordingDispatchOutcome::ProgressRequested)
+        );
+        assert_eq!(state.progress_requests(), 1);
     }
 }
