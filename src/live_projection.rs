@@ -130,6 +130,20 @@ impl ControlProjection {
         Self {
             connection: Connection::Negotiated,
             recording_campaign_lifecycle: Some(lifecycle),
+            benchmark_catalog: Some(LiveBenchmarkCatalog {
+                generation: Revision(2),
+                catalog_sha256: "a".repeat(64),
+                pools: vec![LiveBenchmarkPool {
+                    id: "pool".into(),
+                    groups: vec![LiveBenchmarkGroup {
+                        id: "group".into(),
+                        benchmarks: vec![LiveBenchmarkEntry {
+                            id: "workload".into(),
+                            measure_ids: vec!["measure".into()],
+                        }],
+                    }],
+                }],
+            }),
             ..Self::default()
         }
     }
@@ -139,6 +153,20 @@ impl ControlProjection {
         Self {
             connection: Connection::Negotiated,
             recording_campaign: Some(plan),
+            benchmark_catalog: Some(LiveBenchmarkCatalog {
+                generation: Revision(2),
+                catalog_sha256: "a".repeat(64),
+                pools: vec![LiveBenchmarkPool {
+                    id: "pool".into(),
+                    groups: vec![LiveBenchmarkGroup {
+                        id: "group".into(),
+                        benchmarks: vec![LiveBenchmarkEntry {
+                            id: "workload".into(),
+                            measure_ids: vec!["measure".into()],
+                        }],
+                    }],
+                }],
+            }),
             ..Self::default()
         }
     }

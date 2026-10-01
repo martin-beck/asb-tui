@@ -104,6 +104,9 @@ pub struct RecordingDispatchState {
     /// Explicit cassette selected by the user from the authenticated catalog.
     /// A replay action never guesses or falls back to the first entry.
     pub selected_cassette_sha256: Option<String>,
+    /// Number of successful bounded progress observations for this campaign.
+    /// A frontend must not turn a stalled runner into an unbounded poll loop.
+    progress_requests: u16,
 }
 
 impl RecordingDispatchState {
@@ -122,12 +125,18 @@ impl RecordingDispatchState {
             capture_armed: false,
             authenticated_catalog: None,
             selected_cassette_sha256: None,
+            progress_requests: 0,
         })
     }
 
     #[must_use]
     pub const fn capture_armed(&self) -> bool {
         self.capture_armed
+    }
+
+    #[must_use]
+    pub const fn progress_requests(&self) -> u16 {
+        self.progress_requests
     }
 
     pub fn select_cassette(&mut self, cassette_sha256: impl Into<String>) {
@@ -168,6 +177,8 @@ pub enum RecordingDispatchError {
     Transport(TransportError),
     MissingCampaign,
     InvalidWorkloadScope,
+    WorkloadCatalogUnavailable,
+    ProgressLimitReached,
 }
 
 impl From<RecordingModelError> for RecordingDispatchError {
@@ -182,10 +193,35 @@ impl From<TransportError> for RecordingDispatchError {
     }
 }
 
-fn workload_ids(scope: &WorkloadScope) -> Vec<String> {
+const MAX_PROGRESS_REQUESTS: u16 = 256;
+
+/// Expand the explicit `All` marker against the authenticated benchmark
+/// catalog.  An empty vector is never a valid wire representation of `All`:
+/// the control contract treats it as an empty campaign.
+fn workload_ids(
+    scope: &WorkloadScope,
+    catalog: Option<&crate::live_projection::LiveBenchmarkCatalog>,
+) -> Result<Vec<String>, RecordingDispatchError> {
     match scope {
-        WorkloadScope::All => Vec::new(),
-        WorkloadScope::Selected(ids) => ids.clone(),
+        WorkloadScope::Selected(ids) => Ok(ids.clone()),
+        WorkloadScope::All => {
+            let catalog = catalog.ok_or(RecordingDispatchError::WorkloadCatalogUnavailable)?;
+            let mut ids = Vec::new();
+            for pool in &catalog.pools {
+                for group in &pool.groups {
+                    for benchmark in &group.benchmarks {
+                        if !ids.iter().any(|id| id == &benchmark.id) {
+                            ids.push(benchmark.id.clone());
+                        }
+                    }
+                }
+            }
+            if ids.is_empty() || ids.len() > crate::recording_campaign::MAX_WORKLOADS {
+                return Err(RecordingDispatchError::WorkloadCatalogUnavailable);
+            }
+            ids.sort();
+            Ok(ids)
+        }
     }
 }
 
@@ -228,7 +264,7 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
     }
     let snapshot = projection.snapshot();
     let mut model = model_for_snapshot(state, &snapshot)?;
-    let workloads = workload_ids(&state.workload_scope);
+    let workloads = workload_ids(&state.workload_scope, snapshot.benchmark_catalog.as_ref())?;
     match action {
         UiAction::EstimateRecording => {
             model.request(RecordingAction::Estimate)?;
@@ -271,9 +307,13 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
             Ok(RecordingDispatchOutcome::CaptureRequested)
         }
         UiAction::ProgressRecording => {
+            if state.progress_requests >= MAX_PROGRESS_REQUESTS {
+                return Err(RecordingDispatchError::ProgressLimitReached);
+            }
             model.request(RecordingAction::Progress)?;
             let campaign_id = campaign_id(&snapshot)?;
             session.progress_recording_campaign(projection, campaign_id)?;
+            state.progress_requests = state.progress_requests.saturating_add(1);
             Ok(RecordingDispatchOutcome::ProgressRequested)
         }
         UiAction::CancelRecording => {
@@ -670,7 +710,15 @@ mod tests {
             UiAction::ActivateOfflineDefault.id(),
             "activate_offline_default"
         );
-        assert_eq!(workload_ids(&WorkloadScope::All), Vec::<String>::new());
+        assert_eq!(
+            workload_ids(&WorkloadScope::All, None),
+            Err(RecordingDispatchError::WorkloadCatalogUnavailable)
+        );
+        let catalog = projection("planned", 0, false).snapshot().benchmark_catalog;
+        assert_eq!(
+            workload_ids(&WorkloadScope::All, catalog.as_ref()).unwrap(),
+            vec!["workload"]
+        );
         assert!(!state(WorkloadScope::All).capture_armed());
         assert_eq!(
             UiAction::RefreshProviderCatalog,
