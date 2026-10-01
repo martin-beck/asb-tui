@@ -27,6 +27,7 @@
     "live_setup_catalog",
     "development_catalog_fallback",
     "wizard_mode",
+    "wizard_adapter",
     "configuration",
     "auth_status",
     "auth_unavailable",
