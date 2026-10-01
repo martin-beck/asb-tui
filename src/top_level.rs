@@ -24,7 +24,7 @@ pub enum TuiOperation {
 }
 
 impl TuiOperation {
-    const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Install => "install",
             Self::Upgrade => "upgrade",
@@ -41,6 +41,7 @@ pub enum TuiCommand {
     Lifecycle {
         operation: TuiOperation,
         development: bool,
+        channel_dev: bool,
     },
 }
 
@@ -80,11 +81,19 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
         _ => return Err(ParseError::Usage),
     };
     let mut development = false;
+    let mut channel_dev = false;
     let mut format_json = false;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--development" if !development => development = true,
+            "--channel"
+                if !channel_dev && arguments.get(index + 1).map(String::as_str) == Some("dev") =>
+            {
+                channel_dev = true;
+                development = true;
+                index += 1;
+            }
             "--production" => return Err(ParseError::ProductionMarkerUnsupported),
             "--format"
                 if !format_json && arguments.get(index + 1).map(String::as_str) == Some("json") =>
@@ -106,6 +115,7 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
     Ok(TuiCommand::Lifecycle {
         operation,
         development,
+        channel_dev,
     })
 }
 
@@ -142,7 +152,7 @@ pub fn execute_lifecycle(operation: TuiOperation, mut input: impl Read) -> Lifec
 }
 
 pub fn usage() -> &'static str {
-    "usage: asb-tui tui | asb-tui tui <install|upgrade|status|launch|remove> --development --format json"
+    "usage: asb-tui tui | asb-tui tui <install|upgrade|status|launch|remove> --channel dev --format json | ... --development --format json"
 }
 
 #[cfg(test)]
@@ -168,7 +178,8 @@ mod tests {
             parse(&args(&["status", "--development", "--format", "json"])),
             Ok(TuiCommand::Lifecycle {
                 operation: TuiOperation::Status,
-                development: true
+                development: true,
+                channel_dev: false,
             })
         );
     }
@@ -178,6 +189,28 @@ mod tests {
         assert_eq!(
             parse(&args(&["status", "--production", "--format", "json"])),
             Err(ParseError::ProductionMarkerUnsupported)
+        );
+    }
+
+    #[test]
+    fn dev_channel_is_an_explicit_development_profile() {
+        assert_eq!(
+            parse(&args(&["install", "--channel", "dev", "--format", "json"])),
+            Ok(TuiCommand::Lifecycle {
+                operation: TuiOperation::Install,
+                development: true,
+                channel_dev: true,
+            })
+        );
+        assert_eq!(
+            parse(&args(&[
+                "install",
+                "--channel",
+                "stable",
+                "--format",
+                "json"
+            ])),
+            Err(ParseError::Usage)
         );
     }
 

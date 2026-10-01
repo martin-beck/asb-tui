@@ -22,6 +22,24 @@ asb-tui tui launch --development --format json < launch-request.json
 asb-tui tui remove --development --format json < remove-request.json
 ```
 
+For a local, credential-free development materialization, the same lifecycle
+can be run without an envelope:
+
+```console
+asb-tui tui install --channel dev --format json
+asb-tui tui status --channel dev --format json
+asb-tui tui launch --channel dev --format json
+asb-tui tui upgrade --channel dev --format json
+asb-tui tui remove --channel dev --format json
+```
+
+This copies the current executable into an owner-private temporary root and
+writes `provenance.json`; `ASB_TUI_DEV_INSTALL_ROOT` may select an existing
+owner-private absolute root. The response is always classified
+`development_only`, and launch only reports that the materialized executable
+is verified and ready. It does not claim a signed release or production
+authentication.
+
 The parent ASB command may invoke the same target as `asb tui <operation>`.
 The request remains the v1 development-router envelope from
 `protocol/v1/lifecycle-request.schema.json`; the selected operation and the
