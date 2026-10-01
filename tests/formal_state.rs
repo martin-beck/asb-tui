@@ -223,6 +223,11 @@ fn recording_dispatch_actions_are_declared_in_the_formal_model() {
             .iter()
             .any(|field| field == "recording_dispatch_action")
     );
+    assert!(
+        fields
+            .iter()
+            .any(|field| field == "recording_progress_requests")
+    );
     let bindings = model["bindings"].as_array().unwrap();
     for action in [
         "refresh_provider_catalog",
