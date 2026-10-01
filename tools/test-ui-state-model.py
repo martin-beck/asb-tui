@@ -168,6 +168,12 @@ class UiStateModelTests(unittest.TestCase):
         self.assertIn("auth_status_after_enrollment", self.model)
         self.assertIn("runner-authored status", self.model["auth_status_after_enrollment"])
 
+    def test_wizard_mode_binds_adapter_auth_boundary(self):
+        self.assertIn("wizard_mode", self.model["state_fields"])
+        contract = self.model["catalog_contract"]
+        self.assertIn("stable-mode fail-closed", contract)
+        self.assertIn("development-mode warning-only", contract)
+
     def test_change_ownership_requires_model_and_focused_tests(self):
         self.assertTrue({"src/startup.rs", "src/wizard.rs"}.issubset(MODULE.UI_OWNERS))
         for owner in MODULE.UI_OWNERS:
