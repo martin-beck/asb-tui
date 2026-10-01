@@ -36,6 +36,7 @@
     {"path":"src/delegated.rs","reason":"Lifecycle delegation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/top_level.rs","reason":"Bounded standalone target for the parent asb tui lifecycle router; it parses command markers and delegates typed requests without owning UI state or rendering.","expires":"2027-12-31"},
     {"path":"src/development_router.rs","reason":"Development-only channel and current-main identity envelope, stale-identity fencing, and fixture dispatch; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/development_broker.rs","reason":"Development-only broker descriptor validation and bounded entrypoint dispatch; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/development_onboarding.rs","reason":"Development-only bundle/broker onboarding fixture evaluation and one-choice recovery projection; it owns no rendering or live broker authority.","expires":"2027-12-31"},
     {"path":"src/development_journey.rs","reason":"Development-only bounded journey fixture evaluation with mismatch recovery; it performs no network, credential, provider, ASB, or rendering work.","expires":"2027-12-31"},
     {"path":"src/identity_adapter.rs","reason":"Identity validation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
