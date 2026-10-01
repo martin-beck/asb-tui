@@ -176,6 +176,20 @@ impl WizardCatalogState {
         self.query.clear();
         self.cursor = 0;
     }
+
+    /// Discard an abandoned draft while retaining the authoritative choices.
+    /// A later setup/reconfigure flow must not inherit hidden selections from
+    /// a canceled wizard.
+    pub fn reset_draft(&mut self) {
+        self.query.clear();
+        self.cursor = 0;
+        self.selected_agents.clear();
+        self.all_agents = false;
+        self.selected_agent = None;
+        self.selected_provider = None;
+        self.selected_model = None;
+        self.kind = OptionKind::Agent;
+    }
     #[must_use]
     pub const fn cursor(&self) -> usize {
         self.cursor

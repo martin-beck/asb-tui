@@ -367,6 +367,15 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["route_restored", "focus_reset"].as_slice()
         } else if transition.event == "open_help" {
             ["return_route_saved", "route_changed", "focus_reset"].as_slice()
+        } else if transition.event == "cancel_wizard" {
+            [
+                "route_changed",
+                "focus_reset",
+                "wizard_draft_cleared",
+                "wizard_catalog_reset",
+                "development_auth_restarted",
+            ]
+            .as_slice()
         } else if matches!(
             transition.event.as_str(),
             "start_run" | "cancel_run" | "reconnect"

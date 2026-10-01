@@ -366,6 +366,157 @@ fn wizard_uses_catalog_for_agent_provider_and_model_steps() {
 }
 
 #[test]
+fn authenticated_projection_drives_repeatable_setup_without_secret_defaults() {
+    use asb_tui::{
+        agent_catalog::{
+            AgentAvailability, AgentCatalog, AgentCatalogEntry, AgentPackage, AgentProvenance,
+            AgentSigner, AgentTarget,
+        },
+        control_codec::{
+            ConfigurationSnapshot, ProviderAuthMethod, ProviderAvailability, ProviderCatalog,
+            ProviderCatalogEntry, ProviderModel, Revision,
+        },
+        live_projection::{Connection, LiveSnapshot},
+        wizard::Step,
+    };
+
+    let target = AgentTarget {
+        operating_system: "linux".into(),
+        architecture: "x86_64".into(),
+        libc: "glibc".into(),
+        libc_version: "2.35".into(),
+    };
+    let agent_catalog = AgentCatalog {
+        runner_instance_id: "runner-setup".into(),
+        generation: 4,
+        catalog_sha256: "a".repeat(64),
+        target: target.clone(),
+        agents: vec![AgentCatalogEntry {
+            agent_id: "agent-a".into(),
+            target: target.clone(),
+            package: Some(AgentPackage {
+                package_id: "agent-a-package".into(),
+                version: "1.0.0".into(),
+                sha256: "b".repeat(64),
+                signature_sha256: "c".repeat(64),
+                signer: AgentSigner {
+                    key_id: "release-key".into(),
+                    principal: "asb-release".into(),
+                },
+            }),
+            provenance: Some(AgentProvenance {
+                source_revision: "d".repeat(40),
+                manifest_sha256: "e".repeat(64),
+                sbom_sha256: "f".repeat(64),
+                license_ref: "MIT".into(),
+            }),
+            capabilities: vec!["benchmark".into()],
+            availability: AgentAvailability::Available,
+        }],
+        refreshed: true,
+    };
+    let provider_catalog = ProviderCatalog {
+        runner_instance_id: "runner-setup".into(),
+        generation: Revision(8),
+        catalog_sha256: "1".repeat(64),
+        providers: vec![ProviderCatalogEntry {
+            provider_id: "provider-a".into(),
+            display_name: "Provider A".into(),
+            auth_methods: vec![ProviderAuthMethod::CredentialReference],
+            availability: ProviderAvailability::Available,
+            models: vec![ProviderModel {
+                model_id: "model-a".into(),
+                revision: "r1".into(),
+                availability: ProviderAvailability::Available,
+            }],
+        }],
+        refreshed: true,
+    };
+    let mut state = WorkspaceState::default();
+    state.apply_live_snapshot(LiveSnapshot {
+        connection: Connection::Negotiated,
+        runner_instance_id: Some("runner-setup".into()),
+        latest_revision: Some(Revision(8)),
+        capabilities: None,
+        measurement_catalog: None,
+        benchmark_catalog: None,
+        agent_catalog: Some(agent_catalog),
+        agent_lifecycle: None,
+        provider_catalog: Some(provider_catalog),
+        configuration: Some(ConfigurationSnapshot {
+            runner_instance_id: "runner-setup".into(),
+            generation: Revision(3),
+            configured: false,
+            agent_ids: Vec::new(),
+            provider_id: None,
+            model_id: None,
+            auth_method: None,
+            credential_reference_sha256: None,
+        }),
+        auth_status: None,
+        auth_unavailable: true,
+        auth_development_only: true,
+        auth_unavailable_reason: Some("development credentials are unavailable".into()),
+        recording_campaign: None,
+        recording_estimate: None,
+        recording_campaign_lifecycle: None,
+        runs: Vec::new(),
+    });
+
+    state.open_wizard();
+    assert_eq!(state.wizard.step(), Step::Agent);
+    state.wizard.select_all_agents().unwrap();
+    state.wizard.advance().unwrap();
+    state.wizard.select_catalog_cursor().unwrap();
+    state.wizard.advance().unwrap();
+    state.wizard.select_catalog_cursor().unwrap();
+    state.wizard.advance().unwrap();
+    state.wizard.set_value("shared defaults").unwrap();
+    state.wizard.advance().unwrap();
+    state
+        .wizard
+        .set_value(format!("credential_reference:{}", "2".repeat(64)))
+        .unwrap();
+    let draft = WorkspaceState::wizard_provider_setup_draft(
+        &state.wizard.values(),
+        state.live.as_ref().unwrap().agent_catalog.as_ref().unwrap(),
+        state
+            .live
+            .as_ref()
+            .unwrap()
+            .provider_catalog
+            .as_ref()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(draft.selection().provider_id, "provider-a");
+    assert_eq!(draft.selection().model_id, "model-a");
+    assert_eq!(
+        draft.selection().auth_method,
+        ProviderAuthMethod::CredentialReference
+    );
+    assert!(draft.selection().credential_reference_sha256.is_some());
+    assert!(
+        !state
+            .wizard
+            .values()
+            .iter()
+            .any(|value| value.contains("api_key"))
+    );
+    assert!(state.live.as_ref().unwrap().auth_development_only);
+    assert!(state.live.as_ref().unwrap().auth_unavailable);
+
+    // A canceled draft is discarded; reopening starts from the authoritative
+    // catalog again, so a prior provider/model/default cannot leak into a
+    // repeat configuration flow.
+    state.wizard.cancel();
+    state.open_wizard();
+    let empty: [String; 7] = Default::default();
+    assert_eq!(state.wizard.values(), empty);
+    assert_eq!(state.wizard.step(), Step::Agent);
+}
+
+#[test]
 fn wizard_catalog_filters_moves_and_projects_selection_into_the_draft() {
     let catalog = WizardCatalog::new(
         vec![

@@ -315,6 +315,11 @@ impl Wizard {
     }
     pub fn cancel(&mut self) {
         self.cancelled = true;
+        self.step = Step::Agent;
+        self.values = Default::default();
+        if let Some(catalog) = self.catalog.as_mut() {
+            catalog.reset_draft();
+        }
         self.restart_development_credential();
     }
     pub fn complete(&self) -> Result<(), WizardError> {
@@ -432,6 +437,14 @@ impl WizardFormalState {
             | "wizard_development_select_fixture"
             | "wizard_development_select_none"
             | "wizard_development_restart" => ["wizard_auth_changed", "focus_reset"].as_slice(),
+            "cancel_wizard" => [
+                "route_changed",
+                "focus_reset",
+                "wizard_draft_cleared",
+                "wizard_catalog_reset",
+                "development_auth_restarted",
+            ]
+            .as_slice(),
             _ => ["route_changed", "focus_reset"].as_slice(),
         };
         if transition

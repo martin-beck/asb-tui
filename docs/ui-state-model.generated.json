@@ -950,7 +950,10 @@
       "to": "landing",
       "effects": [
         "route_changed",
-        "focus_reset"
+        "focus_reset",
+        "wizard_draft_cleared",
+        "wizard_catalog_reset",
+        "development_auth_restarted"
       ]
     },
     {
