@@ -152,6 +152,10 @@ fn usage() -> ExitCode {
 }
 
 fn launch_tui_command(arguments: &[String]) -> ExitCode {
+    let json_output = arguments.iter().any(|argument| argument == "--json")
+        || arguments
+            .windows(2)
+            .any(|pair| pair == ["--format", "json"]);
     let command = match top_level::parse(arguments) {
         Ok(command) => command,
         Err(error) => {
@@ -170,10 +174,7 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
             if let Some(code) = selection.warning {
                 let response = asb_tui::delegated::LifecycleResponse::result(false, code)
                     .with_channel(selection.requested.as_str());
-                println!(
-                    "{}",
-                    serde_json::to_string(&response).expect("serialize channel selection response")
-                );
+                print_lifecycle_response(&response, json_output);
                 return ExitCode::from(3);
             }
             if let TuiCommand::Lifecycle {
@@ -181,23 +182,60 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
             } = command
             {
                 let response = asb_tui::development_lifecycle::execute(operation.as_str());
-                println!(
-                    "{}",
-                    serde_json::to_string(&response)
-                        .expect("serialize development lifecycle response")
-                );
+                print_development_response(&response, json_output);
                 ExitCode::from(if response.ok { 0 } else { 3 })
             } else {
                 let response =
                     top_level::execute_lifecycle(operation, channel, std::io::stdin().lock());
-                println!(
-                    "{}",
-                    serde_json::to_string(&response).expect("serialize lifecycle response")
-                );
+                print_lifecycle_response(&response, json_output);
                 ExitCode::from(if response.ok { 0 } else { 3 })
             }
         }
     }
+}
+
+fn print_lifecycle_response(response: &asb_tui::delegated::LifecycleResponse, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(response).expect("serialize lifecycle response")
+        );
+        return;
+    }
+    println!(
+        "ASB TUI {}: {} ({})",
+        response.channel,
+        if response.ok { "ok" } else { "failed" },
+        response.code
+    );
+}
+
+fn print_development_response(response: &asb_tui::development_lifecycle::Response, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(response).expect("serialize development lifecycle response")
+        );
+        return;
+    }
+    println!(
+        "ASB TUI development {}: {} ({})",
+        response.channel,
+        if response.ok { "ok" } else { "failed" },
+        response.code
+    );
+    if let Some(source) = response.source_commit.as_deref() {
+        println!("source commit: {source}");
+    }
+    if let Some(tree) = response.source_tree.as_deref() {
+        println!("source tree: {tree}");
+    }
+    if let Some(binary) = response.executable_sha256.as_deref() {
+        println!("executable sha256: {binary}");
+    }
+    println!(
+        "warning: development authentication, signatures, and key management are non-blocking"
+    );
 }
 
 /// Consume the broker's inherited fd-0 handoff without entering the UI.

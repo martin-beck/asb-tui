@@ -33,6 +33,20 @@ asb-tui tui upgrade --channel dev --format json
 asb-tui tui remove --channel dev --format json
 ```
 
+Lifecycle commands default to a human-readable transcript. Add `--json` (or
+`--format json`) when a machine-readable response is required:
+
+```console
+asb-tui tui install --channel dev
+asb-tui tui status --channel dev --json
+asb-tui tui launch --channel dev
+```
+
+Development output includes the exact source commit/tree and executable
+SHA-256 when an installation is present. Authentication, signatures, and key
+management are explicitly warning-only in this channel; they never turn a
+development install into a production-trusted release.
+
 The development channel is the only currently available channel. A fresh
 selection defaults to `dev`; the selected channel is projected in every
 delegated lifecycle response, including install, status, launch, upgrade

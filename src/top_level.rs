@@ -117,16 +117,13 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
                 format_json = true;
                 index += 1;
             }
+            "--json" if !format_json => format_json = true,
             _ => return Err(ParseError::Usage),
         }
         index += 1;
     }
-    if !format_json || !development {
-        return Err(if !development {
-            ParseError::DevelopmentMarkerRequired
-        } else {
-            ParseError::Usage
-        });
+    if !development {
+        return Err(ParseError::DevelopmentMarkerRequired);
     }
     let selection = ChannelSelection::for_request(ReleaseChannel::Dev, requested_channel);
     Ok(TuiCommand::Lifecycle {
@@ -182,7 +179,7 @@ pub fn execute_lifecycle(
 }
 
 pub fn usage() -> &'static str {
-    "usage: asb-tui tui | asb-tui tui <install|upgrade|status|launch|remove> --channel dev --format json | ... --development --format json"
+    "usage: asb-tui tui | asb-tui tui <install|upgrade|status|launch|remove> [--channel dev|--development] [--json|--format json]"
 }
 
 #[cfg(test)]
@@ -258,6 +255,18 @@ mod tests {
                 ),
             })
         );
+    }
+
+    #[test]
+    fn development_lifecycle_defaults_to_human_output_and_accepts_json_alias() {
+        assert!(matches!(
+            parse(&args(&["status", "--channel", "dev"])),
+            Ok(TuiCommand::Lifecycle { .. })
+        ));
+        assert!(matches!(
+            parse(&args(&["status", "--development", "--json"])),
+            Ok(TuiCommand::Lifecycle { .. })
+        ));
     }
 
     #[test]
