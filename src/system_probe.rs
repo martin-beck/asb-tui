@@ -490,13 +490,23 @@ fn run_resize_probe(script: &str, change_size: bool) -> ResizeProbeResult {
     // Command retains its configured slave fd after spawning; close that parent-side copy so
     // EOF/EIO after helper exit is observable and bounded.
     drop(command);
+    let started = Instant::now();
+    let (winch_sender, winch_receiver) = mpsc::sync_channel(1);
+    // The shell can report READY before the terminal driver has completed the
+    // foreground-process-group handoff.  A single resize at that point can be
+    // lost.  The reader acknowledges the actual WINCH marker so the parent can
+    // retry the bounded resize until the child has demonstrably handled it.
+    // This keeps the fixture deterministic without weakening the event check.
     let mut output_reader = reader;
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+    let (descendant_sender, descendant_receiver) = mpsc::sync_channel(1);
     let (output_sender, output_receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut bytes = Vec::new();
         let mut byte = [0_u8; 1];
         let mut sent_ready = false;
+        let mut sent_winch = false;
+        let mut sent_descendant = false;
         while bytes.len() <= COMMAND_LIMIT {
             match output_reader.read(&mut byte) {
                 Ok(0) => break,
@@ -506,14 +516,41 @@ fn run_resize_probe(script: &str, change_size: bool) -> ResizeProbeResult {
                         let _ = ready_sender.send(());
                         sent_ready = true;
                     }
+                    if !sent_winch && bytes.ends_with(b"WINCH\r\n") {
+                        let _ = winch_sender.send(());
+                        sent_winch = true;
+                    }
+                    if !sent_descendant
+                        && bytes
+                            .windows(b"DESCENDANT:".len())
+                            .any(|window| window == b"DESCENDANT:")
+                    {
+                        let _ = descendant_sender.send(());
+                        sent_descendant = true;
+                    }
                 }
                 Err(_) => break,
             }
         }
         let _ = output_sender.send(bytes);
     });
-    let started = Instant::now();
     if ready_receiver.recv_timeout(COMMAND_TIMEOUT / 2).is_err() {
+        terminate_group(&mut child);
+        let output = output_receiver
+            .recv_timeout(COMMAND_TIMEOUT / 2)
+            .unwrap_or_default();
+        return ResizeProbeResult {
+            verified: false,
+            output,
+        };
+    }
+    // The descendant helper emits its PID before READY, but wait for that
+    // marker explicitly so cleanup can never race the helper's publication.
+    if script.contains("DESCENDANT:")
+        && descendant_receiver
+            .recv_timeout(COMMAND_TIMEOUT / 4)
+            .is_err()
+    {
         terminate_group(&mut child);
         let output = output_receiver
             .recv_timeout(COMMAND_TIMEOUT / 2)
@@ -529,9 +566,32 @@ fn run_resize_probe(script: &str, change_size: bool) -> ResizeProbeResult {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    if change_size && termios::tcsetwinsize(&master, resized).is_err() {
-        terminate_group(&mut child);
-        return failed();
+    if change_size {
+        let resize_deadline = started + COMMAND_TIMEOUT / 2;
+        let mut observed = false;
+        while Instant::now() < resize_deadline {
+            if termios::tcsetwinsize(&master, resized).is_err() {
+                terminate_group(&mut child);
+                return failed();
+            }
+            if winch_receiver
+                .recv_timeout(Duration::from_millis(20))
+                .is_ok()
+            {
+                observed = true;
+                break;
+            }
+        }
+        if !observed {
+            terminate_group(&mut child);
+            let output = output_receiver
+                .recv_timeout(COMMAND_TIMEOUT / 2)
+                .unwrap_or_default();
+            return ResizeProbeResult {
+                verified: false,
+                output,
+            };
+        }
     }
     let status = loop {
         match child.try_wait() {
