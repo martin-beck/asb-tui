@@ -39,6 +39,9 @@ fn main() -> ExitCode {
     if arguments == ["run", "--broker"] {
         return launch_broker_entry();
     }
+    if arguments == ["run", "--broker", "--development"] {
+        return launch_development_broker_entry();
+    }
     if let Some(tui_arguments) = arguments.strip_prefix(&["tui".to_owned()]) {
         return launch_tui_command(tui_arguments);
     }
@@ -223,6 +226,14 @@ fn launch_broker_entry() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn launch_development_broker_entry() -> ExitCode {
+    if asb_tui::development_broker::DevelopmentBrokerDescriptor::from_env().is_err() {
+        eprintln!("development broker descriptor rejected");
+        return ExitCode::from(3);
+    }
+    launch_broker_entry()
 }
 
 fn launch() -> ExitCode {
