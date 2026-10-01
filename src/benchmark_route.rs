@@ -37,6 +37,7 @@ pub struct GuidedCampaign {
     pub replay: ReplayMode,
     pub stage: CampaignStage,
     catalog: Option<GuidedCatalog>,
+    provider_profile_sha256: Option<String>,
 }
 
 /// The validated catalog projection supplied by ASB. The route never accepts
@@ -46,6 +47,51 @@ pub struct GuidedCatalog {
     pub workloads: Vec<String>,
     pub agents: Vec<String>,
     pub measures: Vec<String>,
+}
+
+/// The privacy-safe replay choices published by the authenticated runner.
+///
+/// The route receives compatibility metadata only; cassette contents never
+/// enter the frontend state.  A replay can therefore be selected only from
+/// the exact provider/agent catalog offered by ASB.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplayCatalog {
+    pub provider_profile_sha256: String,
+    pub agent_id: String,
+    pub compatible: Vec<ReplayChoice>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ReplayChoice {
+    pub cassette_id: String,
+    pub cassette_sha256: String,
+}
+
+impl ReplayCatalog {
+    pub fn new(
+        provider_profile_sha256: impl Into<String>,
+        agent_id: impl Into<String>,
+        mut compatible: Vec<ReplayChoice>,
+    ) -> Result<Self, CampaignError> {
+        let provider_profile_sha256 = provider_profile_sha256.into();
+        let agent_id = agent_id.into();
+        if !valid_digest(&provider_profile_sha256) || !valid_identifier(&agent_id) {
+            return Err(CampaignError::InvalidReplayCatalog);
+        }
+        compatible.sort();
+        if compatible.windows(2).any(|pair| pair[0] == pair[1])
+            || compatible.iter().any(|choice| {
+                !valid_identifier(&choice.cassette_id) || !valid_digest(&choice.cassette_sha256)
+            })
+        {
+            return Err(CampaignError::InvalidReplayCatalog);
+        }
+        Ok(Self {
+            provider_profile_sha256,
+            agent_id,
+            compatible,
+        })
+    }
 }
 
 impl GuidedCatalog {
@@ -89,6 +135,11 @@ pub enum CampaignError {
     Comparison(CompareError),
     StaleCatalog,
     EmptyCatalogSelection,
+    InvalidReplayCatalog,
+    ReplayUnavailable,
+    ReplayAgentMismatch,
+    ProviderProfileNotBound,
+    ProviderProfileMismatch,
 }
 
 impl GuidedCampaign {
@@ -105,7 +156,22 @@ impl GuidedCampaign {
             replay: ReplayMode::Live,
             stage: CampaignStage::Selection,
             catalog: None,
+            provider_profile_sha256: None,
         })
+    }
+
+    /// Bind the exact authenticated provider profile selected by setup.
+    /// Replay cannot proceed until this identity is present.
+    pub fn bind_provider_profile_sha256(
+        &mut self,
+        provider_profile_sha256: impl Into<String>,
+    ) -> Result<(), CampaignError> {
+        let provider_profile_sha256 = provider_profile_sha256.into();
+        if !valid_digest(&provider_profile_sha256) {
+            return Err(CampaignError::InvalidReplayCatalog);
+        }
+        self.provider_profile_sha256 = Some(provider_profile_sha256);
+        Ok(())
     }
 
     pub fn with_catalog(
@@ -226,14 +292,14 @@ impl GuidedCampaign {
     }
 
     /// Produce an explicit strict-replay intent. There is no live fallback.
-    pub fn start_offline_replay(
+    fn start_offline_replay_selected(
         &mut self,
-        recording_id: impl Into<String>,
+        recording_id: String,
     ) -> Result<ReplayIntent, CampaignError> {
         if self.stage != CampaignStage::Review || self.replay != ReplayMode::OfflineReplay {
             return Err(CampaignError::InvalidTransition);
         }
-        let recording_id = bounded(recording_id.into())?;
+        let recording_id = bounded(recording_id)?;
         if recording_id.is_empty() {
             return Err(CampaignError::OfflineRecordingRequired);
         }
@@ -243,8 +309,38 @@ impl GuidedCampaign {
             agents: self.agents.clone(),
             measures: self.measures.clone(),
             recording_id,
+            cassette_sha256: None,
+            provider_profile_sha256: None,
             offline_only: true,
         })
+    }
+
+    /// Start replay only after selecting an exact runner-offered cassette.
+    /// There is no live fallback when the catalog is stale or incompatible.
+    pub fn start_offline_replay_from_catalog(
+        &mut self,
+        catalog: &ReplayCatalog,
+        cassette_sha256: &str,
+    ) -> Result<ReplayIntent, CampaignError> {
+        if self.agents.len() != 1 || self.agents[0] != catalog.agent_id {
+            return Err(CampaignError::ReplayAgentMismatch);
+        }
+        let provider_profile_sha256 = self
+            .provider_profile_sha256
+            .as_deref()
+            .ok_or(CampaignError::ProviderProfileNotBound)?;
+        if provider_profile_sha256 != catalog.provider_profile_sha256 {
+            return Err(CampaignError::ProviderProfileMismatch);
+        }
+        let choice = catalog
+            .compatible
+            .iter()
+            .find(|choice| choice.cassette_sha256 == cassette_sha256)
+            .ok_or(CampaignError::ReplayUnavailable)?;
+        let mut intent = self.start_offline_replay_selected(choice.cassette_id.clone())?;
+        intent.cassette_sha256 = Some(choice.cassette_sha256.clone());
+        intent.provider_profile_sha256 = Some(catalog.provider_profile_sha256.clone());
+        Ok(intent)
     }
 
     pub fn finish(&mut self, success: bool) -> Result<(), CampaignError> {
@@ -294,7 +390,24 @@ pub struct ReplayIntent {
     pub agents: Vec<String>,
     pub measures: Vec<String>,
     pub recording_id: String,
+    pub cassette_sha256: Option<String>,
+    pub provider_profile_sha256: Option<String>,
     pub offline_only: bool,
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TEXT
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn bounded(value: String) -> Result<String, CampaignError> {
