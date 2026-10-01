@@ -188,6 +188,19 @@ mod tests {
             classification_for(&status),
             ReleaseClassification::SourceOnlyUnverified
         );
+        for mutate in [
+            |status: &mut ChannelStatus| status.schema_version = 2,
+            |status: &mut ChannelStatus| status.classification = "source_only_unverified".into(),
+            |status: &mut ChannelStatus| status.installable = false,
+            |status: &mut ChannelStatus| status.release_artifacts_published = false,
+        ] {
+            let mut status = verified_status();
+            mutate(&mut status);
+            assert_eq!(
+                classification_for(&status),
+                ReleaseClassification::SourceOnlyUnverified
+            );
+        }
         let mut status = verified_status();
         status
             .promotion_requirements
@@ -229,6 +242,36 @@ mod tests {
                 "0.1.0",
                 Some("a7ca8e07f177fc6a647b3297df624137cfb85e86"),
                 Some("8556090e21336df0766263e6244084865f92d1a3"),
+            )
+            .is_none()
+        );
+        assert!(
+            build_identity_from(
+                ReleaseClassification::VerifiedExtension,
+                "v0.1.0",
+                "0.1.0",
+                None,
+                Some("8556090e21336df0766263e6244084865f92d1a3"),
+            )
+            .is_none()
+        );
+        assert!(
+            build_identity_from(
+                ReleaseClassification::VerifiedExtension,
+                "v0.1.0",
+                "0.1.0",
+                Some("A7ca8e07f177fc6a647b3297df624137cfb85e86"),
+                Some("8556090e21336df0766263e6244084865f92d1a3"),
+            )
+            .is_none()
+        );
+        assert!(
+            build_identity_from(
+                ReleaseClassification::VerifiedExtension,
+                "v0.1.0",
+                "0.1.0",
+                Some("a7ca8e07f177fc6a647b3297df624137cfb85e86"),
+                Some("short"),
             )
             .is_none()
         );
