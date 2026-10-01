@@ -1653,6 +1653,47 @@ mod tests {
     }
 
     #[test]
+    fn ordered_bootstrap_omits_catalog_calls_after_version_downgrade() {
+        let (_server, client) = UnixStream::pair().unwrap();
+        let transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            ControlLimits::default(),
+        )
+        .unwrap();
+        let session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: crate::control_codec::Negotiated {
+                version: crate::control_codec::V1_5,
+                limits: ControlLimits::default(),
+                runner_instance_id: "runner-downgrade".into(),
+                oldest_revision: Revision(1),
+                latest_revision: Revision(2),
+            },
+            continuity: None,
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        let calls = session.ordered_bootstrap_calls();
+        assert!(matches!(calls.first(), Some(ControlCall::Capabilities)));
+        assert!(matches!(
+            calls.get(1),
+            Some(ControlCall::MeasurementCatalog)
+        ));
+        assert!(matches!(calls.get(2), Some(ControlCall::History(_))));
+        assert!(matches!(calls.get(3), Some(ControlCall::AgentCatalog(_))));
+        assert_eq!(calls.len(), 4);
+        assert!(
+            !calls
+                .iter()
+                .any(|call| matches!(call, ControlCall::BenchmarkCatalog))
+        );
+    }
+
+    #[test]
     fn poll_projection_v17_fixture_projects_every_bootstrap_surface() {
         use crate::control_codec::*;
 

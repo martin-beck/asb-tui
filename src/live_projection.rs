@@ -78,6 +78,7 @@ pub struct LiveSnapshot {
 pub enum ProjectionError {
     InvalidResponse,
     UnexpectedResult,
+    StaleBenchmarkCatalog,
     StaleProviderCatalog,
     StaleRun,
     TooManyRuns,
@@ -88,6 +89,7 @@ impl fmt::Display for ProjectionError {
         f.write_str(match self {
             Self::InvalidResponse => "invalid control response",
             Self::UnexpectedResult => "response does not match projection request",
+            Self::StaleBenchmarkCatalog => "benchmark catalog generation moved backwards",
             Self::StaleProviderCatalog => "provider catalog revision moved backwards",
             Self::StaleRun => "run revision moved backwards",
             Self::TooManyRuns => "projected run limit exceeded",
@@ -206,6 +208,13 @@ impl ControlProjection {
                 value
                     .validate()
                     .map_err(|_| ProjectionError::InvalidResponse)?;
+                if self
+                    .benchmark_catalog
+                    .as_ref()
+                    .is_some_and(|previous| value.generation < previous.generation)
+                {
+                    return Err(ProjectionError::StaleBenchmarkCatalog);
+                }
                 self.benchmark_catalog = Some(LiveBenchmarkCatalog {
                     generation: value.generation,
                     catalog_sha256: value.catalog_sha256.clone(),
@@ -819,6 +828,53 @@ mod tests {
             catalog.pools[0].groups[0].benchmarks[0].measure_ids[0],
             "latency.first_response"
         );
+    }
+
+    #[test]
+    fn stale_benchmark_catalog_does_not_replace_authoritative_snapshot() {
+        use crate::control_codec::{
+            BenchmarkCatalogEntry, BenchmarkCatalogGroup, BenchmarkCatalogPool,
+            BenchmarkCatalogPublication,
+        };
+
+        let publication = |generation| {
+            let mut value = BenchmarkCatalogPublication {
+                generation: Revision(generation),
+                catalog_sha256: String::new(),
+                pools: vec![BenchmarkCatalogPool {
+                    id: "pool".into(),
+                    groups: vec![BenchmarkCatalogGroup {
+                        id: "latency".into(),
+                        benchmarks: vec![BenchmarkCatalogEntry {
+                            id: "latency".into(),
+                            measure_ids: vec!["latency.first_response".into()],
+                        }],
+                    }],
+                }],
+            };
+            value.catalog_sha256 = value.computed_digest().unwrap();
+            value
+        };
+
+        let call = ControlCall::BenchmarkCatalog;
+        let mut projection = connected_projection();
+        projection
+            .apply(
+                &request(call.clone(), 1),
+                &response(1, ControlResult::BenchmarkCatalog(publication(7))),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        let before = projection.snapshot();
+        assert_eq!(
+            projection.apply(
+                &request(call, 2),
+                &response(2, ControlResult::BenchmarkCatalog(publication(6))),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::StaleBenchmarkCatalog)
+        );
+        assert_eq!(projection.snapshot(), before);
     }
 
     #[test]
