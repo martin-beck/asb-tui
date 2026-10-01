@@ -11,7 +11,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 const CHANNEL: &str = "dev";
+
+#[cfg(test)]
+static FAIL_RENAME_AT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct Response {
@@ -109,7 +115,7 @@ fn read_state(root: &Path) -> Result<Option<State>, &'static str> {
         .map_err(|_| "development_state_invalid")
 }
 
-fn identity(tree: bool) -> String {
+fn identity(tree: bool) -> Result<String, &'static str> {
     let value = if tree {
         option_env!("ASB_TUI_SOURCE_TREE")
     } else {
@@ -122,8 +128,25 @@ fn identity(tree: bool) -> String {
                     .bytes()
                     .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         })
-        .unwrap_or("unknown")
-        .to_owned()
+        .map(str::to_owned)
+        .ok_or("development_provenance_unavailable")
+}
+
+fn valid_identity(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn rename_entry(from: &Path, to: &Path, ordinal: usize) -> Result<(), &'static str> {
+    #[cfg(test)]
+    if FAIL_RENAME_AT.load(Ordering::SeqCst) == ordinal {
+        return Err("development_activation_failed");
+    }
+    #[cfg(not(test))]
+    let _ = ordinal;
+    fs::rename(from, to).map_err(|_| "development_activation_failed")
 }
 
 fn status(root: &Path) -> Response {
@@ -136,6 +159,8 @@ fn status(root: &Path) -> Response {
     let valid = state.schema_version == 1
         && state.channel == CHANNEL
         && state.development_only
+        && valid_identity(&state.source_commit)
+        && valid_identity(&state.source_tree)
         && digest_hex(&bytes) == state.executable_sha256;
     let mut result = response(
         if valid {
@@ -179,8 +204,8 @@ fn materialize(root: &Path, replacing: bool) -> Result<Response, &'static str> {
             schema_version: 1,
             channel: CHANNEL.into(),
             development_only: true,
-            source_commit: identity(false),
-            source_tree: identity(true),
+            source_commit: identity(false)?,
+            source_tree: identity(true)?,
             executable_sha256: digest_hex(&bytes),
         };
         fs::write(
@@ -194,16 +219,24 @@ fn materialize(root: &Path, replacing: bool) -> Result<Response, &'static str> {
             for name in ["asb-tui", "provenance.json"] {
                 let old = root.join(name);
                 if old.exists() && fs::rename(&old, backup.join(name)).is_err() {
+                    for restore in ["asb-tui", "provenance.json"] {
+                        let saved = backup.join(restore);
+                        if saved.exists() {
+                            let _ = fs::rename(saved, root.join(restore));
+                        }
+                    }
                     let _ = fs::remove_dir_all(&backup);
                     return Err("development_activation_failed");
                 }
             }
         }
         let activation = (|| {
-            for name in ["asb-tui", "provenance.json"] {
-                fs::rename(stage.join(name), root.join(name))
-                    .map_err(|_| "development_activation_failed")?;
-            }
+            rename_entry(&stage.join("asb-tui"), &root.join("asb-tui"), 1)?;
+            rename_entry(
+                &stage.join("provenance.json"),
+                &root.join("provenance.json"),
+                2,
+            )?;
             Ok::<(), &'static str>(())
         })();
         if let Err(error) = activation {
@@ -294,5 +327,59 @@ pub fn execute(operation: &str) -> Response {
             }
         }
         _ => response("development_operation_invalid", false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(label: &str) -> PathBuf {
+        let root = env::temp_dir().join(format!("asb-tui-dev-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        root
+    }
+
+    #[test]
+    fn missing_build_provenance_fails_closed() {
+        assert!(
+            identity(false).is_ok(),
+            "test checkout build derives git identity"
+        );
+        let state = State {
+            schema_version: 1,
+            channel: CHANNEL.into(),
+            development_only: true,
+            source_commit: "unknown".into(),
+            source_tree: "unknown".into(),
+            executable_sha256: digest_hex(b"candidate"),
+        };
+        let root = temp_root("malformed");
+        fs::write(state_path(&root), serde_json::to_vec(&state).unwrap()).unwrap();
+        fs::write(executable_path(&root), b"candidate").unwrap();
+        assert_eq!(status(&root).code, "development_installation_invalid");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn second_activation_rename_restores_previous_pair() {
+        let root = temp_root("rollback");
+        assert!(materialize(&root, false).unwrap().verified);
+        let before = status(&root);
+        FAIL_RENAME_AT.store(2, Ordering::SeqCst);
+        assert_eq!(
+            materialize(&root, true),
+            Err("development_activation_failed")
+        );
+        FAIL_RENAME_AT.store(0, Ordering::SeqCst);
+        let after = status(&root);
+        assert_eq!(after.code, "development_installed");
+        assert_eq!(after.executable_sha256, before.executable_sha256);
+        assert_eq!(after.source_commit, before.source_commit);
+        assert_eq!(after.source_tree, before.source_tree);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
     }
 }
