@@ -1251,8 +1251,19 @@ impl AuthenticatedBrokerSession {
                 call: ControlCall::AuthStatus(control_codec::AuthStatusParams { provider }),
             };
             let response = self.transport.round_trip(&request)?;
-            next.apply(&request, &response, limits)
-                .map_err(|_| TransportError::Projection)?;
+            let auth_unavailable = matches!(request.call, ControlCall::AuthStatus(_))
+                && matches!(
+                    &response,
+                    ControlResponse::Failure(failure)
+                        if failure.error.code == -33_007 || failure.error.code == -33_009
+                );
+            if !auth_unavailable {
+                // Authentication is a read-only readiness projection. Missing
+                // development credentials or an unavailable auth capability
+                // must remain visible as unavailable, not block first-run UI.
+                next.apply(&request, &response, limits)
+                    .map_err(|_| TransportError::Projection)?;
+            }
         }
         *projection = next;
         Ok(())
