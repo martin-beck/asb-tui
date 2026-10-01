@@ -66,11 +66,11 @@ impl DevelopmentBrokerDescriptor {
                 self.operation.as_str(),
                 "install" | "upgrade" | "status" | "launch" | "remove"
             )
-            || !protocol_compatibility::validate_version(crate::control_codec::ControlVersion {
+            || protocol_compatibility::validate_version(crate::control_codec::ControlVersion {
                 major: 1,
                 minor: self.protocol_minor,
             })
-            .is_ok()
+            .is_err()
             || self.asb_source_commit != ASB_SOURCE_COMMIT
             || self.asb_source_tree != ASB_SOURCE_TREE
             || self.tui_source_commit != TUI_SOURCE_COMMIT
