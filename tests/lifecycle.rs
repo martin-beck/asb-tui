@@ -43,16 +43,24 @@ struct Store {
     staged: Option<(Installation, Vec<u8>)>,
     corrupt_stage: bool,
     fail_activation: bool,
+    fail_active: bool,
+    fail_executable: bool,
     events: Vec<&'static str>,
     benchmark_processes: usize,
 }
 
 impl LifecycleStore for Store {
     fn active(&self) -> Result<Option<Installation>, LifecycleIoError> {
+        if self.fail_active {
+            return Err(LifecycleIoError);
+        }
         Ok(self.active.as_ref().map(|(state, _)| state.clone()))
     }
 
     fn active_executable(&self, installation: &Installation) -> Result<Vec<u8>, LifecycleIoError> {
+        if self.fail_executable {
+            return Err(LifecycleIoError);
+        }
         self.active
             .as_ref()
             .filter(|(state, _)| state == installation)
@@ -237,6 +245,24 @@ fn installed_handoff_metadata_is_restart_safe_and_tamper_fenced() {
     assert_eq!(installed.endpoint, "asb://control/v1");
     assert_eq!(installed.channel, "verified");
     assert_eq!(installed.manifest_sha256.len(), 64);
+    let handoff = asb_tui::frontend_handoff::FrontendHandoff::from_installation(&installed);
+    assert_eq!(
+        handoff.env_pairs(),
+        [
+            ("ASB_TUI_FRONTEND_HANDOFF", "asb-tui-frontend/v1"),
+            ("ASB_TUI_ENDPOINT", "asb://control/v1"),
+            ("ASB_TUI_CHANNEL", "verified"),
+            (
+                "ASB_TUI_MANIFEST_SHA256",
+                installed.manifest_sha256.as_str()
+            ),
+            ("ASB_TUI_SOURCE_COMMIT", installed.source_commit.as_str()),
+            ("ASB_TUI_SOURCE_TREE", installed.source_tree.as_str()),
+            ("ASB_TUI_WORKSPACE_STATE_ROOT", "workspace/state"),
+            ("ASB_TUI_WORKSPACE_CONFIG_ROOT", "workspace/config"),
+            ("ASB_TUI_WORKSPACE_CACHE_ROOT", "workspace/cache"),
+        ]
+    );
     assert_eq!(status(&store).reason, "installation_verification_failed");
 
     store.active.as_mut().unwrap().0.endpoint = "asb://control/v2".into();
@@ -247,7 +273,7 @@ fn installed_handoff_metadata_is_restart_safe_and_tamper_fenced() {
         Err("installation_handoff_invalid")
     );
 
-    store.active.as_mut().unwrap().0 = installed;
+    store.active.as_mut().unwrap().0 = installed.clone();
     store
         .active
         .as_mut()
@@ -256,6 +282,96 @@ fn installed_handoff_metadata_is_restart_safe_and_tamper_fenced() {
         .manifest_sha256
         .replace_range(..1, "0");
     assert_eq!(status(&store).reason, "installation_verification_failed");
+
+    store.active.as_mut().unwrap().0 = installed.clone();
+    for path in ["", ".", "workspace/../state", "/tmp/state"] {
+        store.active.as_mut().unwrap().0.workspace_state_root = path.into();
+        assert_eq!(status(&store).reason, "installation_verification_failed");
+    }
+    for field in ["endpoint", "channel", "manifest_sha256"] {
+        store.active.as_mut().unwrap().0 = installed.clone();
+        match field {
+            "endpoint" => store.active.as_mut().unwrap().0.endpoint.clear(),
+            "channel" => store.active.as_mut().unwrap().0.channel.clear(),
+            _ => store.active.as_mut().unwrap().0.manifest_sha256.clear(),
+        }
+        assert_eq!(status(&store).reason, "installation_verification_failed");
+    }
+    for root in ["workspace/config", "workspace/cache"] {
+        store.active.as_mut().unwrap().0 = installed.clone();
+        if root.ends_with("config") {
+            store.active.as_mut().unwrap().0.workspace_config_root = "../config".into();
+        } else {
+            store.active.as_mut().unwrap().0.workspace_cache_root = "/tmp/cache".into();
+        }
+        assert_eq!(status(&store).reason, "installation_verification_failed");
+    }
+}
+
+#[test]
+fn legacy_installation_defaults_are_rejected_before_launch() {
+    let mut store = Store::default();
+    let mut probe = Probe {
+        pass: true,
+        calls: 0,
+    };
+    let installed = install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
+    let mut legacy = serde_json::to_value(installed).unwrap();
+    for field in [
+        "endpoint",
+        "channel",
+        "manifest_sha256",
+        "workspace_state_root",
+        "workspace_config_root",
+        "workspace_cache_root",
+    ] {
+        legacy.as_object_mut().unwrap().remove(field);
+    }
+    let parsed: Installation = serde_json::from_value(legacy).unwrap();
+    assert_eq!(parsed.endpoint, "asb://control/v1");
+    assert_eq!(parsed.channel, "verified");
+    assert!(parsed.manifest_sha256.is_empty());
+    store.active = Some((parsed, b"hello".to_vec()));
+    assert_eq!(status(&store).reason, "installation_verification_failed");
+    let mut launcher = Launcher::default();
+    assert_eq!(
+        launch(&store, &mut probe, &mut launcher),
+        Err("installation_handoff_invalid")
+    );
+    assert_eq!(launcher.0, 0);
+}
+
+#[test]
+fn launch_reports_missing_and_unreadable_installations_without_running_frontend() {
+    let mut absent = Store::default();
+    let mut probe = Probe {
+        pass: true,
+        calls: 0,
+    };
+    let mut launcher = Launcher::default();
+    assert_eq!(
+        launch(&absent, &mut probe, &mut launcher),
+        Err("extension_not_installed")
+    );
+    absent.fail_active = true;
+    assert_eq!(status(&absent).reason, "extension_not_installed");
+    assert_eq!(
+        launch(&absent, &mut probe, &mut launcher),
+        Err("installation_verification_failed")
+    );
+
+    let mut installed = Store::default();
+    install(&manifest(), &artifacts(), &mut installed, &mut probe).unwrap();
+    installed.fail_executable = true;
+    assert_eq!(
+        status(&installed).reason,
+        "installation_verification_failed"
+    );
+    assert_eq!(
+        launch(&installed, &mut probe, &mut launcher),
+        Err("installation_verification_failed")
+    );
+    assert_eq!(launcher.0, 0);
 }
 
 #[test]

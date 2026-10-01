@@ -3,11 +3,15 @@
 //! Bootstrap-safe compile-time release policy for the delegated lifecycle.
 
 use serde::Deserialize;
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 const CHANNEL_STATUS: &str = include_str!("../release/channel-status.json");
 const SOURCE_COMMIT: Option<&str> = option_env!("ASB_TUI_SOURCE_COMMIT");
 const SOURCE_TREE: Option<&str> = option_env!("ASB_TUI_SOURCE_TREE");
+#[cfg(test)]
+thread_local! { static TEST_CHANNEL_PERMIT: Cell<bool> = const { Cell::new(false) }; }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReleaseClassification {
@@ -79,7 +83,16 @@ fn classification_for(status: &ChannelStatus) -> ReleaseClassification {
 
 /// The signed external bundle manifest supplies dynamic source and artifact identities.
 pub fn channel_permits_install() -> bool {
+    #[cfg(test)]
+    if TEST_CHANNEL_PERMIT.with(Cell::get) {
+        return true;
+    }
     compiled_classification() == ReleaseClassification::VerifiedExtension
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_channel_permit(enabled: bool) {
+    TEST_CHANNEL_PERMIT.with(|permit| permit.set(enabled));
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
