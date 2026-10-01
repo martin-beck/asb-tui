@@ -67,6 +67,85 @@ pub struct ReplayChoice {
     pub cassette_sha256: String,
 }
 
+/// Authenticated v1.12 cassette metadata returned by ASB.  Only identities
+/// and digests cross into the frontend; cassette contents remain runner-owned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedCassetteCatalog {
+    pub runner_instance_id: String,
+    pub generation: Revision,
+    pub campaign_id: String,
+    pub entries: Vec<AuthenticatedCassetteEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedCassetteEntry {
+    pub cassette_id: String,
+    pub cassette_sha256: String,
+    pub provider_profile_sha256: String,
+    pub agent_id: String,
+    pub workload_id: String,
+    pub scorer_revision: String,
+}
+
+impl TryFrom<crate::control_codec::RecordingCassetteCatalog> for AuthenticatedCassetteCatalog {
+    type Error = CampaignError;
+
+    fn try_from(
+        value: crate::control_codec::RecordingCassetteCatalog,
+    ) -> Result<Self, Self::Error> {
+        if value.generation.0 == 0
+            || !valid_identifier(&value.runner_instance_id)
+            || !valid_identifier(&value.campaign_id)
+            || value.entries.is_empty()
+            || value.entries.len() > MAX_ITEMS * 4
+        {
+            return Err(CampaignError::InvalidReplayCatalog);
+        }
+        let entries = value
+            .entries
+            .into_iter()
+            .map(|entry| {
+                if !valid_identifier(&entry.cassette_id)
+                    || !valid_digest(&entry.cassette_sha256)
+                    || !valid_digest(&entry.provider_profile_sha256)
+                    || !valid_identifier(&entry.agent_id)
+                    || !valid_identifier(&entry.workload_id)
+                    || !valid_identifier(&entry.scorer_revision)
+                {
+                    return Err(CampaignError::InvalidReplayCatalog);
+                }
+                Ok(AuthenticatedCassetteEntry {
+                    cassette_id: entry.cassette_id,
+                    cassette_sha256: entry.cassette_sha256,
+                    provider_profile_sha256: entry.provider_profile_sha256,
+                    agent_id: entry.agent_id,
+                    workload_id: entry.workload_id,
+                    scorer_revision: entry.scorer_revision,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if entries.windows(2).any(|pair| {
+            (
+                pair[0].agent_id.as_str(),
+                pair[0].workload_id.as_str(),
+                pair[0].cassette_sha256.as_str(),
+            ) >= (
+                pair[1].agent_id.as_str(),
+                pair[1].workload_id.as_str(),
+                pair[1].cassette_sha256.as_str(),
+            )
+        }) {
+            return Err(CampaignError::InvalidReplayCatalog);
+        }
+        Ok(Self {
+            runner_instance_id: value.runner_instance_id,
+            generation: value.generation,
+            campaign_id: value.campaign_id,
+            entries,
+        })
+    }
+}
+
 impl ReplayCatalog {
     pub fn new(
         provider_profile_sha256: impl Into<String>,
@@ -140,6 +219,8 @@ pub enum CampaignError {
     ReplayAgentMismatch,
     ProviderProfileNotBound,
     ProviderProfileMismatch,
+    ReplayGenerationMismatch,
+    ReplayCampaignMismatch,
 }
 
 impl GuidedCampaign {
@@ -312,6 +393,8 @@ impl GuidedCampaign {
             cassette_sha256: None,
             provider_profile_sha256: None,
             offline_only: true,
+            campaign_id: None,
+            generation: None,
         })
     }
 
@@ -340,6 +423,44 @@ impl GuidedCampaign {
         let mut intent = self.start_offline_replay_selected(choice.cassette_id.clone())?;
         intent.cassette_sha256 = Some(choice.cassette_sha256.clone());
         intent.provider_profile_sha256 = Some(catalog.provider_profile_sha256.clone());
+        Ok(intent)
+    }
+
+    /// Select an exact v1.12 runner cassette, preserving campaign generation
+    /// and tuple identity. The returned intent is still only a request; the
+    /// authenticated session must dispatch it through ASB's replay authority.
+    pub fn start_offline_replay_from_authenticated_catalog(
+        &mut self,
+        catalog: &AuthenticatedCassetteCatalog,
+        workload_id: &str,
+        cassette_sha256: &str,
+    ) -> Result<ReplayIntent, CampaignError> {
+        if catalog.generation.0 == 0 || catalog.campaign_id.is_empty() {
+            return Err(CampaignError::InvalidReplayCatalog);
+        }
+        if self.agents.len() != 1 {
+            return Err(CampaignError::ReplayAgentMismatch);
+        }
+        let profile = self
+            .provider_profile_sha256
+            .as_deref()
+            .ok_or(CampaignError::ProviderProfileNotBound)?;
+        let entry = catalog
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.agent_id == self.agents[0]
+                    && entry.workload_id == workload_id
+                    && entry.cassette_sha256 == cassette_sha256
+                    && entry.provider_profile_sha256 == profile
+            })
+            .ok_or(CampaignError::ReplayUnavailable)?;
+        let mut intent = self.start_offline_replay_selected(entry.cassette_id.clone())?;
+        intent.cassette_sha256 = Some(entry.cassette_sha256.clone());
+        intent.provider_profile_sha256 = Some(entry.provider_profile_sha256.clone());
+        intent.campaign_id = Some(catalog.campaign_id.clone());
+        intent.generation = Some(catalog.generation);
+        intent.workload = workload_id.to_owned();
         Ok(intent)
     }
 
@@ -393,6 +514,8 @@ pub struct ReplayIntent {
     pub cassette_sha256: Option<String>,
     pub provider_profile_sha256: Option<String>,
     pub offline_only: bool,
+    pub campaign_id: Option<String>,
+    pub generation: Option<Revision>,
 }
 
 fn valid_identifier(value: &str) -> bool {
