@@ -127,6 +127,23 @@ fn validate_handoff(installation: &Installation) -> bool {
         })
 }
 
+#[cfg(target_arch = "x86_64")]
+fn bundle_matches_target(installation: &Installation) -> bool {
+    installation.target == "x86_64-unknown-linux-gnu"
+        && installation.bundle == "asb-tui-v1-linux-x86_64"
+}
+
+#[cfg(target_arch = "aarch64")]
+fn bundle_matches_target(installation: &Installation) -> bool {
+    installation.target == "aarch64-unknown-linux-gnu"
+        && installation.bundle == "asb-tui-v1-linux-aarch64"
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn bundle_matches_target(_: &Installation) -> bool {
+    false
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct LifecycleStatus {
     pub installed: bool,
@@ -1412,10 +1429,7 @@ pub fn status(store: &impl LifecycleStore) -> LifecycleStatus {
         && installation.target == compiled_target()
         && installation.asb_version == "0.1.0"
         && installation.protocol_version == 1
-        && ((installation.target == "x86_64-unknown-linux-gnu"
-            && installation.bundle == "asb-tui-v1-linux-x86_64")
-            || (installation.target == "aarch64-unknown-linux-gnu"
-                && installation.bundle == "asb-tui-v1-linux-aarch64"))
+        && bundle_matches_target(&installation)
         && installation.coordinator_version == COORDINATOR_VERSION
         && installation.coordinator_commit == COORDINATOR_COMMIT
         && installation.quality_version == QUALITY_VERSION
