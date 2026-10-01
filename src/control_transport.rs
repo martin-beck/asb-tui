@@ -1093,6 +1093,9 @@ impl AuthenticatedBrokerSession {
         params: crate::control_codec::RecordingReplayDispatchParams,
     ) -> Result<crate::control_codec::RecordingReplayDispatch, TransportError> {
         self.require_version(crate::control_codec::V1_12)?;
+        if params.runner_instance_id != self.negotiated.runner_instance_id {
+            return Err(TransportError::Continuity);
+        }
         let expected_generation = params.expected_generation;
         let expected = params.clone();
         let request = self.recording_request(
@@ -1990,6 +1993,48 @@ mod tests {
             );
             join.join().unwrap();
         }
+    }
+
+    #[test]
+    fn v112_replay_dispatch_rejects_request_runner_mismatch_before_io() {
+        let (_server, client) = UnixStream::pair().unwrap();
+        let transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            ControlLimits::default(),
+        )
+        .unwrap();
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: crate::control_codec::Negotiated {
+                version: crate::control_codec::V1_12,
+                limits: ControlLimits::default(),
+                runner_instance_id: "runner-v112".into(),
+                oldest_revision: Revision(1),
+                latest_revision: Revision(9),
+            },
+            continuity: None,
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        assert_eq!(
+            session.recording_replay_dispatch(
+                crate::control_codec::RecordingReplayDispatchParams {
+                    idempotency_key: "retry-1".into(),
+                    runner_instance_id: "wrong-runner".into(),
+                    expected_generation: Revision(9),
+                    campaign_id: "campaign-1".into(),
+                    provider_profile_sha256: "b".repeat(64),
+                    agent_id: "agent-a".into(),
+                    workload_id: "quality".into(),
+                    cassette_sha256: "a".repeat(64),
+                },
+            ),
+            Err(TransportError::Continuity)
+        );
     }
 
     #[test]
