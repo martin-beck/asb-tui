@@ -148,10 +148,10 @@ impl ControlProjection {
 
     /// Commit an explicitly unavailable, credential-free development auth
     /// projection without manufacturing a runner-authored status response.
-    pub fn mark_auth_unavailable(&mut self, reason: impl Into<String>) {
+    pub fn mark_auth_unavailable(&mut self, reason: impl Into<String>, development_only: bool) {
         self.auth_status = None;
         self.auth_unavailable = true;
-        self.auth_development_only = true;
+        self.auth_development_only = development_only;
         self.auth_unavailable_reason = Some(reason.into());
     }
 
@@ -1016,7 +1016,7 @@ mod tests {
     #[test]
     fn development_auth_unavailable_is_explicit_and_committed() {
         let mut projection = ControlProjection::default();
-        projection.mark_auth_unavailable("development_auth_unavailable");
+        projection.mark_auth_unavailable("development_auth_unavailable", true);
         let snapshot = projection.snapshot();
         assert!(snapshot.auth_status.is_none());
         assert!(snapshot.auth_unavailable);
@@ -1025,5 +1025,7 @@ mod tests {
             snapshot.auth_unavailable_reason.as_deref(),
             Some("development_auth_unavailable")
         );
+        projection.mark_auth_unavailable("auth_unavailable", false);
+        assert!(!projection.snapshot().auth_development_only);
     }
 }

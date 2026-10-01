@@ -1117,6 +1117,23 @@ impl AuthenticatedBrokerSession {
         &mut self,
         projection: &mut ControlProjection,
     ) -> Result<(), TransportError> {
+        self.poll_projection_with_context(projection, false)
+    }
+
+    /// Poll bootstrap state for the explicit credential-free development
+    /// route. Stable sessions never receive development provenance.
+    pub fn poll_projection_development(
+        &mut self,
+        projection: &mut ControlProjection,
+    ) -> Result<(), TransportError> {
+        self.poll_projection_with_context(projection, true)
+    }
+
+    fn poll_projection_with_context(
+        &mut self,
+        projection: &mut ControlProjection,
+        development_mode: bool,
+    ) -> Result<(), TransportError> {
         let mut next = projection.clone();
         next.accept_negotiated(self.negotiated.clone())
             .map_err(|_| TransportError::Projection)?;
@@ -1264,7 +1281,7 @@ impl AuthenticatedBrokerSession {
                 next.apply(&request, &response, limits)
                     .map_err(|_| TransportError::Projection)?;
             } else {
-                next.mark_auth_unavailable("development_auth_unavailable");
+                next.mark_auth_unavailable("auth_unavailable", development_mode);
             }
         }
         *projection = next;
