@@ -10,7 +10,10 @@ use asb_tui::{
         ProviderAuthMethod, ProviderAvailability, ProviderCatalog, ProviderCatalogEntry,
         ProviderModel, Revision,
     },
-    provider_catalog::{AgentScope, ProviderDefaultDraft, accept_generation, wizard_options},
+    provider_catalog::{
+        AgentScope, ProviderDefaultDraft, ProviderDefaultRecord, ProviderDefaultsStore,
+        SharedProviderDefaults, accept_generation, wizard_options,
+    },
 };
 
 fn target() -> AgentTarget {
@@ -109,4 +112,56 @@ fn stale_generations_and_unavailable_choices_fail_closed() {
 fn scope_rejects_unknown_or_unavailable_agents() {
     let scope = AgentScope::selected(["missing"]).unwrap();
     assert!(scope.resolve(&agents()).is_err());
+}
+
+#[test]
+fn shared_defaults_apply_is_atomic_for_selected_and_all_agents() {
+    let mut defaults = SharedProviderDefaults::default();
+    let draft = ProviderDefaultDraft {
+        scope: AgentScope::selected(["agent-a"]).unwrap(),
+        provider_id: "provider-a".into(),
+        model_id: "model-a".into(),
+        auth_method: ProviderAuthMethod::CredentialReference,
+        credential_reference_sha256: Some("1".repeat(64)),
+    };
+    defaults.apply(draft, &agents(), &providers()).unwrap();
+    let before = defaults.clone();
+    let invalid = ProviderDefaultDraft {
+        scope: AgentScope::All,
+        provider_id: "missing".into(),
+        model_id: "model-a".into(),
+        auth_method: ProviderAuthMethod::None,
+        credential_reference_sha256: None,
+    };
+    assert!(defaults.apply(invalid, &agents(), &providers()).is_err());
+    assert_eq!(defaults, before);
+    assert_eq!(
+        defaults.for_agent("agent-a").unwrap().provider_id,
+        "provider-a"
+    );
+}
+
+#[test]
+fn shared_defaults_restart_persistence_and_rollback_are_safe() {
+    let root =
+        std::env::temp_dir().join(format!("asb-tui-provider-defaults-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let store = ProviderDefaultsStore::new(root.join("defaults.json"));
+    let mut defaults = SharedProviderDefaults::default();
+    defaults.entries.push(ProviderDefaultRecord {
+        scope: AgentScope::All,
+        provider_id: "provider-a".into(),
+        model_id: "model-a".into(),
+        auth_method: ProviderAuthMethod::CredentialReference,
+        credential_reference_sha256: Some("a".repeat(64)),
+    });
+    store.save(&defaults).unwrap();
+    assert_eq!(store.load().unwrap(), defaults);
+    let previous = defaults.clone();
+    defaults.entries.clear();
+    defaults.rollback(previous.clone()).unwrap();
+    assert_eq!(defaults, previous);
+    let _ = std::fs::remove_dir_all(root);
 }

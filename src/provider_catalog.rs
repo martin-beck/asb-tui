@@ -15,6 +15,12 @@ use crate::{
     },
     wizard_catalog::WizardOption,
 };
+use serde::{Deserialize, Serialize};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 pub const MAX_SCOPED_AGENTS: usize = 64;
 
@@ -51,10 +57,227 @@ pub fn development_openrouter_catalog() -> ProviderCatalog {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum AgentScope {
     All,
     Selected(Vec<String>),
+}
+
+/// The non-secret portion of a provider default. Credential references are
+/// resolver-owned SHA-256 locators; raw credentials have no representable
+/// field and therefore cannot be written by this module.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDefaultRecord {
+    pub scope: AgentScope,
+    pub provider_id: String,
+    pub model_id: String,
+    pub auth_method: ProviderAuthMethod,
+    pub credential_reference_sha256: Option<String>,
+}
+
+impl ProviderDefaultRecord {
+    pub fn from_draft(draft: &ProviderDefaultDraft) -> Self {
+        Self {
+            scope: draft.scope.clone(),
+            provider_id: draft.provider_id.clone(),
+            model_id: draft.model_id.clone(),
+            auth_method: draft.auth_method,
+            credential_reference_sha256: draft.credential_reference_sha256.clone(),
+        }
+    }
+
+    fn validate(&self) -> Result<(), ProviderDefaultsError> {
+        if !is_safe_id(&self.provider_id) || !is_safe_id(&self.model_id) {
+            return Err(ProviderDefaultsError::Invalid(
+                "provider/model id is invalid".into(),
+            ));
+        }
+        if let AgentScope::Selected(ids) = &self.scope {
+            AgentScope::selected(ids.clone()).map_err(ProviderDefaultsError::Invalid)?;
+        }
+        if matches!(self.auth_method, ProviderAuthMethod::CredentialReference)
+            != self.credential_reference_sha256.is_some()
+        {
+            return Err(ProviderDefaultsError::Invalid(
+                "credential reference does not match authentication".into(),
+            ));
+        }
+        if let Some(digest) = &self.credential_reference_sha256
+            && (digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(ProviderDefaultsError::Invalid(
+                "credential reference must be a SHA-256 digest".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+const DEFAULTS_SCHEMA_VERSION: u32 = 1;
+const MAX_DEFAULTS_BYTES: u64 = 256 * 1024;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharedProviderDefaults {
+    pub schema_version: u32,
+    pub entries: Vec<ProviderDefaultRecord>,
+}
+
+impl Default for SharedProviderDefaults {
+    fn default() -> Self {
+        Self {
+            schema_version: DEFAULTS_SCHEMA_VERSION,
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl SharedProviderDefaults {
+    pub fn validate(&self) -> Result<(), ProviderDefaultsError> {
+        if self.schema_version != DEFAULTS_SCHEMA_VERSION || self.entries.len() > 64 {
+            return Err(ProviderDefaultsError::Invalid(
+                "unsupported or oversized defaults".into(),
+            ));
+        }
+        for entry in &self.entries {
+            entry.validate()?;
+        }
+        Ok(())
+    }
+
+    /// Replace the default for a scope only after catalog validation. The
+    /// previous state remains untouched if provider/model/auth validation fails.
+    pub fn apply(
+        &mut self,
+        draft: ProviderDefaultDraft,
+        agents: &AgentCatalog,
+        providers: &ProviderCatalog,
+    ) -> Result<ConfigurationSelection, ProviderDefaultsError> {
+        let selection = draft
+            .clone()
+            .into_selection(agents, providers)
+            .map_err(ProviderDefaultsError::Invalid)?;
+        let record = ProviderDefaultRecord::from_draft(&draft);
+        record.validate()?;
+        self.entries.retain(|old| old.scope != record.scope);
+        self.entries.push(record);
+        Ok(selection)
+    }
+
+    pub fn rollback(&mut self, previous: Self) -> Result<(), ProviderDefaultsError> {
+        previous.validate()?;
+        *self = previous;
+        Ok(())
+    }
+
+    pub fn for_agent(&self, agent_id: &str) -> Option<&ProviderDefaultRecord> {
+        self.entries.iter().rev().find(|entry| match &entry.scope {
+            AgentScope::All => true,
+            AgentScope::Selected(ids) => ids.iter().any(|id| id == agent_id),
+        })
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "{} provider default{}",
+            self.entries.len(),
+            if self.entries.len() == 1 { "" } else { "s" }
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProviderDefaultsError {
+    Invalid(String),
+    Io(String),
+    TooLarge,
+    SymlinkRefused,
+    NotRegularFile,
+}
+
+impl From<io::Error> for ProviderDefaultsError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error.kind().to_string())
+    }
+}
+
+/// Private, atomic persistence for shared defaults. It deliberately mirrors
+/// ConfigurationStore's symlink and directory checks, but has an independent
+/// file so changing frontend preferences cannot corrupt provider defaults.
+pub struct ProviderDefaultsStore {
+    path: PathBuf,
+}
+
+impl ProviderDefaultsStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn load(&self) -> Result<SharedProviderDefaults, ProviderDefaultsError> {
+        let metadata = fs::symlink_metadata(&self.path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(ProviderDefaultsError::SymlinkRefused);
+        }
+        if !metadata.is_file() {
+            return Err(ProviderDefaultsError::NotRegularFile);
+        }
+        if metadata.len() > MAX_DEFAULTS_BYTES {
+            return Err(ProviderDefaultsError::TooLarge);
+        }
+        let defaults: SharedProviderDefaults =
+            serde_json::from_str(&fs::read_to_string(&self.path)?)
+                .map_err(|e| ProviderDefaultsError::Invalid(e.to_string()))?;
+        defaults.validate()?;
+        Ok(defaults)
+    }
+    pub fn load_or_default(&self) -> Result<SharedProviderDefaults, ProviderDefaultsError> {
+        match self.load() {
+            Ok(value) => Ok(value),
+            Err(ProviderDefaultsError::Io(_)) => Ok(SharedProviderDefaults::default()),
+            Err(error) => Err(error),
+        }
+    }
+    pub fn save(&self, defaults: &SharedProviderDefaults) -> Result<(), ProviderDefaultsError> {
+        defaults.validate()?;
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| ProviderDefaultsError::Invalid("defaults path has no parent".into()))?;
+        let metadata = fs::metadata(parent)?;
+        if !metadata.is_dir() {
+            return Err(ProviderDefaultsError::NotRegularFile);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(ProviderDefaultsError::Invalid(
+                    "defaults directory is not private".into(),
+                ));
+            }
+        }
+        if let Ok(existing) = fs::symlink_metadata(&self.path) {
+            if existing.file_type().is_symlink() {
+                return Err(ProviderDefaultsError::SymlinkRefused);
+            }
+            if !existing.is_file() {
+                return Err(ProviderDefaultsError::NotRegularFile);
+            }
+        }
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ProviderDefaultsError::Io("clock".into()))?
+            .as_nanos();
+        let temp = parent.join(format!(".asb-tui-provider-defaults-{nonce}.tmp"));
+        let text = serde_json::to_string_pretty(defaults)
+            .map_err(|e| ProviderDefaultsError::Invalid(e.to_string()))?;
+        fs::write(&temp, text)?;
+        fs::rename(&temp, &self.path)?;
+        Ok(())
+    }
 }
 
 impl AgentScope {
