@@ -38,6 +38,7 @@ pub struct GuidedCampaign {
     pub stage: CampaignStage,
     catalog: Option<GuidedCatalog>,
     provider_profile_sha256: Option<String>,
+    adapter_id: Option<String>,
 }
 
 /// The validated catalog projection supplied by ASB. The route never accepts
@@ -238,6 +239,7 @@ impl GuidedCampaign {
             stage: CampaignStage::Selection,
             catalog: None,
             provider_profile_sha256: None,
+            adapter_id: None,
         })
     }
 
@@ -252,6 +254,16 @@ impl GuidedCampaign {
             return Err(CampaignError::InvalidReplayCatalog);
         }
         self.provider_profile_sha256 = Some(provider_profile_sha256);
+        Ok(())
+    }
+
+    /// Bind the stable coding-agent adapter identity to every downstream route.
+    pub fn bind_adapter_id(&mut self, adapter_id: impl Into<String>) -> Result<(), CampaignError> {
+        let adapter_id = adapter_id.into();
+        if !valid_identifier(&adapter_id) {
+            return Err(CampaignError::InvalidText);
+        }
+        self.adapter_id = Some(adapter_id);
         Ok(())
     }
 
@@ -339,6 +351,7 @@ impl GuidedCampaign {
             catalog_generation: None,
             catalog_digest: None,
             benchmark_ids: Vec::new(),
+            adapter_id: self.adapter_id.clone(),
         })
     }
 
@@ -369,6 +382,7 @@ impl GuidedCampaign {
             catalog_generation: Some(handoff.generation),
             catalog_digest: Some(handoff.catalog_digest),
             benchmark_ids: handoff.benchmark_ids,
+            adapter_id: self.adapter_id.clone(),
         })
     }
 
@@ -395,6 +409,7 @@ impl GuidedCampaign {
             offline_only: true,
             campaign_id: None,
             generation: None,
+            adapter_id: self.adapter_id.clone(),
         })
     }
 
@@ -503,6 +518,7 @@ pub struct LaunchIntent {
     pub catalog_generation: Option<Revision>,
     pub catalog_digest: Option<String>,
     pub benchmark_ids: Vec<String>,
+    pub adapter_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -516,6 +532,7 @@ pub struct ReplayIntent {
     pub offline_only: bool,
     pub campaign_id: Option<String>,
     pub generation: Option<Revision>,
+    pub adapter_id: Option<String>,
 }
 
 fn valid_identifier(value: &str) -> bool {

@@ -11,12 +11,45 @@ use crate::{
     agent_catalog::AgentCatalog,
     control_codec::{
         ConfigurationSelection, ProviderAuthMethod, ProviderAvailability, ProviderCatalog,
-        ProviderModel, Revision,
+        ProviderCatalogEntry, ProviderModel, Revision,
     },
     wizard_catalog::WizardOption,
 };
 
 pub const MAX_SCOPED_AGENTS: usize = 64;
+
+/// Credential-free OpenRouter fixture used by the development wizard. It is
+/// deliberately local and warning-only: production catalogs still come from
+/// the authenticated runner and API keys are represented only by references.
+pub fn development_openrouter_catalog() -> ProviderCatalog {
+    ProviderCatalog {
+        runner_instance_id: "development-fixture".into(),
+        generation: Revision(1),
+        catalog_sha256: "0".repeat(64),
+        refreshed: false,
+        providers: vec![ProviderCatalogEntry {
+            provider_id: "openrouter".into(),
+            display_name: "OpenRouter (development-only)".into(),
+            auth_methods: vec![
+                ProviderAuthMethod::CredentialReference,
+                ProviderAuthMethod::None,
+            ],
+            availability: ProviderAvailability::Available,
+            models: vec![
+                ProviderModel {
+                    model_id: "openai/gpt-4o".into(),
+                    revision: "fixture".into(),
+                    availability: ProviderAvailability::Available,
+                },
+                ProviderModel {
+                    model_id: "anthropic/claude-3.5-sonnet".into(),
+                    revision: "fixture".into(),
+                    availability: ProviderAvailability::Available,
+                },
+            ],
+        }],
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AgentScope {
