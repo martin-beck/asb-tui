@@ -67,6 +67,23 @@ fn development_catalog_fallback_is_declared_in_the_formal_model() {
 }
 
 #[test]
+fn auth_unavailability_provenance_is_declared_in_the_formal_model() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    for field in [
+        "auth_unavailable",
+        "auth_development_only",
+        "auth_unavailable_reason",
+    ] {
+        assert!(model["state_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == field));
+    }
+}
+
+#[test]
 fn provider_setup_review_and_single_apply_are_declared_in_the_formal_model() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
