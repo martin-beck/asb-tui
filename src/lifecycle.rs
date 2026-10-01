@@ -1570,6 +1570,7 @@ mod tests {
         assert!(store.activate(&installation).is_ok());
         assert!(store.discard_stage(&installation).is_ok());
         assert!(store.remove().is_ok());
+        assert_eq!(status(&store).reason, "verified_installation");
         let mut probe = LaunchSelfTest(true);
         let mut frontend = LaunchFrontend(true);
         assert_eq!(launch(&store, &mut probe, &mut frontend), Ok(()));
