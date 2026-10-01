@@ -36,6 +36,7 @@ pub mod landing;
 pub mod launch_statistics;
 pub mod lifecycle;
 pub mod live_projection;
+pub mod output_contract;
 pub mod protocol_compatibility;
 pub mod provider_catalog;
 pub mod provider_setup;

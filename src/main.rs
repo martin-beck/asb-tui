@@ -13,6 +13,7 @@ use asb_tui::{
     development_onboarding::execute_input as execute_development_onboarding_input,
     development_router::execute_input as execute_development_router_input,
     lifecycle::{local_self_test_response, run_self_test_supervisor},
+    output_contract::{Route as OutputRoute, render as render_output},
     runtime::{
         run_interactive, run_interactive_with_control, run_interactive_with_control_context,
     },
@@ -65,6 +66,25 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         }
+    }
+    if let Some(route) = arguments
+        .first()
+        .and_then(|value| OutputRoute::parse(value))
+        && arguments.as_slice() != ["doctor", "--format", "json"]
+        && arguments.len() <= 3
+    {
+        let json = match arguments.get(1).map(String::as_str) {
+            None => false,
+            Some("--json") | Some("--format")
+                if arguments.get(2).is_some_and(|value| value == "json") =>
+            {
+                true
+            }
+            Some("--json") if arguments.len() == 2 => true,
+            _ => return usage(),
+        };
+        print!("{}", render_output(route, json));
+        return ExitCode::from(3);
     }
     if arguments == ["lifecycle", "--format", "json"] {
         let response = execute_input(std::io::stdin().lock());
