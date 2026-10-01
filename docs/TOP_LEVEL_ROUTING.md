@@ -46,7 +46,10 @@ The development install performs a shallow clone of the selected TUI source
 (`ASB_TUI_DEV_REPOSITORY`, defaulting to the public asb-tui repository, and
 `ASB_TUI_DEV_REF`, defaulting to `main`) into a private temporary workspace,
 then runs a locked release Cargo build with private Cargo-home and target
-directories. The source commit and tree are read from the clone itself and
+directories. When Cargo is a rustup proxy, its trusted toolchain home must be
+provided explicitly through `ASB_TUI_DEV_RUSTUP_HOME`; host `RUSTUP_HOME`,
+Cargo configuration, proxy, flags, and credentials are never inherited. The
+source commit and tree are read from the clone itself and
 written with the executable digest to `provenance.json`; `ASB_TUI_DEV_INSTALL_ROOT`
 may select an existing owner-private absolute root. Clone/build output is
 streamed with a hard cap, monitored against the aggregate workspace quota, and

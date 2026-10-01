@@ -182,6 +182,60 @@ fn dev_repository() -> String {
 }
 
 #[cfg(not(test))]
+fn trusted_executable(variable: &str, name: &str) -> Result<PathBuf, &'static str> {
+    let candidates = env::var_os(variable)
+        .map(|value| vec![PathBuf::from(value)])
+        .unwrap_or_else(|| {
+            env::var_os("PATH")
+                .unwrap_or_default()
+                .to_string_lossy()
+                .split(':')
+                .filter(|part| !part.is_empty())
+                .map(|part| Path::new(part).join(name))
+                .collect()
+        });
+    for candidate in candidates {
+        let is_symlink = fs::symlink_metadata(&candidate)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        let Ok(canonical) = fs::canonicalize(&candidate) else {
+            continue;
+        };
+        let Ok(metadata) = fs::symlink_metadata(&canonical) else {
+            continue;
+        };
+        if metadata.is_file()
+            && (metadata.uid() == rustix::process::getuid().as_raw() || metadata.uid() == 0)
+            && metadata.mode() & 0o022 == 0
+        {
+            // Preserve a trusted shim's argv[0] (notably cargo -> rustup),
+            // while validating the resolved target's ownership and mode.
+            return Ok(if is_symlink { candidate } else { canonical });
+        }
+    }
+    Err("development_tool_unavailable")
+}
+
+#[cfg(not(test))]
+fn trusted_tools() -> Result<(PathBuf, PathBuf, PathBuf, String), &'static str> {
+    let setsid = trusted_executable("ASB_TUI_DEV_SETSID", "setsid")?;
+    let git = trusted_executable("ASB_TUI_DEV_GIT", "git")?;
+    let cargo = trusted_executable("ASB_TUI_DEV_CARGO", "cargo")?;
+    let mut path = std::collections::BTreeSet::new();
+    for tool in [&setsid, &git, &cargo] {
+        if let Some(parent) = tool.parent() {
+            path.insert(parent.to_string_lossy().into_owned());
+        }
+    }
+    Ok((
+        setsid,
+        git,
+        cargo,
+        path.into_iter().collect::<Vec<_>>().join(":"),
+    ))
+}
+
+#[cfg(not(test))]
 fn dev_ref() -> String {
     env::var("ASB_TUI_DEV_REF").unwrap_or_else(|_| "main".to_owned())
 }
@@ -265,6 +319,10 @@ fn run_bounded(mut command: Command, workspace: &Path) -> Result<Vec<u8>, &'stat
             }
         }
         if let Some(status) = child.try_wait().map_err(|_| "development_command_failed")? {
+            // The wrapper may have exited while a descendant still owns the
+            // pipe. Kill/reap the whole session before joining the reader.
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            let _ = child.wait();
             let (output, oversized) = reader
                 .join()
                 .map_err(|_| "development_command_failed")?
@@ -287,12 +345,16 @@ fn run_bounded(mut command: Command, workspace: &Path) -> Result<Vec<u8>, &'stat
 
 #[cfg(not(test))]
 fn source_identity(source: &Path, name: &str) -> Result<String, &'static str> {
+    let (setsid, git, _cargo, path) = trusted_tools()?;
     let output = run_bounded(
         {
-            let mut command = Command::new("/usr/bin/setsid");
+            let mut command = Command::new(&setsid);
             command
-                .args(["--wait", "git"])
+                .args(["--wait"])
+                .arg(&git)
                 .current_dir(source)
+                .env_clear()
+                .env("PATH", path)
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_TERMINAL_PROMPT", "0")
@@ -319,11 +381,13 @@ fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
     fs::create_dir_all(&cargo_home).map_err(|_| "development_workspace_create_failed")?;
     let repository = dev_repository();
     let reference = dev_ref();
-    let mut clone = Command::new("/usr/bin/setsid");
+    let (setsid, git, cargo, path) = trusted_tools()?;
+    let rustup_home = env::var_os("ASB_TUI_DEV_RUSTUP_HOME");
+    let mut clone = Command::new(&setsid);
     clone
+        .args(["--wait"])
+        .arg(&git)
         .args([
-            "--wait",
-            "git",
             "clone",
             "--depth",
             "1",
@@ -333,6 +397,8 @@ fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
             "--",
             &repository,
         ])
+        .env_clear()
+        .env("PATH", &path)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -340,14 +406,21 @@ fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
     run_bounded(clone, workspace)?;
     let commit = source_identity(&source, "HEAD")?;
     let tree = source_identity(&source, "HEAD^{tree}")?;
-    let mut build = Command::new("/usr/bin/setsid");
+    let mut build = Command::new(&setsid);
     build
-        .args(["--wait", "cargo"])
+        .args(["--wait"])
+        .arg(&cargo)
         .current_dir(&source)
+        .env_clear()
+        .env("PATH", &path)
         .env("HOME", workspace)
         .env("CARGO_HOME", &cargo_home)
         .env("CARGO_TARGET_DIR", &target)
+        .env("RUSTFLAGS", "")
         .args(["build", "--locked", "--release", "--bin", "asb-tui"]);
+    if let Some(rustup_home) = rustup_home {
+        build.env("RUSTUP_HOME", rustup_home);
+    }
     run_bounded(build, workspace)?;
     let executable = target.join("release/asb-tui");
     let metadata = fs::metadata(&executable).map_err(|_| "development_build_missing")?;
