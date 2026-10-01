@@ -20,8 +20,10 @@ use crate::{
     protocol_compatibility,
 };
 use std::io::{Read, Write};
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::Duration;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -376,6 +378,57 @@ pub struct AuthenticatedBrokerSession {
 }
 
 impl AuthenticatedBrokerSession {
+    /// Connect to an ASB owner-private control socket and negotiate before
+    /// entering the interactive frontend. The socket is a local transport
+    /// boundary; no path or peer metadata is accepted as authority.
+    pub fn connect(path: &Path, limits: ControlLimits) -> Result<Self, TransportError> {
+        if !path.is_absolute() || path.as_os_str().len() > 4096 {
+            return Err(TransportError::PeerIdentity);
+        }
+        let metadata = std::fs::symlink_metadata(path).map_err(|_| TransportError::PeerIdentity)?;
+        let parent = path.parent().ok_or(TransportError::PeerIdentity)?;
+        let parent_metadata =
+            std::fs::symlink_metadata(parent).map_err(|_| TransportError::PeerIdentity)?;
+        if !parent_metadata.is_dir()
+            || parent_metadata.file_type().is_symlink()
+            || parent_metadata.uid() != rustix::process::geteuid().as_raw()
+            || parent_metadata.mode() & 0o077 != 0
+        {
+            return Err(TransportError::PeerIdentity);
+        }
+        if !metadata.file_type().is_socket()
+            || metadata.file_type().is_symlink()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(TransportError::PeerIdentity);
+        }
+        let stream = UnixStream::connect(path).map_err(|_| TransportError::Io)?;
+        let credentials = rustix::net::sockopt::socket_peercred(&stream)
+            .map_err(|_| TransportError::PeerIdentity)?;
+        let peer_uid = credentials.uid.as_raw();
+        let peer_pid = credentials.pid.as_raw_pid() as u32;
+        if peer_uid != rustix::process::geteuid().as_raw() || peer_pid == 0 {
+            return Err(TransportError::PeerIdentity);
+        }
+        let mut transport = FramedControlStream::adopt_broker(stream, peer_uid, peer_pid, limits)?;
+        let ControlSuccess::Negotiated(negotiated) = transport.negotiate(RequestId(1))? else {
+            return Err(TransportError::NotNegotiated);
+        };
+        Ok(Self {
+            transport,
+            negotiated,
+            continuity: BrokerContinuity::new(BrokerGeneration {
+                epoch: [1; 16],
+                sequence: 1,
+            })?,
+            peer: BrokerPeerCredentials {
+                uid: peer_uid,
+                pid: peer_pid,
+            },
+        })
+    }
+
     pub fn establish(
         received: ReceivedChannel,
         expected_uid: u32,
@@ -1187,10 +1240,13 @@ mod tests {
         SocketType, sendmsg, socketpair,
     };
     use std::{
+        fs,
         io::{IoSlice, Read, Write},
         mem::MaybeUninit,
         os::fd::AsFd,
+        os::unix::fs::PermissionsExt,
         thread,
+        time::{SystemTime, UNIX_EPOCH},
     };
     fn peer() -> RunnerIdentity {
         RunnerIdentity {
@@ -1225,6 +1281,35 @@ mod tests {
             pid: 42,
             service_generation: 7,
         }
+    }
+
+    #[test]
+    fn socket_consumer_rejects_non_socket_and_public_paths_before_connecting() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-tui-socket-consumer-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let regular = root.join("regular");
+        fs::write(&regular, b"not a socket").unwrap();
+        fs::set_permissions(&regular, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            AuthenticatedBrokerSession::connect(&regular, ControlLimits::default()),
+            Err(TransportError::PeerIdentity)
+        ));
+        let public = root.join("public");
+        fs::write(&public, b"not a socket").unwrap();
+        fs::set_permissions(&public, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            AuthenticatedBrokerSession::connect(&public, ControlLimits::default()),
+            Err(TransportError::PeerIdentity)
+        ));
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn socketpair_round_trip_rejects_mismatched_response_id() {

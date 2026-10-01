@@ -54,6 +54,26 @@ rejected rather than downgraded to a fixture. Public installation remains
 unavailable until the release-channel gates and the external ASB router are
 qualified.
 
+## Local broker handoff
+
+An owner-private ASB broker may expose its local control socket to the TUI:
+
+```console
+asb-tui run --socket /run/user/$UID/asb/control.sock
+```
+
+The consumer rejects relative paths, symlinks, non-sockets, shared or
+group/world-readable parents, and peers owned by another uid before sending
+the typed negotiation request. The broker must answer that negotiation before
+any interactive request is dispatched. This is a local development transport
+and does not assert production authentication or a signed release.
+
+For the inherited `run --broker` handoff, fd 0 is the received broker control
+channel. After the channel is authenticated, the TUI opens `/dev/tty` and
+redirects only its interactive input there; the control stream remains a
+separate owned descriptor. If no controlling terminal is available, the
+command exits fail-closed instead of reading broker frames as keystrokes.
+
 Exit codes are stable: `0` means the lifecycle response is successful, `2`
 means command usage is invalid, and `3` means the bounded request was accepted
 but the lifecycle operation was rejected or could not complete.
