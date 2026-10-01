@@ -1569,6 +1569,12 @@ mod tests {
     fn launch_covers_verified_digest_self_test_and_frontend_paths() {
         crate::release_channel::set_test_channel_permit(true);
         let mut store = launch_fixture();
+        let installation = store.installation.clone();
+        assert!(store.stage(&installation, b"fixture").is_ok());
+        assert!(store.staged_executable(&installation).is_err());
+        assert!(store.activate(&installation).is_ok());
+        assert!(store.discard_stage(&installation).is_ok());
+        assert!(store.remove().is_ok());
         let mut probe = LaunchSelfTest(true);
         let mut frontend = LaunchFrontend(true);
         assert_eq!(launch(&store, &mut probe, &mut frontend), Ok(()));
