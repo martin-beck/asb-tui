@@ -101,7 +101,7 @@ pub struct LifecycleResponse {
 }
 
 impl LifecycleResponse {
-    pub(crate) fn result(ok: bool, code: &'static str) -> Self {
+    pub fn result(ok: bool, code: &'static str) -> Self {
         Self {
             schema_version: 1,
             classification: compiled_classification().as_str(),
@@ -119,6 +119,11 @@ impl LifecycleResponse {
             source_commit: None,
             source_tree: None,
         }
+    }
+
+    pub fn with_channel(mut self, channel: &'static str) -> Self {
+        self.channel = channel;
+        self
     }
 }
 

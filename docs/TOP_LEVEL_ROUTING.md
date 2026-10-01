@@ -37,8 +37,8 @@ The development channel is the only currently available channel. A fresh
 selection defaults to `dev`; the selected channel is projected in every
 delegated lifecycle response, including install, status, launch, upgrade
 (the reconfigure route), and remove. Requests for `stable`, `nightly`, or
-`experimental` return the typed `channel_unavailable` warning and never fall
-back to a different channel or create an installation. Existing channel
+`experimental` return a typed `<channel>_channel_unavailable` response and
+never fall back to a different channel or create an installation. Existing channel
 state is retained unless the user explicitly selects another available
 channel.
 

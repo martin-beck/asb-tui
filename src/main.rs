@@ -160,7 +160,21 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
     };
     match command {
         TuiCommand::LaunchUi => launch(),
-        TuiCommand::Lifecycle { operation, .. } => {
+        TuiCommand::Lifecycle {
+            operation,
+            channel,
+            selection,
+            ..
+        } => {
+            if let Some(code) = selection.warning {
+                let response = asb_tui::delegated::LifecycleResponse::result(false, code)
+                    .with_channel(selection.requested.as_str());
+                println!(
+                    "{}",
+                    serde_json::to_string(&response).expect("serialize channel selection response")
+                );
+                return ExitCode::from(3);
+            }
             if let TuiCommand::Lifecycle {
                 channel_dev: true, ..
             } = command
@@ -173,7 +187,8 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
                 );
                 ExitCode::from(if response.ok { 0 } else { 3 })
             } else {
-                let response = top_level::execute_lifecycle(operation, std::io::stdin().lock());
+                let response =
+                    top_level::execute_lifecycle(operation, channel, std::io::stdin().lock());
                 println!(
                     "{}",
                     serde_json::to_string(&response).expect("serialize lifecycle response")
