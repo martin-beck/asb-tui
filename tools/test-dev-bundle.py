@@ -34,7 +34,11 @@ def main() -> int:
             "source_tree": "b" * 40, "asb_source_commit": "c" * 40,
             "asb_source_tree": "d" * 40, "target": "x86_64-unknown-linux-gnu",
             "executable_sha256": digest, "executable_size": executable.stat().st_size,
-            "built_unix": 1, "warnings": ["development_missing_authentication_allowed"],
+            "built_unix": 1, "warnings": [
+                "development_missing_authentication_allowed",
+                "development_missing_signatures_allowed",
+                "development_missing_key_management_allowed",
+            ],
         }
         encoded = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
         (version / "manifest.json").write_bytes(encoded)
@@ -46,6 +50,21 @@ def main() -> int:
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if rejected.returncode == 0:
             raise SystemExit("tampered development executable was accepted")
+        executable.write_bytes(b"development fixture")
+        wrong = root / "dev-versions" / ("f" * 64)
+        wrong.mkdir()
+        (wrong / "asb-tui").write_bytes(executable.read_bytes())
+        (wrong / "manifest.json").write_bytes(encoded)
+        rejected = subprocess.run(["python3", str(VERIFY), str(wrong)], check=False,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if rejected.returncode == 0:
+            raise SystemExit("wrong content-addressed directory was accepted")
+        executable.unlink()
+        executable.symlink_to("/etc/hosts")
+        rejected = subprocess.run(["python3", str(VERIFY), str(version)], check=False,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if rejected.returncode == 0:
+            raise SystemExit("symlink executable was accepted")
     print("development bundle integrity checks passed")
     return 0
 

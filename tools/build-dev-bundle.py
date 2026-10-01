@@ -17,14 +17,17 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "https://github.com/martin-beck/asb-tui.git"
 TARGETS = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linux-gnu"}
+MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024
 
 
 def run(*args: str, cwd: Path = ROOT, env: dict[str, str] | None = None) -> str:
@@ -42,6 +45,75 @@ def digest(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def regular(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.stat(follow_symlinks=False).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def atomic_bytes(path: Path, data: bytes, mode: int) -> None:
+    temporary = path.with_name(f".{path.name}.stage-{uuid.uuid4().hex}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(temporary, flags, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def publish(output: Path, executable: Path, manifest: dict[str, object], data: bytes) -> Path:
+    """Publish a version once, then atomically switch the active selector."""
+    versions = output / "dev-versions"
+    versions.mkdir(mode=0o700, parents=True, exist_ok=True)
+    executable_digest = str(manifest["executable_sha256"])
+    version = versions / executable_digest
+    if version.exists() or version.is_symlink():
+        if version.is_symlink() or not version.is_dir():
+            raise SystemExit("content-addressed version is not a directory")
+        if not regular(version / "asb-tui") or not regular(version / "manifest.json"):
+            raise SystemExit("existing content-addressed version is incomplete")
+        if digest(version / "asb-tui") != executable_digest:
+            raise SystemExit("existing content-addressed version is substituted")
+        existing = json.loads((version / "manifest.json").read_text(encoding="utf-8"))
+        if existing != manifest:
+            raise SystemExit("existing content-addressed manifest differs")
+    else:
+        stage = versions / f".stage-{os.getpid()}-{uuid.uuid4().hex}"
+        stage.mkdir(mode=0o700)
+        try:
+            staged_executable = stage / "asb-tui"
+            with executable.open("rb") as source, staged_executable.open("xb") as target:
+                shutil.copyfileobj(source, target)
+                target.flush()
+                os.fsync(target.fileno())
+            staged_executable.chmod(0o700)
+            atomic_bytes(stage / "manifest.json", data, 0o600)
+            os.replace(stage, version)
+            directory = os.open(versions, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except Exception:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+    atomic_bytes(output / "active-dev.json", data, 0o600)
+    return version
 
 
 def main() -> int:
@@ -80,16 +152,13 @@ def main() -> int:
         env["CARGO_BUILD_TARGET"] = TARGETS[args.architecture]
         run("cargo", "build", "--locked", "--release", "--bin", "asb-tui", cwd=checkout, env=env)
         executable = target_dir / TARGETS[args.architecture] / "release" / "asb-tui"
-        if not executable.is_file():
+        if not regular(executable):
             raise SystemExit("cargo did not produce the release executable")
         output = args.output_dir.resolve()
         output.mkdir(parents=True, exist_ok=True)
         executable_digest = digest(executable)
-        version = output / "dev-versions" / executable_digest
-        version.mkdir(parents=True, exist_ok=True)
-        installed = version / "asb-tui"
-        shutil.copy2(executable, installed)
-        installed.chmod(0o700)
+        if executable.stat().st_size == 0 or executable.stat().st_size > MAX_EXECUTABLE_BYTES:
+            raise SystemExit("release executable exceeds development size policy")
         built_unix = args.built_unix or int(time.time())
         manifest = {
             "schema_version": 1,
@@ -103,7 +172,7 @@ def main() -> int:
             "asb_source_tree": args.asb_source_tree,
             "target": TARGETS[args.architecture],
             "executable_sha256": executable_digest,
-            "executable_size": installed.stat().st_size,
+            "executable_size": executable.stat().st_size,
             "built_unix": built_unix,
             "warnings": [
                 "development_missing_authentication_allowed",
@@ -112,8 +181,7 @@ def main() -> int:
             ],
         }
         manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
-        (version / "manifest.json").write_bytes(manifest_bytes)
-        (output / "active-dev.json").write_bytes(manifest_bytes)
+        version = publish(output, executable, manifest, manifest_bytes)
         print(json.dumps({"bundle": str(version), "manifest": str(version / "manifest.json"),
                           "executable_sha256": executable_digest}, sort_keys=True))
     return 0
