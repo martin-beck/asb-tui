@@ -389,7 +389,7 @@ const RESIZE_HELPER: &str = "trap 'echo WINCH >/dev/tty; exit 0' WINCH\necho REA
 const RESIZE_IGNORE_HELPER: &str =
     "trap '' WINCH\necho READY >/dev/tty\nwhile :; do read value </dev/tty || :; done\n";
 #[cfg(all(target_os = "linux", test))]
-const RESIZE_DESCENDANT_HELPER: &str = "(trap '' WINCH; while :; do read value </dev/tty || :; done) & echo DESCENDANT:$! >/dev/tty\necho READY >/dev/tty\ntrap '' WINCH\nwhile :; do read value </dev/tty || :; done\n";
+const RESIZE_DESCENDANT_HELPER: &str = "/bin/sleep 30 & child=$!\nprintf 'DESCENDANT:%s\\n' \"$child\" >/dev/tty\necho READY >/dev/tty\ntrap '' WINCH\nwhile :; do read value </dev/tty || :; done\n";
 
 #[cfg(target_os = "linux")]
 struct ResizeProbeResult {
