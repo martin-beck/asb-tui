@@ -181,7 +181,8 @@ pub enum ControlCall {
     RecordingCampaignOfflineDefault(RecordingCampaignOfflineDefaultParams),
 }
 
-pub const CONTROL_BENCHMARK_CATALOG_V1: ControlVersion = V1_7;
+/// ASB publishes the benchmark catalog in control protocol v1.10.
+pub const CONTROL_BENCHMARK_CATALOG_V1: ControlVersion = V1_10;
 
 impl ControlCall {
     /// Stable wire operation name used by the cross-project compatibility

@@ -1665,7 +1665,7 @@ mod tests {
         let session = AuthenticatedBrokerSession {
             transport,
             negotiated: crate::control_codec::Negotiated {
-                version: crate::control_codec::V1_5,
+                version: crate::control_codec::V1_8,
                 limits: ControlLimits::default(),
                 runner_instance_id: "runner-downgrade".into(),
                 oldest_revision: Revision(1),
@@ -1694,11 +1694,11 @@ mod tests {
     }
 
     #[test]
-    fn poll_projection_v17_fixture_projects_every_bootstrap_surface() {
+    fn poll_projection_v110_fixture_projects_every_bootstrap_surface() {
         use crate::control_codec::*;
 
         let (mut server, client) = UnixStream::pair().unwrap();
-        let runner = "runner-poll-v17";
+        let runner = "runner-poll-v110";
         let join = thread::spawn(move || {
             let agent_catalog: crate::agent_catalog::AgentCatalog =
                 crate::agent_catalog::parse_agent_catalog_response(include_str!(
