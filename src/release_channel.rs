@@ -188,6 +188,19 @@ mod tests {
             classification_for(&status),
             ReleaseClassification::SourceOnlyUnverified
         );
+        for mutate in [
+            |status: &mut ChannelStatus| status.schema_version = 2,
+            |status: &mut ChannelStatus| status.classification = "source_only_unverified".into(),
+            |status: &mut ChannelStatus| status.installable = false,
+            |status: &mut ChannelStatus| status.release_artifacts_published = false,
+        ] {
+            let mut status = verified_status();
+            mutate(&mut status);
+            assert_eq!(
+                classification_for(&status),
+                ReleaseClassification::SourceOnlyUnverified
+            );
+        }
         let mut status = verified_status();
         status
             .promotion_requirements
