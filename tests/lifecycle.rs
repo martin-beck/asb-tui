@@ -354,6 +354,7 @@ fn launch_reports_missing_and_unreadable_installations_without_running_frontend(
         Err("extension_not_installed")
     );
     absent.fail_active = true;
+    assert_eq!(status(&absent).reason, "extension_not_installed");
     assert_eq!(
         launch(&absent, &mut probe, &mut launcher),
         Err("installation_verification_failed")
@@ -362,6 +363,10 @@ fn launch_reports_missing_and_unreadable_installations_without_running_frontend(
     let mut installed = Store::default();
     install(&manifest(), &artifacts(), &mut installed, &mut probe).unwrap();
     installed.fail_executable = true;
+    assert_eq!(
+        status(&installed).reason,
+        "installation_verification_failed"
+    );
     assert_eq!(
         launch(&installed, &mut probe, &mut launcher),
         Err("installation_verification_failed")

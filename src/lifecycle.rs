@@ -1489,6 +1489,109 @@ pub fn launch(
 mod tests {
     use super::*;
 
+    struct LaunchStore {
+        installation: Installation,
+        executable: Vec<u8>,
+    }
+    impl LifecycleStore for LaunchStore {
+        fn active(&self) -> Result<Option<Installation>, LifecycleIoError> {
+            Ok(Some(self.installation.clone()))
+        }
+        fn active_executable(&self, _: &Installation) -> Result<Vec<u8>, LifecycleIoError> {
+            Ok(self.executable.clone())
+        }
+        fn stage(&mut self, _: &Installation, _: &[u8]) -> Result<(), LifecycleIoError> {
+            Ok(())
+        }
+        fn staged_executable(&self, _: &Installation) -> Result<Vec<u8>, LifecycleIoError> {
+            Err(LifecycleIoError)
+        }
+        fn activate(&mut self, _: &Installation) -> Result<(), LifecycleIoError> {
+            Ok(())
+        }
+        fn discard_stage(&mut self, _: &Installation) -> Result<(), LifecycleIoError> {
+            Ok(())
+        }
+        fn remove(&mut self) -> Result<(), LifecycleIoError> {
+            Ok(())
+        }
+    }
+    struct LaunchSelfTest(bool);
+    impl SelfTest for LaunchSelfTest {
+        fn verify_protocol_and_terminal(&mut self, _: &Installation, _: &[u8]) -> bool {
+            self.0
+        }
+    }
+    struct LaunchFrontend(bool);
+    impl FrontendLauncher for LaunchFrontend {
+        fn launch_frontend(&mut self, _: &Installation, _: &[u8]) -> Result<(), LifecycleIoError> {
+            self.0.then_some(()).ok_or(LifecycleIoError)
+        }
+    }
+
+    fn launch_fixture() -> LaunchStore {
+        let executable = b"launch-fixture".to_vec();
+        let mut installation = Installation {
+            schema_version: 1,
+            release: "v0.1.0".into(),
+            executable_sha256: digest_bytes(&executable).unwrap(),
+            source_commit: "a".repeat(40),
+            source_tree: "b".repeat(40),
+            target: compiled_target().into(),
+            bundle: if compiled_target().starts_with("aarch64") {
+                "asb-tui-v1-linux-aarch64"
+            } else {
+                "asb-tui-v1-linux-x86_64"
+            }
+            .into(),
+            asb_version: "0.1.0".into(),
+            protocol_version: 1,
+            coordinator_version: COORDINATOR_VERSION.into(),
+            coordinator_commit: COORDINATOR_COMMIT.into(),
+            quality_version: QUALITY_VERSION.into(),
+            quality_commit: QUALITY_COMMIT.into(),
+            classification: "verified_extension".into(),
+            endpoint: default_endpoint(),
+            channel: default_channel(),
+            manifest_sha256: String::new(),
+            workspace_state_root: default_workspace_state_root(),
+            workspace_config_root: default_workspace_config_root(),
+            workspace_cache_root: default_workspace_cache_root(),
+        };
+        installation.manifest_sha256 = handoff_manifest_digest(&installation).unwrap();
+        LaunchStore {
+            installation,
+            executable,
+        }
+    }
+
+    #[test]
+    fn launch_covers_verified_digest_self_test_and_frontend_paths() {
+        crate::release_channel::set_test_channel_permit(true);
+        let mut store = launch_fixture();
+        let mut probe = LaunchSelfTest(true);
+        let mut frontend = LaunchFrontend(true);
+        assert_eq!(launch(&store, &mut probe, &mut frontend), Ok(()));
+        store.executable[0] ^= 1;
+        assert_eq!(
+            launch(&store, &mut probe, &mut frontend),
+            Err("launch_self_test_failed")
+        );
+        store = launch_fixture();
+        let mut failing_probe = LaunchSelfTest(false);
+        assert_eq!(
+            launch(&store, &mut failing_probe, &mut frontend),
+            Err("launch_self_test_failed")
+        );
+        store = launch_fixture();
+        let mut failing_frontend = LaunchFrontend(false);
+        assert_eq!(
+            launch(&store, &mut probe, &mut failing_frontend),
+            Err("frontend_launch_failed")
+        );
+        crate::release_channel::set_test_channel_permit(false);
+    }
+
     #[test]
     fn executable_memfd_is_immutable_after_complete_write() {
         let mut executable = executable_memfd("asb-tui-seal-test", b"immutable").unwrap();
