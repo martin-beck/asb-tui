@@ -179,12 +179,20 @@ impl Wizard {
         &self,
         adapter_id: &str,
     ) -> Result<CompatibilityOptions, WizardError> {
+        self.adapter_compatibility_for(adapter_id, None)
+    }
+
+    pub fn adapter_compatibility_for(
+        &self,
+        adapter_id: &str,
+        provider_id: Option<&str>,
+    ) -> Result<CompatibilityOptions, WizardError> {
         self.adapter_selection
             .as_ref()
             .ok_or_else(|| {
                 WizardError::Catalog("authoritative adapter catalog is unavailable".into())
             })?
-            .compatibility_options(adapter_id)
+            .compatibility_options_for(adapter_id, provider_id)
             .map_err(|error| WizardError::Catalog(format!("adapter compatibility: {error:?}")))
     }
 

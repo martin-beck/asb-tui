@@ -679,4 +679,13 @@ mod tests {
         assert_eq!(UiAction::EstimateRecording, UiAction::EstimateRecording);
         assert_eq!(UiAction::PlanRecording, UiAction::PlanRecording);
     }
+
+    #[test]
+    fn recording_dispatch_carries_selected_adapter_identity() {
+        let mut state = state(WorkloadScope::All);
+        assert!(state.bind_adapter_id("opendesk").is_ok());
+        assert_eq!(state.adapter_id.as_deref(), Some("opendesk"));
+        assert!(state.bind_adapter_id("unknown").is_err());
+        assert_eq!(state.adapter_id.as_deref(), Some("opendesk"));
+    }
 }

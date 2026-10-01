@@ -35,6 +35,7 @@ pub struct AdapterOption {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompatibilityOptions {
     pub adapter_id: String,
+    pub provider_id: Option<String>,
     pub providers: Vec<AdapterOption>,
     pub models: Vec<AdapterOption>,
     pub auth_methods: Vec<AdapterOption>,
@@ -207,6 +208,14 @@ impl SelectionSession {
         &self,
         adapter_id: &str,
     ) -> Result<CompatibilityOptions, SelectionError> {
+        self.compatibility_options_for(adapter_id, None)
+    }
+
+    pub fn compatibility_options_for(
+        &self,
+        adapter_id: &str,
+        provider_id: Option<&str>,
+    ) -> Result<CompatibilityOptions, SelectionError> {
         let adapter = self
             .catalog
             .get(adapter_id)
@@ -223,8 +232,9 @@ impl SelectionSession {
             .collect();
         let models = adapter
             .providers
-            .values()
-            .flat_map(|models| models.iter())
+            .iter()
+            .filter(|(id, _)| provider_id.is_none_or(|selected| selected == id.as_str()))
+            .flat_map(|(_, models)| models.iter())
             .map(|id| AdapterOption {
                 id: id.clone(),
                 label: id.clone(),
@@ -244,6 +254,7 @@ impl SelectionSession {
             .collect();
         Ok(CompatibilityOptions {
             adapter_id: adapter_id.into(),
+            provider_id: provider_id.map(str::to_owned),
             providers,
             models,
             auth_methods,

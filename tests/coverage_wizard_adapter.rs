@@ -56,6 +56,11 @@ fn adapter_choices_are_filtered_and_cancel_safe() {
     let mut wizard = Wizard::default();
     let options = wizard.adapter_compatibility("opendesk").unwrap();
     assert!(options.providers.iter().any(|item| item.id == "local"));
+    let local = wizard
+        .adapter_compatibility_for("opendesk", Some("local"))
+        .unwrap();
+    assert_eq!(local.provider_id.as_deref(), Some("local"));
+    assert!(local.models.iter().all(|item| item.id == "fixture-model"));
     wizard
         .select_adapter(AdapterSelection {
             adapter_id: "opendesk".into(),
@@ -65,12 +70,14 @@ fn adapter_choices_are_filtered_and_cancel_safe() {
         })
         .unwrap();
     assert_eq!(wizard.selected_adapter_id(), Some("opendesk"));
-    assert!(wizard
-        .adapter_diagnostics(&AdapterSelection {
-            adapter_id: "opendesk".into(),
-            provider_id: "openrouter".into(),
-            model_id: "openai/gpt-4o".into(),
-            auth: AuthMethod::CredentialReference,
-        })
-        .contains("not supported"));
+    assert!(
+        wizard
+            .adapter_diagnostics(&AdapterSelection {
+                adapter_id: "opendesk".into(),
+                provider_id: "openrouter".into(),
+                model_id: "openai/gpt-4o".into(),
+                auth: AuthMethod::CredentialReference,
+            })
+            .contains("not supported")
+    );
 }

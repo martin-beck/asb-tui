@@ -584,6 +584,7 @@ fn run_interactive_loop(
     let backend = BoundedBackend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
     let mut recording_state: Option<crate::recording_dispatch::RecordingDispatchState> = None;
+    let mut active_adapter_id: Option<String> = None;
     let mut next_live_refresh = Instant::now();
     while !state.should_quit() {
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
@@ -715,6 +716,14 @@ fn run_interactive_loop(
                                     crate::recording_campaign::WorkloadScope::All,
                                 )
                                 .ok();
+                            if let (Some(adapter_id), Some(recording)) =
+                                (active_adapter_id.as_deref(), recording_state.as_mut())
+                            {
+                                recording
+                                    .bind_adapter_id(adapter_id)
+                                    .map_err(io::Error::other)
+                                    .map_err(RuntimeError)?;
+                            }
                         }
                         if let Some(recording) = recording_state.as_mut() {
                             dispatch_control_action(
@@ -732,6 +741,15 @@ fn run_interactive_loop(
                         projection.as_deref_mut(),
                         workspace.take_wizard_completion(),
                     ) {
+                        active_adapter_id = workspace.take_wizard_adapter_completion();
+                        if let (Some(adapter_id), Some(recording)) =
+                            (active_adapter_id.as_deref(), recording_state.as_mut())
+                        {
+                            recording
+                                .bind_adapter_id(adapter_id)
+                                .map_err(io::Error::other)
+                                .map_err(RuntimeError)?;
+                        }
                         // A negotiated catalog is authoritative: bind the
                         // completed wizard to it before any configuration
                         // mutation. The disconnected development fixture keeps
