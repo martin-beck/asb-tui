@@ -4,6 +4,19 @@
   "classification": "source_only_unverified",
   "installable": false,
   "release_artifacts_published": false,
+  "development_channel": {
+    "classification": "development_only",
+    "repository": "https://github.com/martin-beck/asb-tui.git",
+    "ref": "refs/heads/main",
+    "authentication_required": false,
+    "signatures_required": false,
+    "key_management_required": false,
+    "warnings": [
+      "development_missing_authentication_allowed",
+      "development_missing_signatures_allowed",
+      "development_missing_key_management_allowed"
+    ]
+  },
   "promotion_requirements": {
     "asb_external_protocol": false,
     "asb_lifecycle_router": false,

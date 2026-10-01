@@ -2,12 +2,22 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Release channels
 
-## Current channel: source-only, optional, unverified
+## Current channels: `dev` development and source-only production
 
-The public repository is available for inspection and reproducible verification. It is **not** an
-installable release channel: there is no supported binary release, package publication, or
-top-level `asb tui` command. Do not install a binary copied from CI, a pull request, an unversioned
-URL, or a synthetic test fixture.
+The public repository is available for inspection and reproducible verification. The production
+release channel remains **source-only, unverified**: there is no supported signed binary release,
+package publication, or top-level `asb tui` command. Do not install a binary copied from CI, a
+pull request, an unversioned URL, or a synthetic test fixture.
+
+The default `dev` channel is the credential-free development path used by ASB. `tools/build-dev-
+bundle.py` checks out one exact commit and tree, builds the release executable, and writes it below
+`dev-versions/<sha256>/` together with an immutable `manifest.json` and `active-dev.json` selector.
+`tools/verify-dev-bundle.py` re-reads the manifest and executable bytes, checks the digest and size,
+and rejects a substituted artifact. The manifest is explicitly development-only and carries visible
+warnings for missing authentication, signatures, and key management; those warnings never block the
+prototype workflow. ASB's default installer resolves `refs/heads/main`, records that exact identity,
+and performs the same content-addressed checks before launch. The dev bundle is not evidence for the
+production channel and does not weaken its signature or provenance gates.
 
 Developers may clone an immutable revision and run `cargo test --locked`. This verifies the source
 contract and renderer tests; it does not promote the revision or qualify a user workflow. The

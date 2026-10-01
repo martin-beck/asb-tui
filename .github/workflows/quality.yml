@@ -57,6 +57,7 @@ jobs:
           python3 tools/test-end-to-end-journey.py
           python3 tools/check-credential-boundary.py
           python3 tools/test-release-verifier.py
+          python3 tools/test-dev-bundle.py
           tools/test-promoted-self-test.sh
           python3 -m json.tool provenance/dependencies.lock.json >/dev/null
           python3 -m json.tool provenance/sbom.spdx.json >/dev/null
