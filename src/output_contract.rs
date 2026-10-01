@@ -136,6 +136,7 @@ mod tests {
         assert_eq!(Route::parse("wizard"), Route::parse("setup"));
         assert_eq!(Route::parse("run"), Route::parse("benchmark"));
         assert_eq!(Route::parse("uninstall"), Route::parse("remove"));
+        assert_eq!(Route::parse("unknown"), None);
     }
 
     #[test]
@@ -154,5 +155,36 @@ mod tests {
         for route in Route::ALL {
             assert_eq!(Route::parse(route.name()), Some(route));
         }
+    }
+
+    #[test]
+    fn every_route_exposes_its_public_label_in_both_formats() {
+        for route in Route::ALL {
+            let output = Output::for_route(route);
+            assert_eq!(output.command, route.name());
+            assert!(!output.message.is_empty());
+            assert!(output.human().contains(output.message));
+            let json = render(route, true);
+            assert!(json.ends_with('\n'));
+            assert!(json.contains(output.message));
+        }
+    }
+
+    #[test]
+    fn human_output_includes_warning_and_json_omits_absent_warning() {
+        let output = Output::for_route(Route::Doctor);
+        let human = output.human();
+        assert!(human.contains("Status: unavailable"));
+        assert!(human.contains("Next: "));
+        assert!(human.contains("Warning: development-only"));
+
+        let without_warning = Output {
+            development_warning: None,
+            ..output
+        };
+        let human_without_warning = without_warning.human();
+        assert!(!human_without_warning.contains("Warning:"));
+        let json = serde_json::to_string(&without_warning).unwrap();
+        assert!(!json.contains("development_warning"));
     }
 }
