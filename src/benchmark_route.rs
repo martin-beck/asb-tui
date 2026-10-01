@@ -37,6 +37,7 @@ pub struct GuidedCampaign {
     pub replay: ReplayMode,
     pub stage: CampaignStage,
     catalog: Option<GuidedCatalog>,
+    provider_profile_sha256: Option<String>,
 }
 
 /// The validated catalog projection supplied by ASB. The route never accepts
@@ -137,6 +138,8 @@ pub enum CampaignError {
     InvalidReplayCatalog,
     ReplayUnavailable,
     ReplayAgentMismatch,
+    ProviderProfileNotBound,
+    ProviderProfileMismatch,
 }
 
 impl GuidedCampaign {
@@ -153,7 +156,22 @@ impl GuidedCampaign {
             replay: ReplayMode::Live,
             stage: CampaignStage::Selection,
             catalog: None,
+            provider_profile_sha256: None,
         })
+    }
+
+    /// Bind the exact authenticated provider profile selected by setup.
+    /// Replay cannot proceed until this identity is present.
+    pub fn bind_provider_profile_sha256(
+        &mut self,
+        provider_profile_sha256: impl Into<String>,
+    ) -> Result<(), CampaignError> {
+        let provider_profile_sha256 = provider_profile_sha256.into();
+        if !valid_digest(&provider_profile_sha256) {
+            return Err(CampaignError::InvalidReplayCatalog);
+        }
+        self.provider_profile_sha256 = Some(provider_profile_sha256);
+        Ok(())
     }
 
     pub fn with_catalog(
@@ -274,14 +292,14 @@ impl GuidedCampaign {
     }
 
     /// Produce an explicit strict-replay intent. There is no live fallback.
-    pub fn start_offline_replay(
+    fn start_offline_replay_selected(
         &mut self,
-        recording_id: impl Into<String>,
+        recording_id: String,
     ) -> Result<ReplayIntent, CampaignError> {
         if self.stage != CampaignStage::Review || self.replay != ReplayMode::OfflineReplay {
             return Err(CampaignError::InvalidTransition);
         }
-        let recording_id = bounded(recording_id.into())?;
+        let recording_id = bounded(recording_id)?;
         if recording_id.is_empty() {
             return Err(CampaignError::OfflineRecordingRequired);
         }
@@ -307,12 +325,19 @@ impl GuidedCampaign {
         if self.agents.len() != 1 || self.agents[0] != catalog.agent_id {
             return Err(CampaignError::ReplayAgentMismatch);
         }
+        let provider_profile_sha256 = self
+            .provider_profile_sha256
+            .as_deref()
+            .ok_or(CampaignError::ProviderProfileNotBound)?;
+        if provider_profile_sha256 != catalog.provider_profile_sha256 {
+            return Err(CampaignError::ProviderProfileMismatch);
+        }
         let choice = catalog
             .compatible
             .iter()
             .find(|choice| choice.cassette_sha256 == cassette_sha256)
             .ok_or(CampaignError::ReplayUnavailable)?;
-        let mut intent = self.start_offline_replay(choice.cassette_id.clone())?;
+        let mut intent = self.start_offline_replay_selected(choice.cassette_id.clone())?;
         intent.cassette_sha256 = Some(choice.cassette_sha256.clone());
         intent.provider_profile_sha256 = Some(catalog.provider_profile_sha256.clone());
         Ok(intent)

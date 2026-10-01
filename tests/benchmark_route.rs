@@ -31,13 +31,26 @@ fn guided_route_selects_then_launches_and_comparisons_are_after_completion() {
 
 #[test]
 fn offline_replay_is_explicit_and_has_no_live_fallback() {
+    let digest = "a".repeat(64);
     let mut route = GuidedCampaign::new("quality").unwrap();
     route.add_agent("agent-a").unwrap();
     route.add_measure("quality.correctness").unwrap();
     route.set_replay_mode(ReplayMode::OfflineReplay).unwrap();
     route.review().unwrap();
     assert_eq!(route.start(), Err(CampaignError::OfflineRecordingRequired));
-    let intent = route.start_offline_replay("cassette-1").unwrap();
+    route.bind_provider_profile_sha256("b".repeat(64)).unwrap();
+    let catalog = ReplayCatalog::new(
+        "b".repeat(64),
+        "agent-a",
+        vec![ReplayChoice {
+            cassette_id: "cassette-1".into(),
+            cassette_sha256: digest.clone(),
+        }],
+    )
+    .unwrap();
+    let intent = route
+        .start_offline_replay_from_catalog(&catalog, &digest)
+        .unwrap();
     assert!(intent.offline_only);
     assert_eq!(intent.recording_id, "cassette-1");
 }
@@ -62,6 +75,12 @@ fn replay_requires_exact_catalog_identity_and_remains_offline() {
     route.review().unwrap();
 
     assert_eq!(
+        route.start_offline_replay_from_catalog(&catalog, &digest),
+        Err(CampaignError::ProviderProfileNotBound)
+    );
+    route.bind_provider_profile_sha256(profile.clone()).unwrap();
+
+    assert_eq!(
         route.start_offline_replay_from_catalog(&catalog, &"c".repeat(64)),
         Err(CampaignError::ReplayUnavailable)
     );
@@ -74,6 +93,29 @@ fn replay_requires_exact_catalog_identity_and_remains_offline() {
     assert_eq!(
         intent.provider_profile_sha256.as_deref(),
         Some(profile.as_str())
+    );
+}
+
+#[test]
+fn replay_rejects_catalog_for_a_different_bound_provider_profile() {
+    let mut route = GuidedCampaign::new("quality").unwrap();
+    route.add_agent("agent-a").unwrap();
+    route.add_measure("quality.correctness").unwrap();
+    route.set_replay_mode(ReplayMode::OfflineReplay).unwrap();
+    route.review().unwrap();
+    route.bind_provider_profile_sha256("a".repeat(64)).unwrap();
+    let catalog = ReplayCatalog::new(
+        "b".repeat(64),
+        "agent-a",
+        vec![ReplayChoice {
+            cassette_id: "cassette-1".into(),
+            cassette_sha256: "c".repeat(64),
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        route.start_offline_replay_from_catalog(&catalog, &"c".repeat(64)),
+        Err(CampaignError::ProviderProfileMismatch)
     );
 }
 

@@ -5,7 +5,7 @@
 //! an in-process fixture: no credentials are read and no network is opened.
 
 use asb_tui::{
-    benchmark_route::{GuidedCampaign, GuidedCatalog, ReplayMode},
+    benchmark_route::{GuidedCampaign, GuidedCatalog, ReplayCatalog, ReplayChoice, ReplayMode},
     development_journey::{FixtureRequest, evaluate_fixture, execute_input},
     development_onboarding, development_router,
     reports::{
@@ -155,11 +155,26 @@ fn clean_fixture_composes_install_wizard_benchmark_replay_and_comparison() {
 
     let mut replay = GuidedCampaign::with_catalog("fixture-workload", catalog).unwrap();
     replay.add_agent("fake-alpha").unwrap();
-    replay.add_agent("fake-beta").unwrap();
     replay.add_measure("fixture.latency").unwrap();
     replay.set_replay_mode(ReplayMode::OfflineReplay).unwrap();
     replay.review().unwrap();
-    let replay_intent = replay.start_offline_replay("fixture-cassette").unwrap();
+    let cassette_sha256 = "a".repeat(64);
+    let provider_profile_sha256 = "b".repeat(64);
+    replay
+        .bind_provider_profile_sha256(provider_profile_sha256.clone())
+        .unwrap();
+    let replay_catalog = ReplayCatalog::new(
+        provider_profile_sha256,
+        "fake-alpha",
+        vec![ReplayChoice {
+            cassette_id: "fixture-cassette".into(),
+            cassette_sha256: cassette_sha256.clone(),
+        }],
+    )
+    .unwrap();
+    let replay_intent = replay
+        .start_offline_replay_from_catalog(&replay_catalog, &cassette_sha256)
+        .unwrap();
     assert!(replay_intent.offline_only);
     replay.finish(true).unwrap();
 
