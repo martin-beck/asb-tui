@@ -8,7 +8,7 @@
 //! A development marker is mandatory for lifecycle operations so a fixture can
 //! never be mistaken for production support.
 
-use crate::{delegated::LifecycleResponse, development_router};
+use crate::{channel_selection::ReleaseChannel, delegated::LifecycleResponse, development_router};
 use serde_json::Value;
 use std::io::Read;
 
@@ -42,6 +42,7 @@ pub enum TuiCommand {
         operation: TuiOperation,
         development: bool,
         channel_dev: bool,
+        channel: ReleaseChannel,
     },
 }
 
@@ -50,6 +51,7 @@ pub enum ParseError {
     Usage,
     DevelopmentMarkerRequired,
     ProductionMarkerUnsupported,
+    ChannelUnavailable,
 }
 
 impl ParseError {
@@ -58,6 +60,7 @@ impl ParseError {
             Self::Usage => "usage_invalid",
             Self::DevelopmentMarkerRequired => "development_marker_required",
             Self::ProductionMarkerUnsupported => "production_profile_unsupported",
+            Self::ChannelUnavailable => "channel_unavailable",
         }
     }
 }
@@ -82,14 +85,26 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
     };
     let mut development = false;
     let mut channel_dev = false;
+    let mut channel = ReleaseChannel::Dev;
     let mut format_json = false;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--development" if !development => development = true,
-            "--channel"
-                if !channel_dev && arguments.get(index + 1).map(String::as_str) == Some("dev") =>
-            {
+            "--channel" if !channel_dev => {
+                let Some(value) = arguments.get(index + 1).map(String::as_str) else {
+                    return Err(ParseError::Usage);
+                };
+                channel = match value {
+                    "dev" => ReleaseChannel::Dev,
+                    "stable" => ReleaseChannel::Stable,
+                    "nightly" => ReleaseChannel::Nightly,
+                    "experimental" => ReleaseChannel::Experimental,
+                    _ => return Err(ParseError::Usage),
+                };
+                if !channel.available() {
+                    return Err(ParseError::ChannelUnavailable);
+                }
                 channel_dev = true;
                 development = true;
                 index += 1;
@@ -116,6 +131,7 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
         operation,
         development,
         channel_dev,
+        channel,
     })
 }
 
@@ -180,6 +196,7 @@ mod tests {
                 operation: TuiOperation::Status,
                 development: true,
                 channel_dev: false,
+                channel: ReleaseChannel::Dev,
             })
         );
     }
@@ -200,6 +217,7 @@ mod tests {
                 operation: TuiOperation::Install,
                 development: true,
                 channel_dev: true,
+                channel: ReleaseChannel::Dev,
             })
         );
         assert_eq!(
@@ -210,7 +228,7 @@ mod tests {
                 "--format",
                 "json"
             ])),
-            Err(ParseError::Usage)
+            Err(ParseError::ChannelUnavailable)
         );
     }
 

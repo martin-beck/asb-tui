@@ -28,6 +28,7 @@
     {"path":"src/asb_lifecycle.rs","reason":"ASB lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/broker_adoption.rs","reason":"Transport handoff only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/bundle.rs","reason":"Bundle verification only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/channel_selection.rs","reason":"Renderer-neutral release-channel selection and unavailable-channel warning policy only; it has no widget or projection ownership.","expires":"2027-12-31"},
     {"path":"src/compatibility.rs","reason":"Compatibility probing only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/control_client.rs","reason":"Control transport client only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/control_codec.rs","reason":"Wire codec, benchmark-catalog integrity validation and coverage fixtures, credential-free auth lifecycle, runner-owned helper v1.10, recording-campaign v1.8 schemas, and renderer-neutral setup validation tests only; it has no UI state or projection ownership.","expires":"2027-12-31"},

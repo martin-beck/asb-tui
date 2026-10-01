@@ -12,6 +12,7 @@ pub mod asb_lifecycle;
 pub mod benchmark_route;
 pub mod broker_adoption;
 pub mod bundle;
+pub mod channel_selection;
 pub mod compatibility;
 pub mod configuration;
 pub mod configuration_materialization;
