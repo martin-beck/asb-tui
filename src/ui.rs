@@ -125,7 +125,10 @@ impl Default for WorkspaceState {
         let benchmark_selection = default_benchmark_selection();
         Self {
             screen: Screen::Landing,
-            wizard: Wizard::default(),
+            // Live setup is stable by default; development fixtures are
+            // installed only by ensure_development_catalog after an explicit
+            // development readiness decision.
+            wizard: Wizard::stable(),
             wizard_formal: WizardFormalState::new().expect("authored wizard model must be valid"),
             wizard_completion: None,
             provider_setup_apply: Default::default(),
@@ -681,6 +684,14 @@ impl WorkspaceState {
         }
     }
 
+    /// Select the explicit development-only wizard context for the runtime
+    /// development channel when no authoritative provider catalog is present.
+    pub fn use_development_context(&mut self) {
+        if !self.authoritative_provider_catalog_seen {
+            self.ensure_development_catalog();
+        }
+    }
+
     /// Apply a live terminal resize without disturbing the current route,
     /// query, selection, or overlay state. Invalid dimensions are rejected
     /// atomically and leave the workspace unchanged.
@@ -741,7 +752,13 @@ impl WorkspaceState {
         if (self.wizard.catalog().is_none() || self.development_catalog_fallback)
             && let Some(catalog) = wizard_catalog_from_snapshot(&snapshot)
         {
-            self.wizard = Wizard::with_catalog(catalog.clone());
+            let adapter_catalog = snapshot.provider_catalog.as_ref().and_then(|provider| {
+                crate::adapter_catalog::AdapterCatalog::from_provider_catalog(provider).ok()
+            });
+            self.wizard = adapter_catalog.map_or_else(
+                || Wizard::with_catalog(catalog.clone()),
+                |adapter| Wizard::stable_with_catalog_and_adapter(catalog.clone(), adapter),
+            );
             self.wizard_formal = WizardFormalState::new_with_catalog(catalog)
                 .expect("validated live wizard catalog must satisfy the state model");
             self.development_catalog_fallback = false;
@@ -2645,6 +2662,24 @@ mod tests {
                 .id,
             "development"
         );
+        assert_eq!(state.wizard.mode(), crate::wizard::WizardMode::Development);
+    }
+
+    #[test]
+    fn workspace_default_uses_stable_wizard_context() {
+        assert_eq!(
+            WorkspaceState::default().wizard.mode(),
+            crate::wizard::WizardMode::Stable
+        );
+    }
+
+    #[test]
+    fn explicit_development_runtime_context_installs_fixture_catalog() {
+        let mut state = WorkspaceState::default();
+        assert_eq!(state.wizard.mode(), crate::wizard::WizardMode::Stable);
+        state.use_development_context();
+        assert_eq!(state.wizard.mode(), crate::wizard::WizardMode::Development);
+        assert!(state.wizard.catalog().is_some());
     }
 
     #[test]

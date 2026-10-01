@@ -7,6 +7,7 @@
 //! UI state model before state is committed.
 
 use crate::{
+    adapter_catalog::{AdapterCatalog, AdapterSelection, AuthMethod, SelectionSession},
     development_auth::{
         DevelopmentAuthError, DevelopmentAuthFlow, DevelopmentAuthMethod, DevelopmentAuthSnapshot,
     },
@@ -76,6 +77,12 @@ pub enum WizardError {
     Catalog(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WizardMode {
+    Development,
+    Stable,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Wizard {
     step: Step,
@@ -83,6 +90,8 @@ pub struct Wizard {
     cancelled: bool,
     catalog: Option<WizardCatalogState>,
     development_auth: DevelopmentAuthFlow,
+    adapter_selection: Option<SelectionSession>,
+    mode: WizardMode,
 }
 
 impl Default for Wizard {
@@ -94,6 +103,8 @@ impl Default for Wizard {
             catalog: None,
             development_auth: DevelopmentAuthFlow::new("development")
                 .expect("static development provider is valid"),
+            adapter_selection: Some(SelectionSession::new(AdapterCatalog::development())),
+            mode: WizardMode::Development,
         }
     }
 }
@@ -106,6 +117,34 @@ impl Wizard {
             ..Self::default()
         }
     }
+
+    pub fn stable() -> Self {
+        Self {
+            adapter_selection: None,
+            mode: WizardMode::Stable,
+            ..Self::default()
+        }
+    }
+
+    pub fn stable_with_adapter_catalog(catalog: AdapterCatalog) -> Self {
+        Self {
+            adapter_selection: Some(SelectionSession::new(catalog)),
+            mode: WizardMode::Stable,
+            ..Self::default()
+        }
+    }
+
+    pub fn stable_with_catalog_and_adapter(
+        catalog: WizardCatalog,
+        adapter_catalog: AdapterCatalog,
+    ) -> Self {
+        Self {
+            catalog: Some(WizardCatalogState::new(catalog, OptionKind::Agent)),
+            adapter_selection: Some(SelectionSession::new(adapter_catalog)),
+            mode: WizardMode::Stable,
+            ..Self::default()
+        }
+    }
     #[must_use]
     pub const fn step(&self) -> Step {
         self.step
@@ -113,6 +152,11 @@ impl Wizard {
     #[must_use]
     pub const fn cancelled(&self) -> bool {
         self.cancelled
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> WizardMode {
+        self.mode
     }
 
     /// Return the bounded draft value for the active editable step.
@@ -322,7 +366,37 @@ impl Wizard {
         }
         self.restart_development_credential();
     }
+
+    /// Validate OpenRouter's provider/model/auth tuple through the adapter
+    /// compatibility catalog before the setup draft can complete.
+    pub fn select_openrouter_adapter(&self) -> Result<(), WizardError> {
+        let auth = match self.values[Step::Authentication as usize].as_str() {
+            "none" => AuthMethod::None,
+            "local_daemon" => AuthMethod::LocalDaemon,
+            value if value.starts_with("credential_reference:") => AuthMethod::CredentialReference,
+            _ => return Err(WizardError::InvalidValue),
+        };
+        if self.mode == WizardMode::Stable && auth == AuthMethod::None {
+            return Err(WizardError::InvalidValue);
+        }
+        self.adapter_selection
+            .as_ref()
+            .ok_or_else(|| {
+                WizardError::Catalog("authoritative adapter catalog is unavailable".into())
+            })?
+            .validate(AdapterSelection {
+                adapter_id: "opencode".into(),
+                provider_id: "openrouter".into(),
+                model_id: self.values[Step::Model as usize].trim().into(),
+                auth,
+            })
+            .map_err(|error| WizardError::Catalog(format!("adapter compatibility: {error:?}")))
+    }
+
     pub fn complete(&self) -> Result<(), WizardError> {
+        if self.values[Step::Provider as usize].trim() == "openrouter" {
+            self.select_openrouter_adapter()?;
+        }
         (self.step == Step::Review)
             .then_some(())
             .ok_or(WizardError::AtEnd)
@@ -813,5 +887,78 @@ mod tests {
             wizard.development_auth().status,
             crate::development_auth::DevelopmentAuthStatus::Unconfigured
         );
+    }
+
+    #[test]
+    fn openrouter_setup_is_checked_by_adapter_compatibility_before_completion() {
+        let mut wizard = Wizard::default();
+        for value in [
+            "agent",
+            "openrouter",
+            "openai/gpt-4o",
+            "defaults",
+            "none",
+            "record",
+            "replay",
+        ] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert_eq!(wizard.step(), Step::Review);
+        assert_eq!(wizard.complete(), Ok(()));
+    }
+
+    #[test]
+    fn incompatible_openrouter_model_is_rejected_without_completion() {
+        let mut wizard = Wizard::default();
+        for value in [
+            "agent",
+            "openrouter",
+            "unknown/model",
+            "defaults",
+            "none",
+            "record",
+            "replay",
+        ] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert!(matches!(wizard.complete(), Err(WizardError::Catalog(_))));
+    }
+
+    #[test]
+    fn stable_wizard_never_uses_development_fixture_or_none_auth() {
+        let mut wizard = Wizard::stable();
+        for value in [
+            "agent",
+            "openrouter",
+            "openai/gpt-4o",
+            "defaults",
+            "none",
+            "record",
+            "replay",
+        ] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert!(matches!(wizard.complete(), Err(WizardError::InvalidValue)));
+    }
+
+    #[test]
+    fn stable_wizard_accepts_authoritative_catalog_and_reference_only() {
+        let mut wizard = Wizard::stable_with_adapter_catalog(AdapterCatalog::development());
+        for value in [
+            "agent",
+            "openrouter",
+            "openai/gpt-4o",
+            "defaults",
+            "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "record",
+            "replay",
+        ] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert_eq!(wizard.complete(), Ok(()));
     }
 }

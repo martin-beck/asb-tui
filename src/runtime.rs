@@ -351,6 +351,9 @@ pub fn run_interactive_with_control_context(
         .poll_projection_with_context_for_runtime(&mut projection, development_mode)
         .map_err(|error| RuntimeError(io::Error::other(error)))?;
     workspace.apply_live_snapshot(projection.snapshot());
+    if development_mode {
+        workspace.use_development_context();
+    }
     run_interactive_loop(
         state,
         policy,

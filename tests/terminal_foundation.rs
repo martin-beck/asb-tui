@@ -2704,12 +2704,13 @@ fn unix_socket_peer_credentials_bind_the_exact_live_process_generation() {
         .unwrap();
     assert!(wait_for_marker(&ready), "peer fixture did not become ready");
     let pid = child.id();
+    // The fixture exits immediately after accepting the probe connection.  Capture its
+    // generation while it is still alive; otherwise the subsequent process lookup can race
+    // the expected exit and turn a valid peer observation into a spurious None.
+    let start_time = process_start_time(pid).expect("peer fixture disappeared before probing");
     assert_eq!(
         tmux_socket_peer_process(&socket),
-        Ok(ProcessGeneration {
-            pid,
-            start_time: process_start_time(pid).unwrap(),
-        })
+        Ok(ProcessGeneration { pid, start_time })
     );
     assert!(child.wait().unwrap().success());
 
