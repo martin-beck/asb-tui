@@ -98,6 +98,18 @@ pub struct LifecycleResponse {
     pub source_commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_tree: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed_channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_state_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_config_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_cache_root: Option<String>,
 }
 
 impl LifecycleResponse {
@@ -118,6 +130,12 @@ impl LifecycleResponse {
             protocol_version: None,
             source_commit: None,
             source_tree: None,
+            endpoint: None,
+            installed_channel: None,
+            manifest_sha256: None,
+            workspace_state_root: None,
+            workspace_config_root: None,
+            workspace_cache_root: None,
         }
     }
 
@@ -183,6 +201,12 @@ pub fn execute(request: LifecycleRequest) -> LifecycleResponse {
                 protocol_version: observed.protocol_version,
                 source_commit: observed.source_commit,
                 source_tree: observed.source_tree,
+                endpoint: observed.endpoint,
+                installed_channel: observed.channel,
+                manifest_sha256: observed.manifest_sha256,
+                workspace_state_root: observed.workspace_state_root,
+                workspace_config_root: observed.workspace_config_root,
+                workspace_cache_root: observed.workspace_cache_root,
             };
         }
         LifecycleRequest::Remove {
@@ -542,6 +566,12 @@ mod tests {
             quality_version: crate::compatibility::QUALITY_VERSION.into(),
             quality_commit: crate::compatibility::QUALITY_COMMIT.into(),
             classification: "verified_extension".into(),
+            endpoint: crate::frontend_handoff::DEFAULT_ENDPOINT.into(),
+            channel: crate::frontend_handoff::DEFAULT_CHANNEL.into(),
+            manifest_sha256: "f".repeat(64),
+            workspace_state_root: "workspace/state".into(),
+            workspace_config_root: "workspace/config".into(),
+            workspace_cache_root: "workspace/cache".into(),
         };
         store.stage(&installation, b"hello").unwrap();
         store.activate(&installation).unwrap();

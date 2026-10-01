@@ -29,6 +29,7 @@ pub mod development_lifecycle;
 pub mod development_onboarding;
 pub mod development_router;
 pub mod formal_state;
+pub mod frontend_handoff;
 pub mod help;
 pub mod identity_adapter;
 pub mod landing;

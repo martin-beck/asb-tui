@@ -113,6 +113,12 @@ fn installation() -> Installation {
         quality_version: "0.23.0".into(),
         quality_commit: "e".repeat(40),
         classification: "verified_extension".into(),
+        endpoint: asb_tui::frontend_handoff::DEFAULT_ENDPOINT.into(),
+        channel: asb_tui::frontend_handoff::DEFAULT_CHANNEL.into(),
+        manifest_sha256: "f".repeat(64),
+        workspace_state_root: "workspace/state".into(),
+        workspace_config_root: "workspace/config".into(),
+        workspace_cache_root: "workspace/cache".into(),
     }
 }
 

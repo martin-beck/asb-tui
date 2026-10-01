@@ -55,6 +55,12 @@ pub struct Installation {
     pub quality_version: String,
     pub quality_commit: String,
     pub classification: String,
+    pub endpoint: String,
+    pub channel: String,
+    pub manifest_sha256: String,
+    pub workspace_state_root: String,
+    pub workspace_config_root: String,
+    pub workspace_cache_root: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -69,6 +75,12 @@ pub struct LifecycleStatus {
     pub protocol_version: Option<u64>,
     pub source_commit: Option<String>,
     pub source_tree: Option<String>,
+    pub endpoint: Option<String>,
+    pub channel: Option<String>,
+    pub manifest_sha256: Option<String>,
+    pub workspace_state_root: Option<String>,
+    pub workspace_config_root: Option<String>,
+    pub workspace_cache_root: Option<String>,
     pub reason: &'static str,
 }
 
@@ -888,6 +900,10 @@ fn executable_self_test(
         .stdin(input)
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    let handoff = crate::frontend_handoff::FrontendHandoff::from_installation(installation);
+    for (name, value) in handoff.env_pairs() {
+        command.env(name, value);
+    }
     for name in ["TERM", "COLORTERM"] {
         if let Ok(value) = std::env::var(name)
             && !value.is_empty()
@@ -1055,10 +1071,15 @@ impl FrontendLauncher for ProcessLauncher {
         _installation: &Installation,
         executable: &[u8],
     ) -> Result<(), LifecycleIoError> {
+        let handoff = crate::frontend_handoff::FrontendHandoff::from_installation(_installation);
         let executable = executable_memfd("asb-tui-frontend", executable)?;
         let program = format!("/proc/self/fd/{}", executable.as_raw_fd());
         let (input, output, error) = controlling_terminal()?;
-        let status = Command::new(program)
+        let mut command = Command::new(program);
+        for (name, value) in handoff.env_pairs() {
+            command.env(name, value);
+        }
+        let status = command
             .stdin(input)
             .stdout(output)
             .stderr(error)
@@ -1269,6 +1290,14 @@ pub fn install(
         quality_version: QUALITY_VERSION.into(),
         quality_commit: QUALITY_COMMIT.into(),
         classification: ReleaseClassification::VerifiedExtension.as_str().into(),
+        endpoint: crate::frontend_handoff::DEFAULT_ENDPOINT.into(),
+        channel: crate::frontend_handoff::DEFAULT_CHANNEL.into(),
+        manifest_sha256: digest_bytes(
+            &serde_json::to_vec(manifest).map_err(|_| "manifest_encode_failed")?,
+        )?,
+        workspace_state_root: "workspace/state".into(),
+        workspace_config_root: "workspace/config".into(),
+        workspace_cache_root: "workspace/cache".into(),
     };
     store
         .stage(&installation, executable)
@@ -1306,6 +1335,12 @@ pub fn status(store: &impl LifecycleStore) -> LifecycleStatus {
             protocol_version: None,
             source_commit: None,
             source_tree: None,
+            endpoint: None,
+            channel: None,
+            manifest_sha256: None,
+            workspace_state_root: None,
+            workspace_config_root: None,
+            workspace_cache_root: None,
             reason: "extension_not_installed",
         };
     };
@@ -1322,6 +1357,12 @@ pub fn status(store: &impl LifecycleStore) -> LifecycleStatus {
         && installation.coordinator_commit == COORDINATOR_COMMIT
         && installation.quality_version == QUALITY_VERSION
         && installation.quality_commit == QUALITY_COMMIT
+        && installation.endpoint == crate::frontend_handoff::DEFAULT_ENDPOINT
+        && installation.channel == crate::frontend_handoff::DEFAULT_CHANNEL
+        && FilesystemLifecycle::valid_digest(&installation.manifest_sha256)
+        && !installation.workspace_state_root.is_empty()
+        && !installation.workspace_config_root.is_empty()
+        && !installation.workspace_cache_root.is_empty()
         && store
             .active_executable(&installation)
             .ok()
@@ -1340,6 +1381,12 @@ pub fn status(store: &impl LifecycleStore) -> LifecycleStatus {
         protocol_version: Some(installation.protocol_version),
         source_commit: Some(installation.source_commit),
         source_tree: Some(installation.source_tree),
+        endpoint: Some(installation.endpoint),
+        channel: Some(installation.channel),
+        manifest_sha256: Some(installation.manifest_sha256),
+        workspace_state_root: Some(installation.workspace_state_root),
+        workspace_config_root: Some(installation.workspace_config_root),
+        workspace_cache_root: Some(installation.workspace_cache_root),
         reason: if valid {
             "verified_installation"
         } else {

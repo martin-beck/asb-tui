@@ -287,6 +287,12 @@ fn filesystem_upgrade_reconnect_and_existing_version_reuse_are_verified() {
         quality_version: "v0.23.0".into(),
         quality_commit: "8a9f056b7fc7926b9465a0f7a09225d4da1c572a".into(),
         classification: "verified_extension".into(),
+        endpoint: asb_tui::frontend_handoff::DEFAULT_ENDPOINT.into(),
+        channel: asb_tui::frontend_handoff::DEFAULT_CHANNEL.into(),
+        manifest_sha256: "f".repeat(64),
+        workspace_state_root: "workspace/state".into(),
+        workspace_config_root: "workspace/config".into(),
+        workspace_cache_root: "workspace/cache".into(),
     };
     store.stage(&first, b"world").unwrap();
     store.activate(&first).unwrap();
