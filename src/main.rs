@@ -229,7 +229,10 @@ fn launch_broker_entry(development_mode: bool) -> ExitCode {
             }
         };
     let terminal_result = if development_mode {
-        match env::var_os("ASB_TUI_DEVELOPMENT_TERMINAL_PATH") {
+        match development_terminal_path(
+            development_mode,
+            env::var_os("ASB_TUI_DEVELOPMENT_TERMINAL_PATH"),
+        ) {
             Some(path) => redirect_stdin_to_terminal_path(std::path::Path::new(&path)),
             None => redirect_stdin_to_controlling_terminal(),
         }
@@ -272,6 +275,13 @@ fn launch_broker_entry(development_mode: bool) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn development_terminal_path(
+    development_mode: bool,
+    configured: Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    development_mode.then_some(configured).flatten()
 }
 
 fn launch_socket_entry(path: &str) -> ExitCode {
@@ -364,7 +374,8 @@ fn launch() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::DIAGNOSTIC;
+    use super::{DIAGNOSTIC, development_terminal_path};
+    use std::ffi::OsString;
 
     #[test]
     fn diagnostic_is_content_free_and_explicitly_unverified() {
@@ -372,5 +383,15 @@ mod tests {
         assert!(DIAGNOSTIC.contains("installed_asb_compatibility_not_verified"));
         assert!(!DIAGNOSTIC.contains('/'));
         assert!(!DIAGNOSTIC.contains("token"));
+    }
+
+    #[test]
+    fn stable_broker_mode_ignores_development_terminal_path() {
+        let configured = Some(OsString::from("/dev/pts/7"));
+        assert_eq!(development_terminal_path(false, configured), None);
+        assert_eq!(
+            development_terminal_path(true, Some(OsString::from("/dev/pts/7"))),
+            Some(OsString::from("/dev/pts/7"))
+        );
     }
 }

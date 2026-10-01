@@ -76,5 +76,16 @@ mod tests {
         assert!(redirect_stdin_to_terminal_path(Path::new("/dev/null")).is_err());
         assert!(redirect_stdin_to_terminal_path(Path::new("relative-tty")).is_err());
         assert!(redirect_stdin_to_terminal_path(Path::new("/dev/pts/999999")).is_err());
+        assert!(redirect_stdin_to_terminal_path(Path::new("/dev/pts/../null")).is_err());
+        assert!(redirect_stdin_to_terminal_path(Path::new("/dev/pts/+1")).is_err());
+    }
+
+    #[test]
+    fn symlinked_terminal_is_rejected_before_open() {
+        let path = std::env::temp_dir().join(format!("asb-tui-pty-link-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::os::unix::fs::symlink("/dev/null", &path).unwrap();
+        assert!(redirect_stdin_to_terminal_path(&path).is_err());
+        std::fs::remove_file(path).unwrap();
     }
 }
