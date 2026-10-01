@@ -136,7 +136,7 @@ pub fn poll_authenticated_workspace(
     workspace: &mut ui::WorkspaceState,
 ) -> Result<(), RuntimeError> {
     session
-        .poll_projection(projection)
+        .poll_projection_with_context_for_runtime(projection, false)
         .map_err(|error| RuntimeError(io::Error::other(error)))?;
     workspace.apply_live_snapshot(projection.snapshot());
     Ok(())
@@ -171,15 +171,28 @@ pub fn run_interactive_with_control(
     policy: RenderPolicy,
     session: &mut AuthenticatedBrokerSession,
 ) -> Result<(), RuntimeError> {
+    run_interactive_with_control_context(state, policy, session, false)
+}
+
+pub fn run_interactive_with_control_context(
+    state: &mut AppState,
+    policy: RenderPolicy,
+    session: &mut AuthenticatedBrokerSession,
+    development_mode: bool,
+) -> Result<(), RuntimeError> {
     let mut projection = ControlProjection::default();
     let mut workspace = ui::WorkspaceState::default();
-    poll_authenticated_workspace(session, &mut projection, &mut workspace)?;
+    session
+        .poll_projection_with_context_for_runtime(&mut projection, development_mode)
+        .map_err(|error| RuntimeError(io::Error::other(error)))?;
+    workspace.apply_live_snapshot(projection.snapshot());
     run_interactive_loop(
         state,
         policy,
         workspace,
         Some(session),
         Some(&mut projection),
+        development_mode,
     )
 }
 
@@ -368,7 +381,14 @@ impl TerminalSession {
 
 /// Run the single-writer interactive draw loop until the operator quits.
 pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(), RuntimeError> {
-    run_interactive_loop(state, policy, ui::WorkspaceState::default(), None, None)
+    run_interactive_loop(
+        state,
+        policy,
+        ui::WorkspaceState::default(),
+        None,
+        None,
+        false,
+    )
 }
 
 /// Run the interactive frontend after one injected, normalized readiness
@@ -380,7 +400,7 @@ pub fn run_interactive_with_readiness<P: ReadinessProvider>(
     provider: &mut P,
 ) -> Result<(), RuntimeError> {
     let workspace = ui::WorkspaceState::for_readiness(provider.read());
-    run_interactive_loop(state, policy, workspace, None, None)
+    run_interactive_loop(state, policy, workspace, None, None, false)
 }
 
 fn run_interactive_loop(
@@ -389,6 +409,7 @@ fn run_interactive_loop(
     mut workspace: ui::WorkspaceState,
     mut control: Option<&mut AuthenticatedBrokerSession>,
     mut projection: Option<&mut ControlProjection>,
+    development_mode: bool,
 ) -> Result<(), RuntimeError> {
     let mut signals = Signals::new([SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGCONT])?;
     let mut session = TerminalSession::enter(policy)?;
@@ -406,7 +427,10 @@ fn run_interactive_loop(
             // Refresh only while a reviewed launch exists. Every response is
             // projected through the negotiated transport and stale revisions
             // are rejected; a refresh never restarts a run.
-            if control.poll_projection(projection).is_err() {
+            if control
+                .poll_projection_with_context_for_runtime(projection, development_mode)
+                .is_err()
+            {
                 if let Some(launch) = workspace.launch_state_mut() {
                     launch.disconnected();
                     launch.reconnect_started();
@@ -479,7 +503,13 @@ fn run_interactive_loop(
                             continue;
                         }
                         if control_action == crate::actions::UiAction::Reconnect {
-                            if control.poll_projection(projection).is_err() {
+                            if control
+                                .poll_projection_with_context_for_runtime(
+                                    projection,
+                                    development_mode,
+                                )
+                                .is_err()
+                            {
                                 if let Some(launch) = workspace.launch_state_mut() {
                                     launch.disconnected();
                                     launch.reconnect_started();

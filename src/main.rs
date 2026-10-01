@@ -13,7 +13,9 @@ use asb_tui::{
     development_onboarding::execute_input as execute_development_onboarding_input,
     development_router::execute_input as execute_development_router_input,
     lifecycle::{local_self_test_response, run_self_test_supervisor},
-    runtime::{run_interactive, run_interactive_with_control},
+    runtime::{
+        run_interactive, run_interactive_with_control, run_interactive_with_control_context,
+    },
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
     top_level::{self, TuiCommand},
@@ -37,7 +39,7 @@ fn main() -> ExitCode {
         });
     }
     if arguments == ["run", "--broker"] {
-        return launch_broker_entry();
+        return launch_broker_entry(false);
     }
     if arguments == ["run", "--broker", "--development"] {
         return launch_development_broker_entry();
@@ -189,7 +191,7 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
 /// negotiation still has to be implemented by the control client. Keeping
 /// this path fail-closed also ensures lifecycle JSON remains exclusively on
 /// `lifecycle --format json` and can never be confused with broker traffic.
-fn launch_broker_entry() -> ExitCode {
+fn launch_broker_entry(development_mode: bool) -> ExitCode {
     let received = match receive_from_stdin() {
         Ok(received) => received,
         Err(_) => {
@@ -239,7 +241,7 @@ fn launch_broker_entry() -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-    match run_interactive_with_control(&mut state, policy, &mut control) {
+    match run_interactive_with_control_context(&mut state, policy, &mut control, development_mode) {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => {
             eprintln!("terminal application failed");
@@ -310,7 +312,7 @@ fn launch_development_broker_entry() -> ExitCode {
         eprintln!("development broker descriptor rejected");
         return ExitCode::from(3);
     }
-    launch_broker_entry()
+    launch_broker_entry(true)
 }
 
 fn launch() -> ExitCode {

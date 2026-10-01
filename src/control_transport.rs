@@ -1117,7 +1117,7 @@ impl AuthenticatedBrokerSession {
         &mut self,
         projection: &mut ControlProjection,
     ) -> Result<(), TransportError> {
-        self.poll_projection_with_context(projection, false)
+        self.poll_projection_with_context_for_runtime(projection, false)
     }
 
     /// Poll bootstrap state for the explicit credential-free development
@@ -1126,10 +1126,10 @@ impl AuthenticatedBrokerSession {
         &mut self,
         projection: &mut ControlProjection,
     ) -> Result<(), TransportError> {
-        self.poll_projection_with_context(projection, true)
+        self.poll_projection_with_context_for_runtime(projection, true)
     }
 
-    fn poll_projection_with_context(
+    pub(crate) fn poll_projection_with_context_for_runtime(
         &mut self,
         projection: &mut ControlProjection,
         development_mode: bool,
