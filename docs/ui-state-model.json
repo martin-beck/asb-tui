@@ -137,7 +137,7 @@
     {"event":"wizard_development_select_none","from":"wizard","to":"wizard","effects":["wizard_auth_changed","focus_reset"]},
     {"event":"wizard_development_restart","from":"wizard","to":"wizard","effects":["wizard_auth_changed","focus_reset"]},
     {"event":"complete_wizard","from":"wizard","to":"landing","effects":["route_changed","focus_reset"]},
-    {"event":"cancel_wizard","from":"wizard","to":"landing","effects":["route_changed","focus_reset"]},
+    {"event":"cancel_wizard","from":"wizard","to":"landing","effects":["route_changed","focus_reset","wizard_draft_cleared","wizard_catalog_reset","development_auth_restarted"]},
     {"event":"open_measurement_selection","from":"landing","to":"measurement_selection","effects":["route_changed","focus_reset"]},
     {"event":"open_configuration","from":"landing","to":"configuration","effects":["route_changed","focus_reset"]},
     {"event":"open_help","from":"landing","to":"help","effects":["return_route_saved","route_changed","focus_reset"]},
