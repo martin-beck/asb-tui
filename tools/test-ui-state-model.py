@@ -156,6 +156,14 @@ class UiStateModelTests(unittest.TestCase):
         self.assertIn("select_offline_cassette", actions)
         self.assertIn("replay_selected", actions)
 
+    def test_replay_selection_precedes_dispatch(self):
+        bindings = {entry["action"] for entry in self.model["bindings"]}
+        self.assertIn("select_offline_cassette", bindings)
+        self.assertNotEqual(
+            next(entry for entry in self.model["bindings"] if entry["action"] == "select_offline_cassette")["key"],
+            next(entry for entry in self.model["bindings"] if entry["action"] == "replay_selected")["key"],
+        )
+
     def test_auth_status_is_read_before_wizard_configuration_apply(self):
         self.assertIn("auth_status_after_enrollment", self.model)
         self.assertIn("runner-authored status", self.model["auth_status_after_enrollment"])
