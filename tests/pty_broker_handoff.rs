@@ -14,7 +14,6 @@ use std::io::{IoSlice, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -284,7 +283,7 @@ fn real_asb_tui_socket_consumer_negotiates_bootstrap_and_exits_from_pty() {
 }
 
 #[test]
-fn real_asb_tui_broker_handoff_uses_fd0_and_controlling_pty() {
+fn real_asb_tui_broker_handoff_uses_fd0_and_injected_pty() {
     let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC).unwrap();
     grantpt(&master).unwrap();
     unlockpt(&master).unwrap();
@@ -293,6 +292,10 @@ fn real_asb_tui_broker_handoff_uses_fd0_and_controlling_pty() {
         OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC,
     )
     .unwrap();
+    let terminal_path = rustix::termios::ttyname(&slave, Vec::new())
+        .unwrap()
+        .into_string()
+        .unwrap();
     tcsetwinsize(
         &master,
         Winsize {
@@ -370,42 +373,30 @@ fn real_asb_tui_broker_handoff_uses_fd0_and_controlling_pty() {
         .unwrap()
         .join("asb-tui");
     let mut command = Command::new(binary);
-    let mut child = unsafe {
-        command
-            .args(["run", "--broker", "--development"])
-            .env_clear()
-            .env("TERM", "xterm-256color")
-            .env(
-                "ASB_TUI_DEVELOPMENT_DESCRIPTOR",
-                serde_json::json!({
-                    "schema_version": 1, "profile": "development", "development_only": true,
-                    "operation": "launch", "protocol_minor": 0,
-                    "asb_source_commit": "a".repeat(40), "asb_source_tree": "b".repeat(40),
-                    "tui_source_commit": "c".repeat(40), "tui_source_tree": "d".repeat(40)
-                })
-                .to_string(),
-            )
-            .env("ASB_TUI_EXPECTED_ASB_SOURCE_COMMIT", "a".repeat(40))
-            .env("ASB_TUI_EXPECTED_ASB_SOURCE_TREE", "b".repeat(40))
-            .env("ASB_TUI_EXPECTED_TUI_SOURCE_COMMIT", "c".repeat(40))
-            .env("ASB_TUI_EXPECTED_TUI_SOURCE_TREE", "d".repeat(40))
-            .stdin(Stdio::from(broker_child))
-            .stdout(Stdio::from(slave.try_clone().unwrap()))
-            .stderr(Stdio::from(slave))
-            .pre_exec(|| {
-                // fd 1 is the PTY slave. Make it the child's controlling terminal;
-                // launch_broker_entry later redirects fd 0 to /dev/tty.
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::ioctl(1, libc::TIOCSCTTY as _, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
+    let mut child = command
+        .args(["run", "--broker", "--development"])
+        .env_clear()
+        .env("TERM", "xterm-256color")
+        .env("ASB_TUI_DEVELOPMENT_TERMINAL_PATH", &terminal_path)
+        .env(
+            "ASB_TUI_DEVELOPMENT_DESCRIPTOR",
+            serde_json::json!({
+                "schema_version": 1, "profile": "development", "development_only": true,
+                "operation": "launch", "protocol_minor": 0,
+                "asb_source_commit": "a".repeat(40), "asb_source_tree": "b".repeat(40),
+                "tui_source_commit": "c".repeat(40), "tui_source_tree": "d".repeat(40)
             })
-            .spawn()
-            .unwrap()
-    };
+            .to_string(),
+        )
+        .env("ASB_TUI_EXPECTED_ASB_SOURCE_COMMIT", "a".repeat(40))
+        .env("ASB_TUI_EXPECTED_ASB_SOURCE_TREE", "b".repeat(40))
+        .env("ASB_TUI_EXPECTED_TUI_SOURCE_COMMIT", "c".repeat(40))
+        .env("ASB_TUI_EXPECTED_TUI_SOURCE_TREE", "d".repeat(40))
+        .stdin(Stdio::from(broker_child))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave))
+        .spawn()
+        .unwrap();
     send_rights(&broker_parent, &control_offered, &packet());
     let server_result = server_thread.join();
     if server_result.is_err() {

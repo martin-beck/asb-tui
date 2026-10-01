@@ -27,6 +27,7 @@
     {"path":"src/agent_lifecycle.rs","reason":"Agent lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/asb_lifecycle.rs","reason":"ASB lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/broker_adoption.rs","reason":"Transport handoff only; it has no UI state or projection ownership.","expires":"2027-12-31"},
+    {"path":"src/terminal_handoff.rs","reason":"Inherited broker fd and controlling-terminal separation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/bundle.rs","reason":"Bundle verification only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/channel_selection.rs","reason":"Renderer-neutral release-channel selection and unavailable-channel warning policy only; it has no widget or projection ownership.","expires":"2027-12-31"},
     {"path":"src/compatibility.rs","reason":"Compatibility probing only; it has no UI state or projection ownership.","expires":"2027-12-31"},
