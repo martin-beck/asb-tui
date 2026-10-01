@@ -97,6 +97,7 @@ pub struct WorkspaceState {
     pub wizard: Wizard,
     wizard_formal: WizardFormalState,
     wizard_completion: Option<[String; 7]>,
+    wizard_adapter_completion: Option<String>,
     /// Single-use apply gate for a completed provider setup review. Opening a
     /// new wizard restarts this gate; a failed apply cannot be replayed.
     pub(crate) provider_setup_apply: crate::provider_setup::AtomicProviderSetup,
@@ -131,6 +132,7 @@ impl Default for WorkspaceState {
             wizard: Wizard::stable(),
             wizard_formal: WizardFormalState::new().expect("authored wizard model must be valid"),
             wizard_completion: None,
+            wizard_adapter_completion: None,
             provider_setup_apply: Default::default(),
             development_catalog_fallback: false,
             authoritative_provider_catalog_seen: false,
@@ -327,6 +329,10 @@ impl WorkspaceState {
     /// retry cannot accidentally replay a configuration mutation.
     pub fn take_wizard_completion(&mut self) -> Option<[String; 7]> {
         self.wizard_completion.take()
+    }
+
+    pub fn take_wizard_adapter_completion(&mut self) -> Option<String> {
+        self.wizard_adapter_completion.take()
     }
 
     /// Convert the bounded wizard draft to the backend's credential-free
@@ -875,6 +881,8 @@ impl WorkspaceState {
                         }
                         if self.wizard_formal.route() == wizard::StartupRoute::Landing {
                             self.wizard_completion = Some(self.wizard.values());
+                            self.wizard_adapter_completion =
+                                self.wizard.selected_adapter_id().map(str::to_owned);
                             self.screen = Screen::Landing;
                         }
                     }

@@ -3,7 +3,7 @@
 //! Focused coverage for authenticated adapter projection and wizard fences.
 
 use asb_tui::{
-    adapter_catalog::{AdapterCatalog, AuthMethod},
+    adapter_catalog::{AdapterCatalog, AdapterSelection, AuthMethod},
     provider_catalog::development_openrouter_catalog,
     wizard::{Wizard, WizardError},
 };
@@ -49,4 +49,35 @@ fn openrouter_adapter_selection_rejects_unknown_auth_and_missing_catalog() {
         stable.select_openrouter_adapter(),
         Err(WizardError::Catalog(_))
     ));
+}
+
+#[test]
+fn adapter_choices_are_filtered_and_cancel_safe() {
+    let mut wizard = Wizard::default();
+    let options = wizard.adapter_compatibility("opendesk").unwrap();
+    assert!(options.providers.iter().any(|item| item.id == "local"));
+    let local = wizard
+        .adapter_compatibility_for("opendesk", Some("local"))
+        .unwrap();
+    assert_eq!(local.provider_id.as_deref(), Some("local"));
+    assert!(local.models.iter().all(|item| item.id == "fixture-model"));
+    wizard
+        .select_adapter(AdapterSelection {
+            adapter_id: "opendesk".into(),
+            provider_id: "local".into(),
+            model_id: "fixture-model".into(),
+            auth: AuthMethod::LocalDaemon,
+        })
+        .unwrap();
+    assert_eq!(wizard.selected_adapter_id(), Some("opendesk"));
+    assert!(
+        wizard
+            .adapter_diagnostics(&AdapterSelection {
+                adapter_id: "opendesk".into(),
+                provider_id: "openrouter".into(),
+                model_id: "openai/gpt-4o".into(),
+                auth: AuthMethod::CredentialReference,
+            })
+            .contains("not supported")
+    );
 }

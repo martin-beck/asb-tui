@@ -7,7 +7,10 @@
 //! UI state model before state is committed.
 
 use crate::{
-    adapter_catalog::{AdapterCatalog, AdapterSelection, AuthMethod, SelectionSession},
+    adapter_catalog::{
+        AdapterCatalog, AdapterOption, AdapterSelection, AuthMethod, CompatibilityOptions,
+        SelectionSession,
+    },
     development_auth::{
         DevelopmentAuthError, DevelopmentAuthFlow, DevelopmentAuthMethod, DevelopmentAuthSnapshot,
     },
@@ -157,6 +160,61 @@ impl Wizard {
     #[must_use]
     pub const fn mode(&self) -> WizardMode {
         self.mode
+    }
+
+    pub fn adapter_options(&self) -> Vec<AdapterOption> {
+        self.adapter_selection
+            .as_ref()
+            .map_or_else(Vec::new, SelectionSession::options)
+    }
+
+    pub fn selected_adapter_id(&self) -> Option<&str> {
+        self.adapter_selection
+            .as_ref()
+            .and_then(SelectionSession::committed)
+            .map(|selection| selection.adapter_id.as_str())
+    }
+
+    pub fn adapter_compatibility(
+        &self,
+        adapter_id: &str,
+    ) -> Result<CompatibilityOptions, WizardError> {
+        self.adapter_compatibility_for(adapter_id, None)
+    }
+
+    pub fn adapter_compatibility_for(
+        &self,
+        adapter_id: &str,
+        provider_id: Option<&str>,
+    ) -> Result<CompatibilityOptions, WizardError> {
+        self.adapter_selection
+            .as_ref()
+            .ok_or_else(|| {
+                WizardError::Catalog("authoritative adapter catalog is unavailable".into())
+            })?
+            .compatibility_options_for(adapter_id, provider_id)
+            .map_err(|error| WizardError::Catalog(format!("adapter compatibility: {error:?}")))
+    }
+
+    pub fn select_adapter(&mut self, selection: AdapterSelection) -> Result<(), WizardError> {
+        let session = self.adapter_selection.as_mut().ok_or_else(|| {
+            WizardError::Catalog("authoritative adapter catalog is unavailable".into())
+        })?;
+        session.begin();
+        session
+            .select(selection)
+            .map_err(|error| WizardError::Catalog(format!("adapter compatibility: {error:?}")))?;
+        session
+            .commit()
+            .map_err(|error| WizardError::Catalog(format!("adapter compatibility: {error:?}")))?;
+        Ok(())
+    }
+
+    pub fn adapter_diagnostics(&self, selection: &AdapterSelection) -> String {
+        self.adapter_selection.as_ref().map_or_else(
+            || "authoritative adapter catalog is unavailable".into(),
+            |session| session.diagnostics(selection),
+        )
     }
 
     /// Return the bounded draft value for the active editable step.
@@ -394,7 +452,19 @@ impl Wizard {
     }
 
     pub fn complete(&self) -> Result<(), WizardError> {
-        if self.values[Step::Provider as usize].trim() == "openrouter" {
+        if let Some(selection) = self
+            .adapter_selection
+            .as_ref()
+            .and_then(SelectionSession::committed)
+        {
+            self.adapter_selection
+                .as_ref()
+                .expect("selection checked above")
+                .validate(selection.clone())
+                .map_err(|error| {
+                    WizardError::Catalog(format!("adapter compatibility: {error:?}"))
+                })?;
+        } else if self.values[Step::Provider as usize].trim() == "openrouter" {
             self.select_openrouter_adapter()?;
         }
         (self.step == Step::Review)
@@ -702,6 +772,28 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
             }),
             Line::from(format!("Element: {}", element_id(wizard.step))),
         ];
+        if wizard.step == Step::Agent && !wizard.adapter_options().is_empty() {
+            lines.push(Line::from("Coding-agent adapters (selection-driven):"));
+            for option in wizard.adapter_options() {
+                lines.push(Line::from(format!(
+                    "  {} {}{}",
+                    if wizard.selected_adapter_id() == Some(option.id.as_str()) {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    option.label,
+                    option
+                        .reason
+                        .map_or_else(String::new, |reason| format!(" ({reason})"))
+                )));
+            }
+            lines.push(Line::from(if wizard.mode() == WizardMode::Development {
+                "Development-only adapters may use generated fixtures; stable mode requires an authoritative catalog."
+            } else {
+                "Stable adapters require an authoritative catalog and compatible authentication."
+            }));
+        }
         for (index, option) in catalog.visible_options().into_iter().take(8).enumerate() {
             let cursor = catalog.cursor() == index;
             let selected = catalog
@@ -887,6 +979,36 @@ mod tests {
             wizard.development_auth().status,
             crate::development_auth::DevelopmentAuthStatus::Unconfigured
         );
+    }
+
+    #[test]
+    fn adapter_selection_exposes_only_compatible_tuple_choices() {
+        let mut wizard = Wizard::default();
+        assert_eq!(
+            wizard
+                .adapter_options()
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["opencode", "opendesk"]
+        );
+        let choices = wizard.adapter_compatibility("opendesk").unwrap();
+        assert!(choices.providers.iter().any(|item| item.id == "local"));
+        assert!(
+            choices
+                .auth_methods
+                .iter()
+                .any(|item| item.id == "local_daemon")
+        );
+        wizard
+            .select_adapter(AdapterSelection {
+                adapter_id: "opendesk".into(),
+                provider_id: "local".into(),
+                model_id: "fixture-model".into(),
+                auth: AuthMethod::LocalDaemon,
+            })
+            .unwrap();
+        assert_eq!(wizard.selected_adapter_id(), Some("opendesk"));
     }
 
     #[test]
