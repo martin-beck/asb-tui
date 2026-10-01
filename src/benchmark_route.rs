@@ -263,6 +263,12 @@ impl GuidedCampaign {
         if !valid_identifier(&adapter_id) {
             return Err(CampaignError::InvalidText);
         }
+        if crate::adapter_catalog::AdapterCatalog::development()
+            .get(&adapter_id)
+            .is_none()
+        {
+            return Err(CampaignError::InvalidText);
+        }
         self.adapter_id = Some(adapter_id);
         Ok(())
     }

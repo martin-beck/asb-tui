@@ -7,6 +7,7 @@
 //! UI state model before state is committed.
 
 use crate::{
+    adapter_catalog::{AdapterCatalog, AdapterSelection, AuthMethod, SelectionSession},
     development_auth::{
         DevelopmentAuthError, DevelopmentAuthFlow, DevelopmentAuthMethod, DevelopmentAuthSnapshot,
     },
@@ -83,6 +84,7 @@ pub struct Wizard {
     cancelled: bool,
     catalog: Option<WizardCatalogState>,
     development_auth: DevelopmentAuthFlow,
+    adapter_selection: SelectionSession,
 }
 
 impl Default for Wizard {
@@ -94,6 +96,7 @@ impl Default for Wizard {
             catalog: None,
             development_auth: DevelopmentAuthFlow::new("development")
                 .expect("static development provider is valid"),
+            adapter_selection: SelectionSession::new(AdapterCatalog::development()),
         }
     }
 }
@@ -322,7 +325,30 @@ impl Wizard {
         }
         self.restart_development_credential();
     }
+
+    /// Validate OpenRouter's provider/model/auth tuple through the adapter
+    /// compatibility catalog before the setup draft can complete.
+    pub fn select_openrouter_adapter(&self) -> Result<(), WizardError> {
+        let auth = match self.values[Step::Authentication as usize].as_str() {
+            "none" => AuthMethod::None,
+            "local_daemon" => AuthMethod::LocalDaemon,
+            value if value.starts_with("credential_reference:") => AuthMethod::CredentialReference,
+            _ => return Err(WizardError::InvalidValue),
+        };
+        self.adapter_selection
+            .validate(AdapterSelection {
+                adapter_id: "opencode".into(),
+                provider_id: "openrouter".into(),
+                model_id: self.values[Step::Model as usize].trim().into(),
+                auth,
+            })
+            .map_err(|error| WizardError::Catalog(format!("adapter compatibility: {error:?}")))
+    }
+
     pub fn complete(&self) -> Result<(), WizardError> {
+        if self.values[Step::Provider as usize].trim() == "openrouter" {
+            self.select_openrouter_adapter()?;
+        }
         (self.step == Step::Review)
             .then_some(())
             .ok_or(WizardError::AtEnd)
@@ -813,5 +839,42 @@ mod tests {
             wizard.development_auth().status,
             crate::development_auth::DevelopmentAuthStatus::Unconfigured
         );
+    }
+
+    #[test]
+    fn openrouter_setup_is_checked_by_adapter_compatibility_before_completion() {
+        let mut wizard = Wizard::default();
+        for value in [
+            "agent",
+            "openrouter",
+            "openai/gpt-4o",
+            "defaults",
+            "none",
+            "record",
+            "replay",
+        ] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert_eq!(wizard.step(), Step::Review);
+        assert_eq!(wizard.complete(), Ok(()));
+    }
+
+    #[test]
+    fn incompatible_openrouter_model_is_rejected_without_completion() {
+        let mut wizard = Wizard::default();
+        for value in [
+            "agent",
+            "openrouter",
+            "unknown/model",
+            "defaults",
+            "none",
+            "record",
+            "replay",
+        ] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert!(matches!(wizard.complete(), Err(WizardError::Catalog(_))));
     }
 }

@@ -2,6 +2,7 @@
   "schema_version": 1,
   "ui_modules": [
     {"path":"src/actions.rs","kind":"interaction","responsibility":"Closed action registry including nested benchmark pool, group, benchmark, and measure search and selection commands"},
+    {"path":"src/adapter_catalog.rs","kind":"state","responsibility":"Stable coding-agent adapter catalog, provider/model/auth tuple compatibility, development-only opencode/opendesk fixtures, and transactional cancel/retry selection preservation"},
     {"path":"src/app.rs","kind":"state"},
     {"path":"src/configuration.rs","kind":"state","responsibility":"Bounded configuration drafts, local persistence, and fail-closed startup state"},
     {"path":"src/formal_state.rs","kind":"state","responsibility":"Renderer-neutral workspace, wizard, and terminal-resize transition validation, typed multi-agent catalog actions, nested benchmark-picker bindings, and source/model element bindings"},

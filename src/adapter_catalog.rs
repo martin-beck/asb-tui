@@ -113,7 +113,7 @@ pub enum SelectionError {
     InvalidSelection,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectionSession {
     catalog: AdapterCatalog,
     committed: Option<AdapterSelection>,
@@ -166,6 +166,24 @@ impl SelectionSession {
     /// Retry starts from the last valid state, so failed validation cannot erase it.
     pub fn retry(&mut self) {
         self.begin();
+    }
+
+    pub fn validate(&self, selection: AdapterSelection) -> Result<(), SelectionError> {
+        let adapter = self
+            .catalog
+            .get(&selection.adapter_id)
+            .ok_or(SelectionError::UnknownAdapter)?;
+        let models = adapter
+            .providers
+            .get(&selection.provider_id)
+            .ok_or(SelectionError::UnknownProvider)?;
+        if !models.contains(&selection.model_id) {
+            return Err(SelectionError::UnknownModel);
+        }
+        if !adapter.auth_methods.contains(&selection.auth) {
+            return Err(SelectionError::UnsupportedAuth);
+        }
+        Ok(())
     }
 }
 
