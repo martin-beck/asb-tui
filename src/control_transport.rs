@@ -2819,6 +2819,65 @@ mod tests {
     }
 
     #[test]
+    fn recovery_failures_are_bounded_and_leave_the_projection_uncommitted() {
+        use std::time::Instant;
+
+        let limits = ControlLimits {
+            max_timeout_ms: 25,
+            ..ControlLimits::default()
+        };
+        let (server, client) = UnixStream::pair().unwrap();
+        let server = thread::spawn(move || {
+            let mut server = server;
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let size = u32::from_be_bytes(header) as usize;
+            let mut body = vec![0_u8; size];
+            server.read_exact(&mut body).unwrap();
+            // Keep the peer alive without answering: the client must hit its
+            // negotiated bounded deadline rather than wait indefinitely.
+            thread::sleep(Duration::from_millis(150));
+        });
+        let mut transport = FramedControlStream::adopt(client, observed(), peer(), limits).unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_0);
+        let request = ControlRequest {
+            jsonrpc: "2.0".into(),
+            id: RequestId(31),
+            timeout_ms: limits.max_timeout_ms,
+            call: ControlCall::Capabilities,
+        };
+        let started = Instant::now();
+        assert_eq!(transport.round_trip(&request), Err(TransportError::Io));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        server.join().unwrap();
+
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let server = thread::spawn(move || {
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let size = u32::from_be_bytes(header) as usize;
+            let mut body = vec![0_u8; size];
+            server.read_exact(&mut body).unwrap();
+            server.write_all(&[0, 0, 0, 3, b'{', b'}', b'!']).unwrap();
+        });
+        let mut transport = FramedControlStream::adopt(client, observed(), peer(), limits).unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_0);
+        assert!(matches!(
+            transport.round_trip(&request),
+            Err(TransportError::Codec(_))
+        ));
+        server.join().unwrap();
+
+        // The projection is only committed after every response succeeds;
+        // transport failure therefore cannot erase the last good snapshot.
+        let projection = ControlProjection::default();
+        assert!(projection.snapshot().capabilities.is_none());
+        assert_eq!(projection.run_count(), 0);
+    }
+
+    #[test]
     fn coverage_auth_and_recording_version_gates_fail_before_io() {
         let (_server, client) = UnixStream::pair().unwrap();
         let transport =
