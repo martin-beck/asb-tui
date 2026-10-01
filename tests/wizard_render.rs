@@ -461,6 +461,7 @@ fn authenticated_projection_drives_repeatable_setup_without_secret_defaults() {
         recording_estimate: None,
         recording_campaign_lifecycle: None,
         runs: Vec::new(),
+        analysis: None,
     });
 
     state.open_wizard();

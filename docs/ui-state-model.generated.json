@@ -34,6 +34,7 @@
     "recording_campaign",
     "recording_estimate",
     "recording_campaign_lifecycle",
+    "analysis_summary",
     "recording_dispatch_action",
     "startup_wizard_opened",
     "responsive_layout",

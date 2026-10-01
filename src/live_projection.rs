@@ -8,8 +8,8 @@
 //! bounded, renderer-safe state.  It cannot launch, retry, or cancel work.
 
 use crate::control_codec::{
-    AuthStatusResponse, ConfigurationSnapshot, ControlCall, ControlLimits, ControlRequest,
-    ControlResponse, ControlResult, ControlSuccess, MeasurementCatalog, Negotiated,
+    AnalysisSummary, AuthStatusResponse, ConfigurationSnapshot, ControlCall, ControlLimits,
+    ControlRequest, ControlResponse, ControlResult, ControlSuccess, MeasurementCatalog, Negotiated,
     ProviderCatalog, RecordingCampaignEstimate, RecordingCampaignLifecycle, RecordingCampaignPlan,
     Revision, RunSummary,
 };
@@ -72,6 +72,9 @@ pub struct LiveSnapshot {
     pub recording_estimate: Option<RecordingCampaignEstimate>,
     pub recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
     pub runs: Vec<RunSummary>,
+    /// Digest-bound result-analysis summary; the runner remains authoritative
+    /// for the underlying measures and artifacts.
+    pub analysis: Option<AnalysisSummary>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +121,7 @@ pub struct ControlProjection {
     recording_estimate: Option<RecordingCampaignEstimate>,
     recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
     runs: BTreeMap<String, RunSummary>,
+    analysis: Option<AnalysisSummary>,
 }
 
 impl ControlProjection {
@@ -383,6 +387,14 @@ impl ControlProjection {
                     self.insert_run(run.clone())?;
                 }
             }
+            (ControlCall::Analyze { run_ids }, ControlResult::Analysis(summary)) => {
+                if summary.run_count as usize != run_ids.len()
+                    || run_ids.iter().any(|id| !self.runs.contains_key(&id.0))
+                {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.analysis = Some(summary.clone());
+            }
             (ControlCall::Status { .. }, ControlResult::Status(run))
             | (ControlCall::Launch(_), ControlResult::Launch(run)) => {
                 self.insert_run(run.clone())?;
@@ -487,6 +499,7 @@ impl ControlProjection {
             recording_estimate: self.recording_estimate.clone(),
             recording_campaign_lifecycle: self.recording_campaign_lifecycle.clone(),
             runs,
+            analysis: self.analysis.clone(),
         }
     }
 
@@ -905,6 +918,61 @@ mod tests {
                 .map(|v| v.run_id.0.as_str())
                 .collect::<Vec<_>>(),
             vec!["new", "old"]
+        );
+    }
+
+    #[test]
+    fn analysis_response_is_bound_to_projected_runs_and_digest() {
+        let mut projection = connected_projection();
+        let history = ControlCall::History(crate::control_codec::PageParams {
+            after: None,
+            limit: 2,
+        });
+        projection
+            .apply(
+                &request(history, 1),
+                &response(
+                    1,
+                    ControlResult::History(Page {
+                        items: vec![run("run-a", 2), run("run-b", 3)],
+                        next: None,
+                        has_more: false,
+                    }),
+                ),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        let run_ids = vec![
+            crate::control_codec::RunId("run-a".into()),
+            crate::control_codec::RunId("run-b".into()),
+        ];
+        let call = ControlCall::Analyze {
+            run_ids: run_ids.clone(),
+        };
+        let summary = AnalysisSummary {
+            run_count: 2,
+            analysis_sha256: "a".repeat(64),
+        };
+        projection
+            .apply(
+                &request(call.clone(), 2),
+                &response(2, ControlResult::Analysis(summary.clone())),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(projection.snapshot().analysis, Some(summary));
+
+        let mismatch = AnalysisSummary {
+            run_count: 1,
+            analysis_sha256: "b".repeat(64),
+        };
+        assert_eq!(
+            projection.apply(
+                &request(call, 3),
+                &response(3, ControlResult::Analysis(mismatch)),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::UnexpectedResult)
         );
     }
 
