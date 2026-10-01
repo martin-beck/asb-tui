@@ -64,6 +64,10 @@ pub struct LiveSnapshot {
     /// Last public provider enrollment status. This contains digests only;
     /// absence means unavailable, not unauthorized or connected.
     pub auth_status: Option<AuthStatusResponse>,
+    /// Explicit credential-free readiness state for development bootstrap.
+    pub auth_unavailable: bool,
+    pub auth_development_only: bool,
+    pub auth_unavailable_reason: Option<String>,
     pub recording_campaign: Option<RecordingCampaignPlan>,
     pub recording_estimate: Option<RecordingCampaignEstimate>,
     pub recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
@@ -105,6 +109,9 @@ pub struct ControlProjection {
     provider_catalog: Option<ProviderCatalog>,
     configuration: Option<ConfigurationSnapshot>,
     auth_status: Option<AuthStatusResponse>,
+    auth_unavailable: bool,
+    auth_development_only: bool,
+    auth_unavailable_reason: Option<String>,
     recording_campaign: Option<RecordingCampaignPlan>,
     recording_estimate: Option<RecordingCampaignEstimate>,
     recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
@@ -137,6 +144,15 @@ impl ControlProjection {
         self.connection = Connection::Negotiated;
         self.negotiated = Some(negotiated);
         Ok(())
+    }
+
+    /// Commit an explicitly unavailable, credential-free development auth
+    /// projection without manufacturing a runner-authored status response.
+    pub fn mark_auth_unavailable(&mut self, reason: impl Into<String>, development_only: bool) {
+        self.auth_status = None;
+        self.auth_unavailable = true;
+        self.auth_development_only = development_only;
+        self.auth_unavailable_reason = Some(reason.into());
     }
 
     pub fn apply(
@@ -287,6 +303,9 @@ impl ControlProjection {
                     return Err(ProjectionError::UnexpectedResult);
                 }
                 self.auth_status = Some(value.clone());
+                self.auth_unavailable = false;
+                self.auth_development_only = false;
+                self.auth_unavailable_reason = None;
             }
             (ControlCall::RecordingCampaignPlan(_), ControlResult::RecordingCampaign(value)) => {
                 self.require_recording_version(crate::control_codec::V1_7)?;
@@ -452,6 +471,9 @@ impl ControlProjection {
             provider_catalog: self.provider_catalog.clone(),
             configuration: self.configuration.clone(),
             auth_status: self.auth_status.clone(),
+            auth_unavailable: self.auth_unavailable,
+            auth_development_only: self.auth_development_only,
+            auth_unavailable_reason: self.auth_unavailable_reason.clone(),
             recording_campaign: self.recording_campaign.clone(),
             recording_estimate: self.recording_estimate.clone(),
             recording_campaign_lifecycle: self.recording_campaign_lifecycle.clone(),
@@ -989,5 +1011,21 @@ mod tests {
                 .generation,
             Revision(5)
         );
+    }
+
+    #[test]
+    fn development_auth_unavailable_is_explicit_and_committed() {
+        let mut projection = ControlProjection::default();
+        projection.mark_auth_unavailable("development_auth_unavailable", true);
+        let snapshot = projection.snapshot();
+        assert!(snapshot.auth_status.is_none());
+        assert!(snapshot.auth_unavailable);
+        assert!(snapshot.auth_development_only);
+        assert_eq!(
+            snapshot.auth_unavailable_reason.as_deref(),
+            Some("development_auth_unavailable")
+        );
+        projection.mark_auth_unavailable("auth_unavailable", false);
+        assert!(!projection.snapshot().auth_development_only);
     }
 }
