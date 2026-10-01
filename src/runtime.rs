@@ -152,6 +152,56 @@ pub fn dispatch_control_action(
     projection: &mut ControlProjection,
     idempotency_key: String,
 ) -> Result<crate::recording_dispatch::RecordingDispatchOutcome, RuntimeError> {
+    if action == crate::actions::UiAction::SelectOfflineCassette {
+        let catalog = recording.authenticated_catalog.as_ref().ok_or_else(|| {
+            RuntimeError(io::Error::other(
+                "authenticated cassette catalog unavailable",
+            ))
+        })?;
+        if catalog.entries.is_empty() {
+            return Err(RuntimeError(io::Error::other(
+                "authenticated cassette catalog is empty",
+            )));
+        }
+        let next = recording
+            .selected_cassette_sha256
+            .as_deref()
+            .and_then(|selected| {
+                catalog
+                    .entries
+                    .iter()
+                    .position(|entry| entry.cassette_sha256 == selected)
+            })
+            .map_or(0, |index| (index + 1) % catalog.entries.len());
+        recording.select_cassette(catalog.entries[next].cassette_sha256.clone());
+        return Ok(crate::recording_dispatch::RecordingDispatchOutcome::CassetteSelected);
+    }
+    if action == crate::actions::UiAction::ReplaySelected {
+        let catalog = recording.authenticated_catalog.as_ref().ok_or_else(|| {
+            RuntimeError(io::Error::other(
+                "authenticated cassette catalog unavailable",
+            ))
+        })?;
+        let cassette_sha256 = recording
+            .selected_cassette_sha256
+            .as_deref()
+            .ok_or_else(|| RuntimeError(io::Error::other("no cassette selected")))?;
+        let entry = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.cassette_sha256 == cassette_sha256)
+            .ok_or_else(|| RuntimeError(io::Error::other("selected cassette is not in catalog")))?;
+        let mut campaign = prepare_authenticated_replay_campaign(catalog, cassette_sha256)?;
+        run_authenticated_replay_selection(
+            session,
+            &mut campaign,
+            catalog,
+            &entry.workload_id,
+            cassette_sha256,
+            idempotency_key,
+        )?;
+        return Ok(crate::recording_dispatch::RecordingDispatchOutcome::ReplayDispatched);
+    }
     let outcome = crate::recording_dispatch::dispatch_with_backend(
         action,
         recording,
@@ -173,6 +223,48 @@ pub fn dispatch_control_action(
         )?);
     }
     Ok(outcome)
+}
+
+fn prepare_authenticated_replay_campaign(
+    catalog: &crate::benchmark_route::AuthenticatedCassetteCatalog,
+    cassette_sha256: &str,
+) -> Result<crate::benchmark_route::GuidedCampaign, RuntimeError> {
+    let entry = catalog
+        .entries
+        .iter()
+        .find(|entry| entry.cassette_sha256 == cassette_sha256)
+        .ok_or_else(|| RuntimeError(io::Error::other("selected cassette is not in catalog")))?;
+    let guided_catalog = crate::benchmark_route::GuidedCatalog::new(
+        vec![entry.workload_id.clone()],
+        vec![entry.agent_id.clone()],
+        vec![entry.scorer_revision.clone()],
+    )
+    .map_err(|error| {
+        RuntimeError(io::Error::other(format!(
+            "replay catalog rejected: {error:?}"
+        )))
+    })?;
+    let mut campaign = crate::benchmark_route::GuidedCampaign::with_catalog(
+        entry.workload_id.clone(),
+        guided_catalog,
+    )
+    .map_err(|error| {
+        RuntimeError(io::Error::other(format!(
+            "replay campaign rejected: {error:?}"
+        )))
+    })?;
+    campaign
+        .add_agent(entry.agent_id.clone())
+        .and_then(|_| campaign.add_measure(entry.scorer_revision.clone()))
+        .and_then(|_| campaign.bind_provider_profile_sha256(entry.provider_profile_sha256.clone()))
+        .and_then(|_| campaign.set_replay_mode(crate::benchmark_route::ReplayMode::OfflineReplay))
+        .and_then(|_| campaign.review())
+        .map_err(|error| {
+            RuntimeError(io::Error::other(format!(
+                "replay selection rejected: {error:?}"
+            )))
+        })?;
+    Ok(campaign)
 }
 
 /// Fetch the runner-owned digest-only cassette catalog through the
@@ -1039,5 +1131,31 @@ mod tests {
         assert_eq!(error.to_string(), "terminal operation failed");
         assert!(std::error::Error::source(&error).is_some());
         assert!(!error.to_string().contains("private detail"));
+    }
+
+    #[test]
+    fn replay_route_requires_explicit_catalog_selection_and_binds_all_identities() {
+        let digest = "a".repeat(64);
+        let catalog = crate::benchmark_route::AuthenticatedCassetteCatalog {
+            runner_instance_id: "runner-1".into(),
+            generation: crate::control_codec::Revision(7),
+            campaign_id: "campaign-1".into(),
+            entries: vec![crate::benchmark_route::AuthenticatedCassetteEntry {
+                cassette_id: "cassette-1".into(),
+                cassette_sha256: digest.clone(),
+                provider_profile_sha256: "b".repeat(64),
+                agent_id: "agent-1".into(),
+                workload_id: "workload-1".into(),
+                scorer_revision: "scorer-1".into(),
+            }],
+        };
+        assert!(prepare_authenticated_replay_campaign(&catalog, &"c".repeat(64)).is_err());
+        let mut campaign = prepare_authenticated_replay_campaign(&catalog, &digest).unwrap();
+        let intent = campaign
+            .start_offline_replay_from_authenticated_catalog(&catalog, "workload-1", &digest)
+            .unwrap();
+        assert_eq!(intent.campaign_id.as_deref(), Some("campaign-1"));
+        assert_eq!(intent.generation, Some(crate::control_codec::Revision(7)));
+        assert_eq!(intent.cassette_sha256.as_deref(), Some(digest.as_str()));
     }
 }
