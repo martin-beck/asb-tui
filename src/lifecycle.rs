@@ -1538,12 +1538,7 @@ mod tests {
             source_commit: "a".repeat(40),
             source_tree: "b".repeat(40),
             target: compiled_target().into(),
-            bundle: if compiled_target().starts_with("aarch64") {
-                "asb-tui-v1-linux-aarch64"
-            } else {
-                "asb-tui-v1-linux-x86_64"
-            }
-            .into(),
+            bundle: "asb-tui-v1-linux-x86_64".into(),
             asb_version: "0.1.0".into(),
             protocol_version: 1,
             coordinator_version: COORDINATOR_VERSION.into(),
