@@ -77,6 +77,12 @@ pub enum WizardError {
     Catalog(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WizardMode {
+    Development,
+    Stable,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Wizard {
     step: Step,
@@ -84,7 +90,8 @@ pub struct Wizard {
     cancelled: bool,
     catalog: Option<WizardCatalogState>,
     development_auth: DevelopmentAuthFlow,
-    adapter_selection: SelectionSession,
+    adapter_selection: Option<SelectionSession>,
+    mode: WizardMode,
 }
 
 impl Default for Wizard {
@@ -96,7 +103,8 @@ impl Default for Wizard {
             catalog: None,
             development_auth: DevelopmentAuthFlow::new("development")
                 .expect("static development provider is valid"),
-            adapter_selection: SelectionSession::new(AdapterCatalog::development()),
+            adapter_selection: Some(SelectionSession::new(AdapterCatalog::development())),
+            mode: WizardMode::Development,
         }
     }
 }
@@ -106,6 +114,22 @@ impl Wizard {
     pub fn with_catalog(catalog: WizardCatalog) -> Self {
         Self {
             catalog: Some(WizardCatalogState::new(catalog, OptionKind::Agent)),
+            ..Self::default()
+        }
+    }
+
+    pub fn stable() -> Self {
+        Self {
+            adapter_selection: None,
+            mode: WizardMode::Stable,
+            ..Self::default()
+        }
+    }
+
+    pub fn stable_with_adapter_catalog(catalog: AdapterCatalog) -> Self {
+        Self {
+            adapter_selection: Some(SelectionSession::new(catalog)),
+            mode: WizardMode::Stable,
             ..Self::default()
         }
     }
@@ -335,7 +359,14 @@ impl Wizard {
             value if value.starts_with("credential_reference:") => AuthMethod::CredentialReference,
             _ => return Err(WizardError::InvalidValue),
         };
+        if self.mode == WizardMode::Stable && auth == AuthMethod::None {
+            return Err(WizardError::InvalidValue);
+        }
         self.adapter_selection
+            .as_ref()
+            .ok_or_else(|| {
+                WizardError::Catalog("authoritative adapter catalog is unavailable".into())
+            })?
             .validate(AdapterSelection {
                 adapter_id: "opencode".into(),
                 provider_id: "openrouter".into(),
@@ -876,5 +907,41 @@ mod tests {
             wizard.advance().unwrap();
         }
         assert!(matches!(wizard.complete(), Err(WizardError::Catalog(_))));
+    }
+
+    #[test]
+    fn stable_wizard_never_uses_development_fixture_or_none_auth() {
+        let mut wizard = Wizard::stable();
+        for value in [
+            "agent",
+            "openrouter",
+            "openai/gpt-4o",
+            "defaults",
+            "none",
+            "record",
+            "replay",
+        ] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert!(matches!(wizard.complete(), Err(WizardError::InvalidValue)));
+    }
+
+    #[test]
+    fn stable_wizard_accepts_authoritative_catalog_and_reference_only() {
+        let mut wizard = Wizard::stable_with_adapter_catalog(AdapterCatalog::development());
+        for value in [
+            "agent",
+            "openrouter",
+            "openai/gpt-4o",
+            "defaults",
+            "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "record",
+            "replay",
+        ] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert_eq!(wizard.complete(), Ok(()));
     }
 }
