@@ -232,5 +232,35 @@ mod tests {
             )
             .is_none()
         );
+        assert!(
+            build_identity_from(
+                ReleaseClassification::VerifiedExtension,
+                "v0.1.0",
+                "0.1.0",
+                None,
+                Some("8556090e21336df0766263e6244084865f92d1a3"),
+            )
+            .is_none()
+        );
+        assert!(
+            build_identity_from(
+                ReleaseClassification::VerifiedExtension,
+                "v0.1.0",
+                "0.1.0",
+                Some("A7ca8e07f177fc6a647b3297df624137cfb85e86"),
+                Some("8556090e21336df0766263e6244084865f92d1a3"),
+            )
+            .is_none()
+        );
+        assert!(
+            build_identity_from(
+                ReleaseClassification::VerifiedExtension,
+                "v0.1.0",
+                "0.1.0",
+                Some("a7ca8e07f177fc6a647b3297df624137cfb85e86"),
+                Some("short"),
+            )
+            .is_none()
+        );
     }
 }
