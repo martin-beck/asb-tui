@@ -17,7 +17,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    fs, io,
+    fmt, fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -58,6 +58,7 @@ pub fn development_openrouter_catalog() -> ProviderCatalog {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub enum AgentScope {
     All,
     Selected(Vec<String>),
@@ -185,6 +186,58 @@ impl SharedProviderDefaults {
             if self.entries.len() == 1 { "" } else { "s" }
         )
     }
+
+    /// A renderer-neutral diagnostic that is safe to show in human or JSON
+    /// status views. It contains only identifiers and credential digests.
+    pub fn diagnostic(&self) -> ProviderDefaultsDiagnostic {
+        ProviderDefaultsDiagnostic {
+            schema_version: self.schema_version,
+            entries: self.entries.len(),
+            scopes: self
+                .entries
+                .iter()
+                .map(|entry| match &entry.scope {
+                    AgentScope::All => "all".to_owned(),
+                    AgentScope::Selected(ids) => format!("selected:{}", ids.join(",")),
+                })
+                .collect(),
+            credential_references: self
+                .entries
+                .iter()
+                .filter_map(|entry| entry.credential_reference_sha256.as_deref())
+                .map(|digest| format!("sha256:{digest}"))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDefaultsDiagnostic {
+    pub schema_version: u32,
+    pub entries: usize,
+    pub scopes: Vec<String>,
+    pub credential_references: Vec<String>,
+}
+
+impl ProviderDefaultsDiagnostic {
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+}
+
+impl fmt::Display for ProviderDefaultsDiagnostic {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            output,
+            "schema {}: {} provider default(s)",
+            self.schema_version, self.entries
+        )?;
+        if !self.scopes.is_empty() {
+            write!(output, " [{}]", self.scopes.join(", "))?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -199,6 +252,20 @@ pub enum ProviderDefaultsError {
 impl From<io::Error> for ProviderDefaultsError {
     fn from(error: io::Error) -> Self {
         Self::Io(error.kind().to_string())
+    }
+}
+
+impl fmt::Display for ProviderDefaultsError {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid(reason) => write!(output, "invalid provider defaults: {reason}"),
+            Self::Io(kind) => write!(output, "provider defaults I/O failure: {kind}"),
+            Self::TooLarge => output.write_str("provider defaults file is too large"),
+            Self::SymlinkRefused => output.write_str("provider defaults symlink refused"),
+            Self::NotRegularFile => {
+                output.write_str("provider defaults path is not a regular file")
+            }
+        }
     }
 }
 
@@ -236,7 +303,16 @@ impl ProviderDefaultsStore {
     pub fn load_or_default(&self) -> Result<SharedProviderDefaults, ProviderDefaultsError> {
         match self.load() {
             Ok(value) => Ok(value),
-            Err(ProviderDefaultsError::Io(_)) => Ok(SharedProviderDefaults::default()),
+            Err(ProviderDefaultsError::Io(kind))
+                if kind == io::ErrorKind::NotFound.to_string()
+                    && self
+                        .path
+                        .parent()
+                        .and_then(|parent| fs::symlink_metadata(parent).ok())
+                        .is_some_and(|metadata| metadata.is_dir()) =>
+            {
+                Ok(SharedProviderDefaults::default())
+            }
             Err(error) => Err(error),
         }
     }
@@ -274,9 +350,28 @@ impl ProviderDefaultsStore {
         let temp = parent.join(format!(".asb-tui-provider-defaults-{nonce}.tmp"));
         let text = serde_json::to_string_pretty(defaults)
             .map_err(|e| ProviderDefaultsError::Invalid(e.to_string()))?;
-        fs::write(&temp, text)?;
-        fs::rename(&temp, &self.path)?;
-        Ok(())
+        let result = (|| {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            }
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temp, &self.path)?;
+            #[cfg(unix)]
+            fs::File::open(parent)?.sync_all()?;
+            Ok::<(), io::Error>(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result.map_err(ProviderDefaultsError::from)
     }
 }
 

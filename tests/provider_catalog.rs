@@ -165,3 +165,39 @@ fn shared_defaults_restart_persistence_and_rollback_are_safe() {
     assert_eq!(defaults, previous);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn diagnostics_are_human_and_json_safe() {
+    let mut defaults = SharedProviderDefaults::default();
+    defaults.entries.push(ProviderDefaultRecord {
+        scope: AgentScope::All,
+        provider_id: "provider-a".into(),
+        model_id: "model-a".into(),
+        auth_method: ProviderAuthMethod::CredentialReference,
+        credential_reference_sha256: Some("b".repeat(64)),
+    });
+    let diagnostic = defaults.diagnostic();
+    assert!(diagnostic.to_string().contains("1 provider default"));
+    let json = diagnostic.to_json().unwrap();
+    assert!(json.contains("sha256:") && json.contains(&"b".repeat(64)));
+    assert!(!json.contains("secret") && !json.contains("api_key"));
+}
+
+#[test]
+fn missing_file_in_existing_private_directory_is_first_run_only() {
+    let root = std::env::temp_dir().join(format!(
+        "asb-tui-provider-defaults-missing-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let store = ProviderDefaultsStore::new(root.join("defaults.json"));
+    assert_eq!(
+        store.load_or_default().unwrap(),
+        SharedProviderDefaults::default()
+    );
+    let missing_parent = ProviderDefaultsStore::new(root.join("missing").join("defaults.json"));
+    assert!(missing_parent.load_or_default().is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
