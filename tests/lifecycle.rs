@@ -227,6 +227,38 @@ fn launch_rechecks_self_test_and_remove_never_touches_benchmark_processes() {
 }
 
 #[test]
+fn installed_handoff_metadata_is_restart_safe_and_tamper_fenced() {
+    let mut store = Store::default();
+    let mut probe = Probe {
+        pass: true,
+        calls: 0,
+    };
+    let installed = install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
+    assert_eq!(installed.endpoint, "asb://control/v1");
+    assert_eq!(installed.channel, "verified");
+    assert_eq!(installed.manifest_sha256.len(), 64);
+    assert_eq!(status(&store).reason, "installation_verification_failed");
+
+    store.active.as_mut().unwrap().0.endpoint = "asb://control/v2".into();
+    assert_eq!(status(&store).reason, "installation_verification_failed");
+    let mut launcher = Launcher::default();
+    assert_eq!(
+        launch(&store, &mut probe, &mut launcher),
+        Err("installation_handoff_invalid")
+    );
+
+    store.active.as_mut().unwrap().0 = installed;
+    store
+        .active
+        .as_mut()
+        .unwrap()
+        .0
+        .manifest_sha256
+        .replace_range(..1, "0");
+    assert_eq!(status(&store).reason, "installation_verification_failed");
+}
+
+#[test]
 fn filesystem_install_is_private_atomic_idempotent_and_removable() {
     let directory = PrivateDirectory::create();
     let mut store = FilesystemLifecycle::open(directory.path()).unwrap();

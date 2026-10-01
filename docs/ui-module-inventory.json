@@ -6,7 +6,6 @@
     {"path":"src/app.rs","kind":"state"},
     {"path":"src/configuration.rs","kind":"state","responsibility":"Bounded configuration drafts, local persistence, and fail-closed startup state"},
     {"path":"src/formal_state.rs","kind":"state","responsibility":"Renderer-neutral workspace, wizard, and terminal-resize transition validation, typed multi-agent catalog actions, nested benchmark-picker bindings, and source/model element bindings"},
-    {"path":"src/frontend_handoff.rs","kind":"integration","responsibility":"Versioned installed-frontend handoff: endpoint, channel, manifest/source identity, and workspace-state roots"},
     {"path":"src/help.rs","kind":"interaction"},
     {"path":"src/landing.rs","kind":"projection"},
     {"path":"src/live_projection.rs","kind":"projection","responsibility":"Authenticated run, agent, provider, configuration, credential-free auth status including explicit stable/development unavailable provenance, helper invocation, digest-validated benchmark catalog projection with stale-generation fencing, result-analysis digest projection bound to known runs, recording estimate, and recording-campaign lifecycle/status projection with generation fencing"},
@@ -24,6 +23,7 @@
     {"path":"src/wizard_catalog.rs","kind":"state","responsibility":"Bounded renderer-neutral agent, provider, and model choices, deterministic development fallback catalog, explicit draft reset, multi-agent/all-agent selection, and compatibility filtering for the setup wizard"}
   ],
   "exemptions": [
+    {"path":"src/frontend_handoff.rs","reason":"Installed frontend handoff envelope and environment projection only; it owns no UI state, route, widget, or formal model surface.","expires":"2027-12-31"},
     {"path":"src/credential_helper.rs","reason":"Strict credential-helper receipt codec only; it represents no raw secret, UI state, or projection ownership.","expires":"2027-12-31"},
     {"path":"src/agent_catalog.rs","reason":"Agent catalog protocol adapter, authenticated provenance validation, incomplete-entry projection boundary, and canonical digest verification only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/agent_lifecycle.rs","reason":"Agent lifecycle protocol only; it has no UI state or projection ownership.","expires":"2027-12-31"},
