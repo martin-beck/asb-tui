@@ -140,7 +140,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: asb-tui [run|run --broker] | tui | tui <install|upgrade|status|launch|remove> --development --format json | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
+        "usage: asb-tui [run|run --broker] | tui | tui <install|upgrade|status|launch|remove> --channel dev --format json | tui <install|upgrade|status|launch|remove> --development --format json | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
     );
     ExitCode::from(2)
 }
@@ -156,12 +156,25 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
     match command {
         TuiCommand::LaunchUi => launch(),
         TuiCommand::Lifecycle { operation, .. } => {
-            let response = top_level::execute_lifecycle(operation, std::io::stdin().lock());
-            println!(
-                "{}",
-                serde_json::to_string(&response).expect("serialize lifecycle response")
-            );
-            ExitCode::from(if response.ok { 0 } else { 3 })
+            if let TuiCommand::Lifecycle {
+                channel_dev: true, ..
+            } = command
+            {
+                let response = asb_tui::development_lifecycle::execute(operation.as_str());
+                println!(
+                    "{}",
+                    serde_json::to_string(&response)
+                        .expect("serialize development lifecycle response")
+                );
+                ExitCode::from(if response.ok { 0 } else { 3 })
+            } else {
+                let response = top_level::execute_lifecycle(operation, std::io::stdin().lock());
+                println!(
+                    "{}",
+                    serde_json::to_string(&response).expect("serialize lifecycle response")
+                );
+                ExitCode::from(if response.ok { 0 } else { 3 })
+            }
         }
     }
 }

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 use std::process::Command;
+use std::{
+    fs,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_asb-tui"))
@@ -45,4 +49,35 @@ fn tui_rejects_production_marker_without_dispatching() {
         .expect("run asb-tui");
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("production_profile_unsupported"));
+}
+
+#[test]
+fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
+    let root = std::env::temp_dir().join(format!(
+        "asb-tui-ar1579-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let run = |operation: &str| {
+        binary()
+            .args(["tui", operation, "--channel", "dev", "--format", "json"])
+            .env("ASB_TUI_DEV_INSTALL_ROOT", &root)
+            .output()
+            .expect("run development lifecycle")
+    };
+    let installed = run("install");
+    assert_eq!(installed.status.code(), Some(0));
+    let installed_json: serde_json::Value = serde_json::from_slice(&installed.stdout).unwrap();
+    assert_eq!(installed_json["code"], "development_installed");
+    assert_eq!(installed_json["development_only"], true);
+    assert!(root.join("provenance.json").is_file());
+    assert_eq!(run("status").status.code(), Some(0));
+    assert_eq!(run("launch").status.code(), Some(0));
+    assert_eq!(run("upgrade").status.code(), Some(0));
+    assert_eq!(run("remove").status.code(), Some(0));
+    assert_eq!(run("status").status.code(), Some(3));
+    fs::remove_dir_all(root).unwrap();
 }
