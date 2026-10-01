@@ -75,11 +75,13 @@ fn auth_unavailability_provenance_is_declared_in_the_formal_model() {
         "auth_development_only",
         "auth_unavailable_reason",
     ] {
-        assert!(model["state_fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value == field));
+        assert!(
+            model["state_fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == field)
+        );
     }
 }
 
