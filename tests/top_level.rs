@@ -52,6 +52,16 @@ fn tui_rejects_production_marker_without_dispatching() {
 }
 
 #[test]
+fn socket_launcher_rejects_missing_or_untrusted_endpoint() {
+    let output = binary()
+        .args(["run", "--socket", "/tmp/asb-tui-no-such-control.sock"])
+        .output()
+        .expect("run asb-tui");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("control socket connection failed"));
+}
+
+#[test]
 fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
     let root = std::env::temp_dir().join(format!(
         "asb-tui-ar1579-{}-{}",

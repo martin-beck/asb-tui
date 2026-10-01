@@ -74,7 +74,7 @@ fn unknown_arguments_fail_without_json_or_environment_output() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         String::from_utf8(output.stderr).expect("UTF-8 usage"),
-        "usage: asb-tui [run|run --broker] | tui | tui <install|upgrade|status|launch|remove> --channel dev --format json | tui <install|upgrade|status|launch|remove> --development --format json | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal\n"
+        "usage: asb-tui [run|run --broker|run --socket PATH] | tui | tui <install|upgrade|status|launch|remove> --channel dev --format json | tui <install|upgrade|status|launch|remove> --development --format json | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal\n"
     );
 }
 

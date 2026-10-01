@@ -18,7 +18,7 @@ use asb_tui::{
     terminal::{RenderPolicy, TerminalEvidence},
     top_level::{self, TuiCommand},
 };
-use std::{env, process::ExitCode};
+use std::{env, io::IsTerminal, process::ExitCode};
 
 const DIAGNOSTIC: &str = concat!(
     "{\"classification\":\"source_only_unverified\",",
@@ -41,6 +41,9 @@ fn main() -> ExitCode {
     }
     if arguments == ["run", "--broker", "--development"] {
         return launch_development_broker_entry();
+    }
+    if arguments.len() == 3 && arguments[0] == "run" && arguments[1] == "--socket" {
+        return launch_socket_entry(&arguments[2]);
     }
     if let Some(tui_arguments) = arguments.strip_prefix(&["tui".to_owned()]) {
         return launch_tui_command(tui_arguments);
@@ -140,7 +143,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: asb-tui [run|run --broker] | tui | tui <install|upgrade|status|launch|remove> --channel dev --format json | tui <install|upgrade|status|launch|remove> --development --format json | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
+        "usage: asb-tui [run|run --broker|run --socket PATH] | tui | tui <install|upgrade|status|launch|remove> --channel dev --format json | tui <install|upgrade|status|launch|remove> --development --format json | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
     );
     ExitCode::from(2)
 }
@@ -207,6 +210,10 @@ fn launch_broker_entry() -> ExitCode {
                 return ExitCode::from(2);
             }
         };
+    if redirect_stdin_to_controlling_terminal().is_err() {
+        eprintln!("controlling terminal unavailable");
+        return ExitCode::from(2);
+    }
     let mut evidence = TerminalEvidence::from_environment();
     if evidence.tty
         && let Ok((columns, lines)) = crossterm::terminal::size()
@@ -233,6 +240,63 @@ fn launch_broker_entry() -> ExitCode {
             }
         };
     match run_interactive_with_control(&mut state, policy, &mut control) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => {
+            eprintln!("terminal application failed");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn redirect_stdin_to_controlling_terminal() -> std::io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+    let terminal = std::fs::File::open("/dev/tty")?;
+    let metadata = terminal.metadata()?;
+    if !terminal.is_terminal() || !metadata.file_type().is_char_device() {
+        return Err(std::io::Error::other(
+            "controlling terminal is not a character device",
+        ));
+    }
+    rustix::stdio::dup2_stdin(&terminal).map_err(std::io::Error::other)
+}
+
+fn launch_socket_entry(path: &str) -> ExitCode {
+    let Ok(mut control) =
+        AuthenticatedBrokerSession::connect(std::path::Path::new(path), ControlLimits::default())
+    else {
+        eprintln!("control socket connection failed");
+        return ExitCode::from(2);
+    };
+    launch_authenticated_control(&mut control)
+}
+
+fn launch_authenticated_control(control: &mut AuthenticatedBrokerSession) -> ExitCode {
+    let mut evidence = TerminalEvidence::from_environment();
+    if evidence.tty
+        && let Ok((columns, lines)) = crossterm::terminal::size()
+        && columns > 0
+        && lines > 0
+    {
+        evidence.columns = Some(columns);
+        evidence.lines = Some(lines);
+    }
+    let Ok(policy) = RenderPolicy::from_evidence(&evidence) else {
+        eprintln!("terminal capability check failed");
+        return ExitCode::from(2);
+    };
+    if !policy.alternate_screen {
+        eprintln!("interactive terminal required for control socket mode");
+        return ExitCode::from(2);
+    }
+    let mut state =
+        match AppState::new(evidence.columns.unwrap_or(80), evidence.lines.unwrap_or(24)) {
+            Ok(state) => state,
+            Err(_) => {
+                eprintln!("terminal capability check failed");
+                return ExitCode::from(2);
+            }
+        };
+    match run_interactive_with_control(&mut state, policy, control) {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => {
             eprintln!("terminal application failed");

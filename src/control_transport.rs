@@ -20,8 +20,10 @@ use crate::{
     protocol_compatibility,
 };
 use std::io::{Read, Write};
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::Duration;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -371,11 +373,96 @@ impl BrokerContinuity {
 pub struct AuthenticatedBrokerSession {
     transport: FramedControlStream,
     negotiated: crate::control_codec::Negotiated,
-    continuity: BrokerContinuity,
+    /// Broker handoffs carry continuity in their authenticated packet. A
+    /// direct local socket session has no such packet and therefore keeps
+    /// continuity absent rather than inventing an epoch/sequence.
+    continuity: Option<BrokerContinuity>,
     peer: BrokerPeerCredentials,
 }
 
+fn validate_socket_ancestors(parent: &Path) -> Result<(), TransportError> {
+    let canonical_parent =
+        std::fs::canonicalize(parent).map_err(|_| TransportError::PeerIdentity)?;
+    if canonical_parent != parent {
+        return Err(TransportError::PeerIdentity);
+    }
+    let uid = rustix::process::geteuid().as_raw();
+    let mut current = canonical_parent.as_path();
+    let mut immediate = true;
+    loop {
+        let metadata =
+            std::fs::symlink_metadata(current).map_err(|_| TransportError::PeerIdentity)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(TransportError::PeerIdentity);
+        }
+        let mode = metadata.mode();
+        let sticky_root = metadata.uid() == 0 && mode & 0o1000 != 0;
+        let trusted_root = sticky_root || (metadata.uid() == 0 && mode & 0o022 == 0);
+        if metadata.uid() != uid && !trusted_root {
+            return Err(TransportError::PeerIdentity);
+        }
+        if (immediate && mode & 0o077 != 0) || (!immediate && mode & 0o022 != 0 && !sticky_root) {
+            return Err(TransportError::PeerIdentity);
+        }
+        if current == Path::new("/") {
+            break;
+        }
+        current = current.parent().ok_or(TransportError::PeerIdentity)?;
+        immediate = false;
+    }
+    Ok(())
+}
+
 impl AuthenticatedBrokerSession {
+    /// Connect to an ASB owner-private control socket and negotiate before
+    /// entering the interactive frontend. The socket is a local transport
+    /// boundary; no path or peer metadata is accepted as authority.
+    pub fn connect(path: &Path, limits: ControlLimits) -> Result<Self, TransportError> {
+        if !path.is_absolute() || path.as_os_str().len() > 4096 {
+            return Err(TransportError::PeerIdentity);
+        }
+        let metadata = std::fs::symlink_metadata(path).map_err(|_| TransportError::PeerIdentity)?;
+        let parent = path.parent().ok_or(TransportError::PeerIdentity)?;
+        validate_socket_ancestors(parent)?;
+        if !metadata.file_type().is_socket()
+            || metadata.file_type().is_symlink()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(TransportError::PeerIdentity);
+        }
+        let stream = UnixStream::connect(path).map_err(|_| TransportError::Io)?;
+        let credentials = rustix::net::sockopt::socket_peercred(&stream)
+            .map_err(|_| TransportError::PeerIdentity)?;
+        let peer_uid = credentials.uid.as_raw();
+        let peer_pid = credentials.pid.as_raw_pid() as u32;
+        if peer_uid != rustix::process::geteuid().as_raw() || peer_pid == 0 {
+            return Err(TransportError::PeerIdentity);
+        }
+        let after = std::fs::symlink_metadata(path).map_err(|_| TransportError::PeerIdentity)?;
+        if after.dev() != metadata.dev()
+            || after.ino() != metadata.ino()
+            || !after.file_type().is_socket()
+            || after.uid() != rustix::process::geteuid().as_raw()
+            || after.mode() & 0o077 != 0
+        {
+            return Err(TransportError::PeerIdentity);
+        }
+        let mut transport = FramedControlStream::adopt_broker(stream, peer_uid, peer_pid, limits)?;
+        let ControlSuccess::Negotiated(negotiated) = transport.negotiate(RequestId(1))? else {
+            return Err(TransportError::NotNegotiated);
+        };
+        Ok(Self {
+            transport,
+            negotiated,
+            continuity: None,
+            peer: BrokerPeerCredentials {
+                uid: peer_uid,
+                pid: peer_pid,
+            },
+        })
+    }
+
     pub fn establish(
         received: ReceivedChannel,
         expected_uid: u32,
@@ -397,7 +484,7 @@ impl AuthenticatedBrokerSession {
         Ok(Self {
             transport,
             negotiated,
-            continuity,
+            continuity: Some(continuity),
             peer: BrokerPeerCredentials {
                 uid: expected_uid,
                 pid: expected_pid,
@@ -429,7 +516,7 @@ impl AuthenticatedBrokerSession {
     }
 
     #[must_use]
-    pub fn continuity(&self) -> BrokerContinuity {
+    pub fn continuity(&self) -> Option<BrokerContinuity> {
         self.continuity
     }
 
@@ -1187,10 +1274,14 @@ mod tests {
         SocketType, sendmsg, socketpair,
     };
     use std::{
+        fs,
         io::{IoSlice, Read, Write},
         mem::MaybeUninit,
         os::fd::AsFd,
+        os::unix::fs::PermissionsExt,
+        os::unix::net::UnixListener,
         thread,
+        time::{SystemTime, UNIX_EPOCH},
     };
     fn peer() -> RunnerIdentity {
         RunnerIdentity {
@@ -1225,6 +1316,82 @@ mod tests {
             pid: 42,
             service_generation: 7,
         }
+    }
+
+    #[test]
+    fn socket_consumer_rejects_non_socket_and_public_paths_before_connecting() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-tui-socket-consumer-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let regular = root.join("regular");
+        fs::write(&regular, b"not a socket").unwrap();
+        fs::set_permissions(&regular, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            AuthenticatedBrokerSession::connect(&regular, ControlLimits::default()),
+            Err(TransportError::PeerIdentity)
+        ));
+        let public = root.join("public");
+        fs::write(&public, b"not a socket").unwrap();
+        fs::set_permissions(&public, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            AuthenticatedBrokerSession::connect(&public, ControlLimits::default()),
+            Err(TransportError::PeerIdentity)
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn socket_consumer_authenticates_real_listener_without_fabricating_continuity() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-tui-real-socket-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("control.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let parent = path.parent().unwrap();
+        let ancestor_result = validate_socket_ancestors(parent);
+        assert!(ancestor_result.is_ok(), "{ancestor_result:?}");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut header = [0_u8; 4];
+            stream.read_exact(&mut header).unwrap();
+            let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+            stream.read_exact(&mut body).unwrap();
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id,
+                result: ControlSuccess::Negotiated(crate::control_codec::Negotiated {
+                    version: crate::control_codec::V1_3,
+                    limits: ControlLimits::default(),
+                    runner_instance_id: "socket-runner".into(),
+                    oldest_revision: Revision(1),
+                    latest_revision: Revision(1),
+                }),
+            });
+            stream
+                .write_all(&crate::control_codec::encode(&response, 4096).unwrap())
+                .unwrap();
+        });
+        let session = AuthenticatedBrokerSession::connect(&path, ControlLimits::default()).unwrap();
+        assert_eq!(session.negotiated().runner_instance_id, "socket-runner");
+        assert!(session.continuity().is_none());
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn socketpair_round_trip_rejects_mismatched_response_id() {
@@ -1354,8 +1521,8 @@ mod tests {
             AuthenticatedBrokerSession::establish_from_broker(received, ControlLimits::default())
                 .unwrap();
         assert_eq!(session.negotiated().runner_instance_id, runner);
-        assert_eq!(session.continuity().generation().epoch, [9; 16]);
-        assert_eq!(session.continuity().generation().sequence, 4);
+        assert_eq!(session.continuity().unwrap().generation().epoch, [9; 16]);
+        assert_eq!(session.continuity().unwrap().generation().sequence, 4);
         assert_eq!(
             session.peer_credentials().uid(),
             rustix::process::geteuid().as_raw()
@@ -1432,11 +1599,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated,
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [4; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [4; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials {
                 uid: rustix::process::geteuid().as_raw(),
                 pid: rustix::process::getpid().as_raw_pid() as u32,
@@ -1656,11 +1825,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated,
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [5; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [5; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials {
                 uid: rustix::process::geteuid().as_raw(),
                 pid: rustix::process::getpid().as_raw_pid() as u32,
@@ -1803,11 +1974,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated: negotiated.clone(),
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [9; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [9; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
         };
         let mut projection = ControlProjection::default();
@@ -1944,11 +2117,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated: negotiated.clone(),
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [9; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [9; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
         };
         let mut projection = ControlProjection::default();
@@ -2142,11 +2317,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated: negotiated.clone(),
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [9; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [9; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
         };
         let mut projection = ControlProjection::default();
@@ -2182,11 +2359,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated,
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [9; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [9; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
         };
         let mut projection = ControlProjection::default();
@@ -2240,11 +2419,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated: negotiated.clone(),
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [7; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [7; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
         };
         let mut projection = ControlProjection::default();
@@ -2328,11 +2509,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated: negotiated.clone(),
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [8; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [8; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
         };
         let mut projection = ControlProjection::default();
@@ -2438,11 +2621,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated: negotiated.clone(),
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [6; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [6; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
         };
         assert_eq!(
@@ -2465,11 +2650,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated,
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [6; 16],
-                sequence: 2,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [6; 16],
+                    sequence: 2,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
         };
         session
@@ -2598,11 +2785,13 @@ mod tests {
         let mut session = AuthenticatedBrokerSession {
             transport,
             negotiated,
-            continuity: BrokerContinuity::new(BrokerGeneration {
-                epoch: [9; 16],
-                sequence: 1,
-            })
-            .unwrap(),
+            continuity: Some(
+                BrokerContinuity::new(BrokerGeneration {
+                    epoch: [9; 16],
+                    sequence: 1,
+                })
+                .unwrap(),
+            ),
             peer: BrokerPeerCredentials { uid: 1000, pid: 42 },
         };
         let mut projection = ControlProjection::default();
