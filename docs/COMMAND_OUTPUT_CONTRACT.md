@@ -1,3 +1,6 @@
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Guided command and output contract
 
 The command entry points are route selectors for the guided TUI.  They do not

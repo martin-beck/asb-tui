@@ -1,3 +1,6 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+// SPDX-License-Identifier: MIT
+
 //! Stable output for guided, non-interactive command entry points.
 //!
 //! The TUI owns interaction, while this contract gives installers, scripts,
