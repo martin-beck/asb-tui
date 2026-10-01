@@ -46,7 +46,7 @@ pub fn operation_matrix() -> Vec<OperationRow> {
         },
         OperationRow {
             name: "benchmark_catalog",
-            minimum: V1_7,
+            minimum: V1_10,
         },
         OperationRow {
             name: "agent_catalog",
@@ -262,6 +262,17 @@ mod tests {
             Err(CompatibilityError::OperationUnavailable)
         );
         assert!(validate_operation(V1_5, &operation).is_ok());
+    }
+
+    #[test]
+    fn benchmark_catalog_requires_the_asb_v110_common_version() {
+        let operation = ControlCall::BenchmarkCatalog;
+        assert_eq!(operation_minimum(&operation), V1_10);
+        assert_eq!(
+            validate_operation(V1_8, &operation),
+            Err(CompatibilityError::OperationUnavailable)
+        );
+        assert!(validate_operation(V1_10, &operation).is_ok());
     }
 
     #[test]
