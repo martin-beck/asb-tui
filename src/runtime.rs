@@ -162,6 +162,36 @@ pub fn dispatch_control_action(
     .map_err(|_| RuntimeError(io::Error::other("control action failed")))
 }
 
+/// Fetch the runner-owned digest-only cassette catalog through the
+/// authenticated control session.  Cassette bytes never enter the TUI.
+pub fn fetch_authenticated_cassette_catalog(
+    session: &mut AuthenticatedBrokerSession,
+    campaign_id: String,
+    generation: crate::control_codec::Revision,
+) -> Result<crate::benchmark_route::AuthenticatedCassetteCatalog, RuntimeError> {
+    let catalog = session
+        .recording_cassette_catalog(campaign_id, generation)
+        .map_err(|error| RuntimeError(io::Error::other(error)))?;
+    catalog.try_into().map_err(|error| {
+        RuntimeError(io::Error::other(format!(
+            "cassette catalog rejected: {error:?}"
+        )))
+    })
+}
+
+/// Dispatch a guided replay intent through ASB's authenticated, provider-free
+/// replay authority.  The transport rechecks campaign, generation, profile,
+/// agent, workload, and cassette identity before returning.
+pub fn dispatch_authenticated_replay(
+    session: &mut AuthenticatedBrokerSession,
+    intent: &crate::benchmark_route::ReplayIntent,
+    idempotency_key: String,
+) -> Result<crate::control_codec::RecordingReplayDispatch, RuntimeError> {
+    session
+        .dispatch_replay_intent(intent, idempotency_key)
+        .map_err(|error| RuntimeError(io::Error::other(error)))
+}
+
 /// Run the interactive loop after one authenticated control refresh. The
 /// mutable session is borrowed by the entry seam for the full loop lifetime;
 /// it is never replaced by a second connection and remains available to a
