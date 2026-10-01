@@ -36,8 +36,22 @@ def main() -> None:
     else:
         assert value["classification"] == "source_only_unverified"
         assert value["installable"] is False
-        assert value["release_artifacts_published"] is False
-        assert not fully_verified
+    assert value["release_artifacts_published"] is False
+    assert not fully_verified
+    development = value["development_channel"]
+    assert development == {
+        "authentication_required": False,
+        "classification": "development_only",
+        "key_management_required": False,
+        "ref": "refs/heads/main",
+        "repository": "https://github.com/martin-beck/asb-tui.git",
+        "signatures_required": False,
+        "warnings": [
+            "development_missing_authentication_allowed",
+            "development_missing_signatures_allowed",
+            "development_missing_key_management_allowed",
+        ],
+    }
 
     forbidden_dynamic_identity = {
         "source_commit",
