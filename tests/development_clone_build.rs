@@ -9,19 +9,41 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[test]
-fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = env::temp_dir().join(format!("asb-tui-clone-build-{nonce}"));
+fn local_source_fixture() -> (PathBuf, String) {
+    let source = env::temp_dir().join(format!(
+        "asb-tui-clone-source-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let rustup_home = env::var_os("RUSTUP_HOME").expect("test needs an explicit rustup home");
-    let expected_commit = String::from_utf8(
+    assert!(
         Command::new("git")
-            .current_dir(&repository)
-            .args(["rev-parse", "main"])
+            .args([
+                "clone",
+                "--local",
+                "--no-hardlinks",
+                "--",
+                repository.to_str().unwrap()
+            ])
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&source)
+            .args(["switch", "-c", "fixture"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let commit = String::from_utf8(
+        Command::new("git")
+            .current_dir(&source)
+            .args(["rev-parse", "HEAD"])
             .output()
             .unwrap()
             .stdout,
@@ -29,11 +51,34 @@ fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
     .unwrap()
     .trim()
     .to_owned();
+    (source, commit)
+}
+
+fn trusted_tool(name: &str) -> String {
+    String::from_utf8(Command::new("which").arg(name).output().unwrap().stdout)
+        .unwrap()
+        .trim()
+        .to_owned()
+}
+
+#[test]
+fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = env::temp_dir().join(format!("asb-tui-clone-build-{nonce}"));
+    let (repository, expected_commit) = local_source_fixture();
+    let rustup_home = env::var_os("RUSTUP_HOME").expect("test needs an explicit rustup home");
+    let cargo = trusted_tool("cargo");
 
     let output = Command::new(env!("CARGO_BIN_EXE_asb-tui"))
         .env("ASB_TUI_DEV_REPOSITORY", &repository)
-        .env("ASB_TUI_DEV_REF", "main")
+        .env("ASB_TUI_DEV_REF", "fixture")
         .env("ASB_TUI_DEV_RUSTUP_HOME", rustup_home)
+        .env("ASB_TUI_DEV_GIT", "/usr/bin/git")
+        .env("ASB_TUI_DEV_SETSID", "/usr/bin/setsid")
+        .env("ASB_TUI_DEV_CARGO", cargo)
         .env("ASB_TUI_DEV_INSTALL_ROOT", &root)
         .args(["tui", "install", "--channel", "dev", "--format", "json"])
         .output()
@@ -52,4 +97,5 @@ fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
             .starts_with('.')
     }));
     fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(repository).unwrap();
 }

@@ -3,12 +3,61 @@
 
 use std::process::Command;
 use std::{
-    fs,
+    env, fs,
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_asb-tui"))
+}
+
+fn local_source_fixture(label: &str) -> (PathBuf, PathBuf, String) {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let source = env::temp_dir().join(format!("asb-tui-{label}-source-{nonce}"));
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let clone = Command::new("git")
+        .args([
+            "clone",
+            "--local",
+            "--no-hardlinks",
+            "--",
+            repository.to_str().unwrap(),
+        ])
+        .arg(&source)
+        .status()
+        .unwrap();
+    assert!(clone.success());
+    assert!(
+        Command::new("git")
+            .current_dir(&source)
+            .args(["switch", "-c", "fixture"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let commit = String::from_utf8(
+        Command::new("git")
+            .current_dir(&source)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    (source, repository, commit)
+}
+
+fn trusted_tool(name: &str) -> String {
+    String::from_utf8(Command::new("which").arg(name).output().unwrap().stdout)
+        .unwrap()
+        .trim()
+        .to_owned()
 }
 
 #[test]
@@ -86,6 +135,9 @@ fn socket_launcher_rejects_missing_or_untrusted_endpoint() {
 
 #[test]
 fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
+    let (source, _repository, _commit) = local_source_fixture("top-level");
+    let cargo = trusted_tool("cargo");
+    let rustup_home = std::env::var_os("RUSTUP_HOME").expect("explicit rustup home");
     let root = std::env::temp_dir().join(format!(
         "asb-tui-ar1579-{}-{}",
         std::process::id(),
@@ -98,6 +150,12 @@ fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
         binary()
             .args(["tui", operation, "--channel", "dev", "--format", "json"])
             .env("ASB_TUI_DEV_INSTALL_ROOT", &root)
+            .env("ASB_TUI_DEV_REPOSITORY", &source)
+            .env("ASB_TUI_DEV_REF", "fixture")
+            .env("ASB_TUI_DEV_GIT", "/usr/bin/git")
+            .env("ASB_TUI_DEV_SETSID", "/usr/bin/setsid")
+            .env("ASB_TUI_DEV_CARGO", &cargo)
+            .env("ASB_TUI_DEV_RUSTUP_HOME", &rustup_home)
             .output()
             .expect("run development lifecycle")
     };
@@ -113,4 +171,5 @@ fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
     assert_eq!(run("remove").status.code(), Some(0));
     assert_eq!(run("status").status.code(), Some(3));
     fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(source).unwrap();
 }
