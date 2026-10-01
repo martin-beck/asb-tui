@@ -1263,6 +1263,8 @@ impl AuthenticatedBrokerSession {
                 // must remain visible as unavailable, not block first-run UI.
                 next.apply(&request, &response, limits)
                     .map_err(|_| TransportError::Projection)?;
+            } else {
+                next.mark_auth_unavailable("development_auth_unavailable");
             }
         }
         *projection = next;
