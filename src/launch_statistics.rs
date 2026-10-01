@@ -602,6 +602,7 @@ mod tests {
             recording_estimate: None,
             recording_campaign_lifecycle: None,
             runs: vec![],
+            analysis: None,
         }
     }
 

@@ -22,6 +22,12 @@ fn capabilities() -> Capabilities {
 }
 
 #[test]
+fn authored_model_declares_result_analysis_projection_state() {
+    let model = include_str!("../docs/ui-state-model.json");
+    assert!(model.contains("\"analysis_summary\""));
+}
+
+#[test]
 fn documented_transition_sequence_is_executable() {
     let all = capabilities();
     let mut state = FormalUiState::new(100, 30).unwrap();

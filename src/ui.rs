@@ -2034,16 +2034,27 @@ fn reports(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: Re
             ]
         },
         |snapshot| {
-            snapshot
+            let mut entries: Vec<String> = snapshot
                 .runs
                 .iter()
                 .map(|run| {
                     format!(
-                        "{} | {:?} | revision {}",
-                        run.run_id.0, run.state, run.revision.0
+                        "{} | {:?} | revision {} | plan {}",
+                        run.run_id.0,
+                        run.state,
+                        run.revision.0,
+                        &run.plan_sha256[..run.plan_sha256.len().min(12)]
                     )
                 })
-                .collect()
+                .collect();
+            if let Some(analysis) = &snapshot.analysis {
+                entries.push(format!(
+                    "Analysis: {} runs | digest {}",
+                    analysis.run_count,
+                    &analysis.analysis_sha256[..analysis.analysis_sha256.len().min(12)]
+                ));
+            }
+            entries
         },
     );
     let items: Vec<ListItem> = entries.into_iter().map(ListItem::new).collect();
@@ -2382,6 +2393,7 @@ mod tests {
             recording_estimate: None,
             recording_campaign_lifecycle: None,
             runs: Vec::new(),
+            analysis: None,
         };
         state.apply_live_snapshot(snapshot);
         assert!(state.measures.is_empty());
@@ -2444,6 +2456,7 @@ mod tests {
             recording_estimate: None,
             recording_campaign_lifecycle: None,
             runs: Vec::new(),
+            analysis: None,
         };
         state.apply_live_snapshot(snapshot);
         state.screen = Screen::Measures;
@@ -2532,6 +2545,7 @@ mod tests {
             recording_estimate: None,
             recording_campaign_lifecycle: None,
             runs: Vec::new(),
+            analysis: None,
         };
         let mut state = WorkspaceState::for_readiness(StartupInput {
             configuration_present: false,
@@ -2658,6 +2672,7 @@ mod tests {
             recording_estimate: None,
             recording_campaign_lifecycle: None,
             runs: Vec::new(),
+            analysis: None,
         });
         assert_eq!(state.screen, Screen::Wizard);
     }
@@ -2851,6 +2866,7 @@ mod tests {
                 plan_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                     .into(),
             }],
+            analysis: None,
         };
         let mut state = WorkspaceState::default();
         state.apply_live_snapshot(snapshot);
