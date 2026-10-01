@@ -55,6 +55,76 @@ pub struct Installation {
     pub quality_version: String,
     pub quality_commit: String,
     pub classification: String,
+    #[serde(default = "default_endpoint")]
+    pub endpoint: String,
+    #[serde(default = "default_channel")]
+    pub channel: String,
+    #[serde(default)]
+    pub manifest_sha256: String,
+    #[serde(default = "default_workspace_state_root")]
+    pub workspace_state_root: String,
+    #[serde(default = "default_workspace_config_root")]
+    pub workspace_config_root: String,
+    #[serde(default = "default_workspace_cache_root")]
+    pub workspace_cache_root: String,
+}
+
+fn default_endpoint() -> String {
+    crate::frontend_handoff::DEFAULT_ENDPOINT.into()
+}
+fn default_channel() -> String {
+    crate::frontend_handoff::DEFAULT_CHANNEL.into()
+}
+fn default_workspace_state_root() -> String {
+    "workspace/state".into()
+}
+fn default_workspace_config_root() -> String {
+    "workspace/config".into()
+}
+fn default_workspace_cache_root() -> String {
+    "workspace/cache".into()
+}
+
+fn handoff_manifest_digest(installation: &Installation) -> Result<String, &'static str> {
+    digest_bytes(
+        serde_json::to_string(&(
+            &installation.release,
+            &installation.source_commit,
+            &installation.source_tree,
+            &installation.target,
+            &installation.bundle,
+            &installation.asb_version,
+            installation.protocol_version,
+            &installation.coordinator_version,
+            &installation.coordinator_commit,
+            &installation.quality_version,
+            &installation.quality_commit,
+            &installation.classification,
+        ))
+        .map_err(|_| "manifest_encode_failed")?
+        .as_bytes(),
+    )
+}
+
+fn validate_handoff(installation: &Installation) -> bool {
+    installation.endpoint == crate::frontend_handoff::DEFAULT_ENDPOINT
+        && installation.channel == crate::frontend_handoff::DEFAULT_CHANNEL
+        && installation.manifest_sha256.len() == 64
+        && handoff_manifest_digest(installation).ok().as_deref()
+            == Some(installation.manifest_sha256.as_str())
+        && [
+            &installation.workspace_state_root,
+            &installation.workspace_config_root,
+            &installation.workspace_cache_root,
+        ]
+        .iter()
+        .all(|root| {
+            !root.is_empty()
+                && Path::new(root).is_relative()
+                && !root
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+        })
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -69,6 +139,12 @@ pub struct LifecycleStatus {
     pub protocol_version: Option<u64>,
     pub source_commit: Option<String>,
     pub source_tree: Option<String>,
+    pub endpoint: Option<String>,
+    pub channel: Option<String>,
+    pub manifest_sha256: Option<String>,
+    pub workspace_state_root: Option<String>,
+    pub workspace_config_root: Option<String>,
+    pub workspace_cache_root: Option<String>,
     pub reason: &'static str,
 }
 
@@ -888,6 +964,10 @@ fn executable_self_test(
         .stdin(input)
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    let handoff = crate::frontend_handoff::FrontendHandoff::from_installation(installation);
+    for (name, value) in handoff.env_pairs() {
+        command.env(name, value);
+    }
     for name in ["TERM", "COLORTERM"] {
         if let Ok(value) = std::env::var(name)
             && !value.is_empty()
@@ -1055,10 +1135,15 @@ impl FrontendLauncher for ProcessLauncher {
         _installation: &Installation,
         executable: &[u8],
     ) -> Result<(), LifecycleIoError> {
+        let handoff = crate::frontend_handoff::FrontendHandoff::from_installation(_installation);
         let executable = executable_memfd("asb-tui-frontend", executable)?;
         let program = format!("/proc/self/fd/{}", executable.as_raw_fd());
         let (input, output, error) = controlling_terminal()?;
-        let status = Command::new(program)
+        let mut command = Command::new(program);
+        for (name, value) in handoff.env_pairs() {
+            command.env(name, value);
+        }
+        let status = command
             .stdin(input)
             .stdout(output)
             .stderr(error)
@@ -1254,7 +1339,7 @@ pub fn install(
         crate::compatibility::Architecture::Aarch64 => "aarch64-unknown-linux-gnu",
         crate::compatibility::Architecture::Other => return Err("verified_target_invalid"),
     };
-    let installation = Installation {
+    let mut installation = Installation {
         schema_version: 1,
         release: manifest.release().to_owned(),
         executable_sha256: declared.sha256.clone(),
@@ -1269,7 +1354,14 @@ pub fn install(
         quality_version: QUALITY_VERSION.into(),
         quality_commit: QUALITY_COMMIT.into(),
         classification: ReleaseClassification::VerifiedExtension.as_str().into(),
+        endpoint: crate::frontend_handoff::DEFAULT_ENDPOINT.into(),
+        channel: crate::frontend_handoff::DEFAULT_CHANNEL.into(),
+        manifest_sha256: String::new(),
+        workspace_state_root: "workspace/state".into(),
+        workspace_config_root: "workspace/config".into(),
+        workspace_cache_root: "workspace/cache".into(),
     };
+    installation.manifest_sha256 = handoff_manifest_digest(&installation)?;
     store
         .stage(&installation, executable)
         .map_err(|_| "install_stage_failed")?;
@@ -1306,6 +1398,12 @@ pub fn status(store: &impl LifecycleStore) -> LifecycleStatus {
             protocol_version: None,
             source_commit: None,
             source_tree: None,
+            endpoint: None,
+            channel: None,
+            manifest_sha256: None,
+            workspace_state_root: None,
+            workspace_config_root: None,
+            workspace_cache_root: None,
             reason: "extension_not_installed",
         };
     };
@@ -1322,6 +1420,7 @@ pub fn status(store: &impl LifecycleStore) -> LifecycleStatus {
         && installation.coordinator_commit == COORDINATOR_COMMIT
         && installation.quality_version == QUALITY_VERSION
         && installation.quality_commit == QUALITY_COMMIT
+        && validate_handoff(&installation)
         && store
             .active_executable(&installation)
             .ok()
@@ -1340,6 +1439,12 @@ pub fn status(store: &impl LifecycleStore) -> LifecycleStatus {
         protocol_version: Some(installation.protocol_version),
         source_commit: Some(installation.source_commit),
         source_tree: Some(installation.source_tree),
+        endpoint: Some(installation.endpoint),
+        channel: Some(installation.channel),
+        manifest_sha256: Some(installation.manifest_sha256),
+        workspace_state_root: Some(installation.workspace_state_root),
+        workspace_config_root: Some(installation.workspace_config_root),
+        workspace_cache_root: Some(installation.workspace_cache_root),
         reason: if valid {
             "verified_installation"
         } else {
@@ -1361,6 +1466,9 @@ pub fn launch(
         .active()
         .map_err(|_| "installation_verification_failed")?
         .ok_or("extension_not_installed")?;
+    if !validate_handoff(&installation) {
+        return Err("installation_handoff_invalid");
+    }
     let executable = store
         .active_executable(&installation)
         .map_err(|_| "installation_verification_failed")?;

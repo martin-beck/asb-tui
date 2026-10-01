@@ -5,7 +5,7 @@
 use crate::compatibility::{
     Architecture, COORDINATOR_COMMIT, COORDINATOR_VERSION, QUALITY_COMMIT, QUALITY_VERSION,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
@@ -26,7 +26,7 @@ const MAX_ATTEMPTS: usize = 3;
 const SIGNER_FINGERPRINT: &str = "SHA256:a36V6yPvRZyxnQ2113tiA/MlHt7mPfJEXAGByBXVkuE";
 const TRUSTED_ALLOWED_SIGNERS: &[u8] = include_bytes!("../provenance/allowed_signers");
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     Executable,
@@ -36,7 +36,7 @@ pub enum ArtifactKind {
     Provenance,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
     pub name: String,
@@ -46,7 +46,7 @@ pub struct Artifact {
     pub sha256: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BundleCompatibility {
     pub bundle: String,
@@ -59,7 +59,7 @@ pub struct BundleCompatibility {
     pub quality_commit: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BundleManifest {
     schema_version: u64,
@@ -102,7 +102,7 @@ pub(crate) fn digest_bytes(bytes: &[u8]) -> Result<String, &'static str> {
     sha256(bytes)
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BundleComponent {
     pub name: String,

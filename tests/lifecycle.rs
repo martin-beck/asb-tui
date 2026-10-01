@@ -227,6 +227,38 @@ fn launch_rechecks_self_test_and_remove_never_touches_benchmark_processes() {
 }
 
 #[test]
+fn installed_handoff_metadata_is_restart_safe_and_tamper_fenced() {
+    let mut store = Store::default();
+    let mut probe = Probe {
+        pass: true,
+        calls: 0,
+    };
+    let installed = install(&manifest(), &artifacts(), &mut store, &mut probe).unwrap();
+    assert_eq!(installed.endpoint, "asb://control/v1");
+    assert_eq!(installed.channel, "verified");
+    assert_eq!(installed.manifest_sha256.len(), 64);
+    assert_eq!(status(&store).reason, "installation_verification_failed");
+
+    store.active.as_mut().unwrap().0.endpoint = "asb://control/v2".into();
+    assert_eq!(status(&store).reason, "installation_verification_failed");
+    let mut launcher = Launcher::default();
+    assert_eq!(
+        launch(&store, &mut probe, &mut launcher),
+        Err("installation_handoff_invalid")
+    );
+
+    store.active.as_mut().unwrap().0 = installed;
+    store
+        .active
+        .as_mut()
+        .unwrap()
+        .0
+        .manifest_sha256
+        .replace_range(..1, "0");
+    assert_eq!(status(&store).reason, "installation_verification_failed");
+}
+
+#[test]
 fn filesystem_install_is_private_atomic_idempotent_and_removable() {
     let directory = PrivateDirectory::create();
     let mut store = FilesystemLifecycle::open(directory.path()).unwrap();
@@ -287,6 +319,12 @@ fn filesystem_upgrade_reconnect_and_existing_version_reuse_are_verified() {
         quality_version: "v0.23.0".into(),
         quality_commit: "8a9f056b7fc7926b9465a0f7a09225d4da1c572a".into(),
         classification: "verified_extension".into(),
+        endpoint: asb_tui::frontend_handoff::DEFAULT_ENDPOINT.into(),
+        channel: asb_tui::frontend_handoff::DEFAULT_CHANNEL.into(),
+        manifest_sha256: "f".repeat(64),
+        workspace_state_root: "workspace/state".into(),
+        workspace_config_root: "workspace/config".into(),
+        workspace_cache_root: "workspace/cache".into(),
     };
     store.stage(&first, b"world").unwrap();
     store.activate(&first).unwrap();
