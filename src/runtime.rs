@@ -152,14 +152,27 @@ pub fn dispatch_control_action(
     projection: &mut ControlProjection,
     idempotency_key: String,
 ) -> Result<crate::recording_dispatch::RecordingDispatchOutcome, RuntimeError> {
-    crate::recording_dispatch::dispatch_with_backend(
+    let outcome = crate::recording_dispatch::dispatch_with_backend(
         action,
         recording,
         session,
         projection,
         idempotency_key,
     )
-    .map_err(|_| RuntimeError(io::Error::other("control action failed")))
+    .map_err(|_| RuntimeError(io::Error::other("control action failed")))?;
+    if action == crate::actions::UiAction::ActivateOfflineDefault {
+        let snapshot = projection.snapshot();
+        let campaign = snapshot
+            .recording_campaign_lifecycle
+            .as_ref()
+            .ok_or_else(|| RuntimeError(io::Error::other("recording campaign unavailable")))?;
+        recording.authenticated_catalog = Some(fetch_authenticated_cassette_catalog(
+            session,
+            campaign.campaign_id.clone(),
+            campaign.generation,
+        )?);
+    }
+    Ok(outcome)
 }
 
 /// Fetch the runner-owned digest-only cassette catalog through the
@@ -190,6 +203,28 @@ pub fn dispatch_authenticated_replay(
     session
         .dispatch_replay_intent(intent, idempotency_key)
         .map_err(|error| RuntimeError(io::Error::other(error)))
+}
+
+/// Complete the selection-driven replay route: bind the user's workload and
+/// cassette choice to the authenticated catalog, then dispatch only the
+/// resulting strict offline intent.  A catalog, generation, or identity
+/// mismatch fails before any runner request is sent.
+pub fn run_authenticated_replay_selection(
+    session: &mut AuthenticatedBrokerSession,
+    campaign: &mut crate::benchmark_route::GuidedCampaign,
+    catalog: &crate::benchmark_route::AuthenticatedCassetteCatalog,
+    workload_id: &str,
+    cassette_sha256: &str,
+    idempotency_key: String,
+) -> Result<crate::control_codec::RecordingReplayDispatch, RuntimeError> {
+    let intent = campaign
+        .start_offline_replay_from_authenticated_catalog(catalog, workload_id, cassette_sha256)
+        .map_err(|error| {
+            RuntimeError(io::Error::other(format!(
+                "replay selection rejected: {error:?}"
+            )))
+        })?;
+    dispatch_authenticated_replay(session, &intent, idempotency_key)
 }
 
 /// Run the interactive loop after one authenticated control refresh. The

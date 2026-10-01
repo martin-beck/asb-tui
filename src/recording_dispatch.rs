@@ -95,6 +95,9 @@ pub struct RecordingDispatchState {
     pub agent_ids: Vec<String>,
     pub workload_scope: WorkloadScope,
     capture_armed: bool,
+    /// The last authenticated digest-only catalog fetched after activation.
+    /// Cassette contents never enter this state.
+    pub authenticated_catalog: Option<crate::benchmark_route::AuthenticatedCassetteCatalog>,
 }
 
 impl RecordingDispatchState {
@@ -110,6 +113,7 @@ impl RecordingDispatchState {
             agent_ids,
             workload_scope: workload_scope.canonical()?,
             capture_armed: false,
+            authenticated_catalog: None,
         })
     }
 
