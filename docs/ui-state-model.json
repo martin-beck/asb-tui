@@ -66,6 +66,8 @@
     ,{"action":"cancel_recording","element":"run.cancel","key":"X"}
     ,{"action":"reconcile_recording","element":"run.status","key":"Y"}
     ,{"action":"activate_offline_default","element":"run.status","key":"o"}
+    ,{"action":"replay_selected","element":"run.status","key":"J"}
+    ,{"action":"select_offline_cassette","element":"run.status","key":"]"}
   ],
   "routes": [
     {"id":"landing","elements":["landing.primary","navigation","status.connection"]},

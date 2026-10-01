@@ -44,6 +44,8 @@ pub enum UiAction {
     CancelRecording,
     ReconcileRecording,
     ActivateOfflineDefault,
+    ReplaySelected,
+    SelectOfflineCassette,
     WizardDevelopmentEnroll,
     WizardDevelopmentTest,
     WizardDevelopmentRotate,
@@ -57,7 +59,7 @@ pub enum UiAction {
 
 impl UiAction {
     /// Every action, in stable display order.
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 40] = [
         Self::Quit,
         Self::GoBack,
         Self::OpenLanding,
@@ -87,6 +89,8 @@ impl UiAction {
         Self::CancelRecording,
         Self::ReconcileRecording,
         Self::ActivateOfflineDefault,
+        Self::ReplaySelected,
+        Self::SelectOfflineCassette,
         Self::WizardDevelopmentEnroll,
         Self::WizardDevelopmentTest,
         Self::WizardDevelopmentRotate,
@@ -131,6 +135,8 @@ impl UiAction {
             Self::CancelRecording => "cancel_recording",
             Self::ReconcileRecording => "reconcile_recording",
             Self::ActivateOfflineDefault => "activate_offline_default",
+            Self::ReplaySelected => "replay_selected",
+            Self::SelectOfflineCassette => "select_offline_cassette",
             Self::WizardDevelopmentEnroll => "wizard_development_enroll",
             Self::WizardDevelopmentTest => "wizard_development_test",
             Self::WizardDevelopmentRotate => "wizard_development_rotate",
@@ -284,6 +290,8 @@ const fn action_context_route(action: UiAction) -> Route {
         | UiAction::CancelRecording
         | UiAction::ReconcileRecording
         | UiAction::ActivateOfflineDefault => Route::RunControl,
+        UiAction::ReplaySelected => Route::RunControl,
+        UiAction::SelectOfflineCassette => Route::RunControl,
         UiAction::WizardDevelopmentEnroll
         | UiAction::WizardDevelopmentTest
         | UiAction::WizardDevelopmentRotate
@@ -348,7 +356,7 @@ fn descriptor(
             Some(Route::RunControl),
         ),
         UiAction::OpenRecentRuns => (
-            KeyChord::Char('r'),
+            KeyChord::Char('J'),
             "Recent runs",
             "Inspect recent runs and report inputs",
             ActionContext::Global,
@@ -505,6 +513,20 @@ fn descriptor(
             KeyChord::Char('o'),
             "Use offline capture",
             "Activate offline defaults after complete coverage",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::ReplaySelected => (
+            KeyChord::Char('r'),
+            "Replay selected cassette",
+            "Run the selected authenticated cassette offline",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::SelectOfflineCassette => (
+            KeyChord::Char(']'),
+            "Select offline cassette",
+            "Move the explicit offline cassette selection",
             ActionContext::Route(Route::RunControl),
             None,
         ),
@@ -703,7 +725,7 @@ mod tests {
                 .any(|d| d.action == UiAction::ToggleMeasure)
         );
         assert!(!descriptors.iter().any(|d| d.action == UiAction::StartRun));
-        assert_eq!(UiAction::ALL.len(), 38);
+        assert_eq!(UiAction::ALL.len(), 40);
         for action in UiAction::ALL {
             assert!(
                 ActionRegistry::search(action.id())

@@ -336,6 +336,16 @@
       "action": "activate_offline_default",
       "element": "run.status",
       "key": "o"
+    },
+    {
+      "action": "replay_selected",
+      "element": "run.status",
+      "key": "J"
+    },
+    {
+      "action": "select_offline_cassette",
+      "element": "run.status",
+      "key": "]"
     }
   ],
   "routes": [

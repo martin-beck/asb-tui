@@ -95,6 +95,12 @@ pub struct RecordingDispatchState {
     pub agent_ids: Vec<String>,
     pub workload_scope: WorkloadScope,
     capture_armed: bool,
+    /// The last authenticated digest-only catalog fetched after activation.
+    /// Cassette contents never enter this state.
+    pub authenticated_catalog: Option<crate::benchmark_route::AuthenticatedCassetteCatalog>,
+    /// Explicit cassette selected by the user from the authenticated catalog.
+    /// A replay action never guesses or falls back to the first entry.
+    pub selected_cassette_sha256: Option<String>,
 }
 
 impl RecordingDispatchState {
@@ -110,12 +116,18 @@ impl RecordingDispatchState {
             agent_ids,
             workload_scope: workload_scope.canonical()?,
             capture_armed: false,
+            authenticated_catalog: None,
+            selected_cassette_sha256: None,
         })
     }
 
     #[must_use]
     pub const fn capture_armed(&self) -> bool {
         self.capture_armed
+    }
+
+    pub fn select_cassette(&mut self, cassette_sha256: impl Into<String>) {
+        self.selected_cassette_sha256 = Some(cassette_sha256.into());
     }
 }
 
@@ -130,6 +142,8 @@ pub enum RecordingDispatchOutcome {
     CancelRequested,
     ReconcileRequested,
     OfflineDefaultRequested,
+    ReplayDispatched,
+    CassetteSelected,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -265,6 +279,9 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
                 .set_recording_campaign_offline_default(projection, campaign_id, idempotency_key)
                 .map_err(RecordingDispatchError::from)?;
             Ok(RecordingDispatchOutcome::OfflineDefaultRequested)
+        }
+        UiAction::ReplaySelected | UiAction::SelectOfflineCassette => {
+            Err(RecordingDispatchError::InvalidWorkloadScope)
         }
         _ => Err(RecordingDispatchError::InvalidWorkloadScope),
     }

@@ -78,6 +78,8 @@
     {"id":"help.search","route":"help","kind":"editable","label":"Help search","help":{"summary":"Filter contextual help by action, screen, or topic.","usage":"Press /, type a bounded query, and move through matching entries to find the current guidance."}},
     {"id":"help.entry","route":"help","kind":"selectable","label":"Help entry","help":{"summary":"Read the explanation and key binding for this context.","usage":"Move through entries with the navigation keys and press Esc when you understand the action."}},
     {"id":"navigation","route":"global","kind":"widget","label":"Navigation","help":{"summary":"Move safely between the available TUI screens.","usage":"Use the documented keys or Tab, and press Esc to return from an overlay without changing data."}},
-    {"id":"status.connection","route":"landing","kind":"status","label":"Connection status","help":{"summary":"Shows whether the frontend has an authenticated ASB connection.","usage":"Reconnect only after checking the status message; unavailable or stale responses remain disabled."}}
+    {"id":"status.connection","route":"landing","kind":"status","label":"Connection status","help":{"summary":"Shows whether the frontend has an authenticated ASB connection.","usage":"Reconnect only after checking the status message; unavailable or stale responses remain disabled."}},
+    {"id":"action.replay_selected","route":"run_control","kind":"action","label":"Replay selected cassette","help":{"summary":"Replay the explicitly selected authenticated cassette offline.","usage":"Select a cassette from the runner-owned catalog first; no default or live fallback is allowed."}},
+    {"id":"action.select_offline_cassette","route":"run_control","kind":"action","label":"Select offline cassette","help":{"summary":"Move the explicit offline cassette selection through the runner catalog.","usage":"Press ] to select a published digest before pressing J to replay; no implicit fallback is used."}}
   ]
 }

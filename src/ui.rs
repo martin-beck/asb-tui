@@ -1031,6 +1031,12 @@ impl WorkspaceState {
             KeyCode::Char('o') => {
                 UiAction::Control(crate::actions::UiAction::ActivateOfflineDefault)
             }
+            KeyCode::Char('J') if self.screen == Screen::RunControl => {
+                UiAction::Control(crate::actions::UiAction::ReplaySelected)
+            }
+            KeyCode::Char(']') if self.screen == Screen::RunControl => {
+                UiAction::Control(crate::actions::UiAction::SelectOfflineCassette)
+            }
             KeyCode::Char('q') => UiAction::Quit,
             KeyCode::Char('?') | KeyCode::Char('h') => {
                 self.help = true;
@@ -2960,6 +2966,16 @@ mod tests {
                 UiAction::Control(action)
             );
         }
+        state.screen = Screen::RunControl;
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('J'))),
+            UiAction::Control(crate::actions::UiAction::ReplaySelected)
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char(']'))),
+            UiAction::Control(crate::actions::UiAction::SelectOfflineCassette)
+        );
+        state.screen = Screen::Reports;
         assert_eq!(state.handle_key(key(KeyCode::Char('q'))), UiAction::Quit);
         assert_eq!(
             state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)),
