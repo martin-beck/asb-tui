@@ -1249,4 +1249,47 @@ mod tests {
             Some("a".repeat(64).as_str())
         );
     }
+
+    #[test]
+    fn replay_action_rejects_missing_or_stale_selection_before_transport() {
+        use std::os::unix::net::UnixStream;
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let mut session = AuthenticatedBrokerSession::test_session(stream).unwrap();
+        let mut projection = ControlProjection::default();
+        let mut recording = crate::recording_dispatch::RecordingDispatchState::new(
+            "provider".into(),
+            "model".into(),
+            vec!["agent-1".into()],
+            crate::recording_campaign::WorkloadScope::All,
+        )
+        .unwrap();
+        assert!(
+            dispatch_control_action(
+                crate::actions::UiAction::ReplaySelected,
+                &mut recording,
+                &mut session,
+                &mut projection,
+                "replay-1".into(),
+            )
+            .is_err()
+        );
+        recording.authenticated_catalog =
+            Some(crate::benchmark_route::AuthenticatedCassetteCatalog {
+                runner_instance_id: "runner-1".into(),
+                generation: crate::control_codec::Revision(7),
+                campaign_id: "campaign-1".into(),
+                entries: Vec::new(),
+            });
+        recording.selected_cassette_sha256 = Some("a".repeat(64));
+        assert!(
+            dispatch_control_action(
+                crate::actions::UiAction::ReplaySelected,
+                &mut recording,
+                &mut session,
+                &mut projection,
+                "replay-2".into(),
+            )
+            .is_err()
+        );
+    }
 }
