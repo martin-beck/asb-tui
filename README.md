@@ -23,6 +23,13 @@ Running through a pipe or with `TERM=dumb` emits a stable plain-text view withou
 alternate-screen mode. This is source functionality, not platform
 qualification or an installable release. See
 [the terminal dependency decision](docs/TERMINAL_DEPENDENCY_POLICY.md).
+
+For the credential-free development path, ASB's default `dev` channel resolves the current TUI
+`main` head, builds it in an isolated staging directory, and records the exact source commit/tree
+and executable digest. A standalone bundle can be produced and checked with
+`tools/build-dev-bundle.py` and `tools/verify-dev-bundle.py`; its `development_only` manifest makes
+missing authentication, signatures, and key management visible warnings rather than blockers.
+This path is deliberately separate from the signed production release channel.
 The standalone package also supplies the bounded target for the parent
 `asb tui` command. `asb-tui tui` launches the application; lifecycle commands
 such as `asb-tui tui status --development --format json` use the explicit
