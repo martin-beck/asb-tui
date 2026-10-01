@@ -10,7 +10,8 @@
 use crate::control_codec::{
     self, AuthEnrollParams, AuthRevokeParams, AuthRotateParams, AuthStatusParams, CodecError,
     ConfigurationApplyParams, ConfigurationSelection, ControlCall, ControlLimits, ControlRequest,
-    ControlResponse, ControlSuccess, NegotiateParams, PageParams, RequestId, Revision,
+    ControlResponse, ControlResult, ControlSuccess, NegotiateParams, PageParams, RequestId,
+    Revision,
 };
 use crate::{
     broker_adoption::{AdoptionError, BrokerGeneration, ReceivedChannel},
@@ -1047,6 +1048,119 @@ impl AuthenticatedBrokerSession {
         Ok(())
     }
 
+    /// Fetch digest-only sealed cassette metadata from the authenticated
+    /// runner. Contents and filesystem paths never cross this boundary.
+    pub fn recording_cassette_catalog(
+        &mut self,
+        campaign_id: String,
+        expected_generation: Revision,
+    ) -> Result<crate::control_codec::RecordingCassetteCatalog, TransportError> {
+        self.require_version(crate::control_codec::V1_12)?;
+        let requested_campaign = campaign_id.clone();
+        let request = self.recording_request(
+            RequestId(9_000_000_008),
+            ControlCall::RecordingCassetteCatalog(
+                crate::control_codec::RecordingCassetteCatalogRequest {
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                    expected_generation,
+                },
+            ),
+        );
+        let response = self.transport.round_trip(&request)?;
+        let ControlResponse::Success(response) = response else {
+            return Err(TransportError::RemoteFailure);
+        };
+        let ControlSuccess::Operation(bound) = response.result else {
+            return Err(TransportError::RemoteFailure);
+        };
+        let ControlResult::RecordingCassetteCatalog(catalog) = bound.result else {
+            return Err(TransportError::RemoteFailure);
+        };
+        if catalog.runner_instance_id != self.negotiated.runner_instance_id
+            || catalog.generation != expected_generation
+            || catalog.campaign_id != requested_campaign
+        {
+            return Err(TransportError::Continuity);
+        }
+        Ok(catalog)
+    }
+
+    /// Ask the runner to dispatch one exact cassette through its strict
+    /// replay authority. This operation is provider-free by contract.
+    pub fn recording_replay_dispatch(
+        &mut self,
+        params: crate::control_codec::RecordingReplayDispatchParams,
+    ) -> Result<crate::control_codec::RecordingReplayDispatch, TransportError> {
+        self.require_version(crate::control_codec::V1_12)?;
+        if params.runner_instance_id != self.negotiated.runner_instance_id {
+            return Err(TransportError::Continuity);
+        }
+        let expected_generation = params.expected_generation;
+        let expected = params.clone();
+        let request = self.recording_request(
+            RequestId(9_000_000_009),
+            ControlCall::RecordingReplayDispatch(params),
+        );
+        let response = self.transport.round_trip(&request)?;
+        let ControlResponse::Success(response) = response else {
+            return Err(TransportError::RemoteFailure);
+        };
+        let ControlSuccess::Operation(bound) = response.result else {
+            return Err(TransportError::RemoteFailure);
+        };
+        let ControlResult::RecordingReplayDispatch(dispatch) = bound.result else {
+            return Err(TransportError::RemoteFailure);
+        };
+        if dispatch.runner_instance_id != self.negotiated.runner_instance_id
+            || dispatch.generation != expected_generation
+            || dispatch.campaign_id != expected.campaign_id
+            || dispatch.provider_profile_sha256 != expected.provider_profile_sha256
+            || dispatch.agent_id != expected.agent_id
+            || dispatch.workload_id != expected.workload_id
+            || dispatch.cassette_sha256 != expected.cassette_sha256
+            || !dispatch.offline_only
+        {
+            return Err(TransportError::Continuity);
+        }
+        Ok(dispatch)
+    }
+
+    /// Dispatch a route-produced strict replay intent without allowing a live
+    /// fallback or dropping its campaign generation binding.
+    pub fn dispatch_replay_intent(
+        &mut self,
+        intent: &crate::benchmark_route::ReplayIntent,
+        idempotency_key: String,
+    ) -> Result<crate::control_codec::RecordingReplayDispatch, TransportError> {
+        if !intent.offline_only {
+            return Err(TransportError::RemoteFailure);
+        }
+        self.recording_replay_dispatch(crate::control_codec::RecordingReplayDispatchParams {
+            idempotency_key,
+            runner_instance_id: self.negotiated.runner_instance_id.clone(),
+            expected_generation: intent.generation.ok_or(TransportError::Continuity)?,
+            campaign_id: intent
+                .campaign_id
+                .clone()
+                .ok_or(TransportError::Continuity)?,
+            provider_profile_sha256: intent
+                .provider_profile_sha256
+                .clone()
+                .ok_or(TransportError::Continuity)?,
+            agent_id: intent
+                .agents
+                .first()
+                .cloned()
+                .ok_or(TransportError::Continuity)?,
+            workload_id: intent.workload.clone(),
+            cassette_sha256: intent
+                .cassette_sha256
+                .clone()
+                .ok_or(TransportError::Continuity)?,
+        })
+    }
+
     fn recording_request(&self, id: RequestId, call: ControlCall) -> ControlRequest {
         ControlRequest {
             jsonrpc: control_codec::JSONRPC_VERSION.into(),
@@ -1691,6 +1805,302 @@ mod tests {
                 .iter()
                 .any(|call| matches!(call, ControlCall::BenchmarkCatalog))
         );
+    }
+
+    #[test]
+    fn v112_cassette_catalog_and_replay_dispatch_round_trip_with_fencing() {
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let join = thread::spawn(move || {
+            for index in 0..2 {
+                let mut header = [0_u8; 4];
+                server.read_exact(&mut header).unwrap();
+                let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+                server.read_exact(&mut body).unwrap();
+                let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+                let result = if index == 0 {
+                    assert!(matches!(
+                        request.call,
+                        ControlCall::RecordingCassetteCatalog(_)
+                    ));
+                    ControlResult::RecordingCassetteCatalog(
+                        crate::control_codec::RecordingCassetteCatalog {
+                            runner_instance_id: "runner-v112".into(),
+                            generation: Revision(9),
+                            campaign_id: "campaign-1".into(),
+                            entries: vec![crate::control_codec::RecordingCassetteEntry {
+                                cassette_id: "cassette-1".into(),
+                                cassette_sha256: "a".repeat(64),
+                                provider_profile_sha256: "b".repeat(64),
+                                agent_id: "agent-a".into(),
+                                workload_id: "quality".into(),
+                                scorer_revision: "scorer-v1".into(),
+                            }],
+                        },
+                    )
+                } else {
+                    assert!(matches!(
+                        request.call,
+                        ControlCall::RecordingReplayDispatch(_)
+                    ));
+                    ControlResult::RecordingReplayDispatch(
+                        crate::control_codec::RecordingReplayDispatch {
+                            runner_instance_id: "runner-v112".into(),
+                            generation: Revision(9),
+                            campaign_id: "campaign-1".into(),
+                            provider_profile_sha256: "b".repeat(64),
+                            agent_id: "agent-a".into(),
+                            workload_id: "quality".into(),
+                            cassette_sha256: "a".repeat(64),
+                            offline_only: true,
+                        },
+                    )
+                };
+                let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                    jsonrpc: control_codec::JSONRPC_VERSION.into(),
+                    id: request.id,
+                    result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                        request_sha256: "c".repeat(64),
+                        result,
+                    }),
+                });
+                server
+                    .write_all(&control_codec::encode(&response, 4096).unwrap())
+                    .unwrap();
+            }
+        });
+        let mut transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            ControlLimits::default(),
+        )
+        .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_12);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: crate::control_codec::Negotiated {
+                version: crate::control_codec::V1_12,
+                limits: ControlLimits::default(),
+                runner_instance_id: "runner-v112".into(),
+                oldest_revision: Revision(1),
+                latest_revision: Revision(9),
+            },
+            continuity: None,
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        let catalog = session
+            .recording_cassette_catalog("campaign-1".into(), Revision(9))
+            .unwrap();
+        assert_eq!(catalog.entries.len(), 1);
+        let dispatch = session
+            .recording_replay_dispatch(crate::control_codec::RecordingReplayDispatchParams {
+                idempotency_key: "retry-1".into(),
+                runner_instance_id: "runner-v112".into(),
+                expected_generation: Revision(9),
+                campaign_id: "campaign-1".into(),
+                provider_profile_sha256: "b".repeat(64),
+                agent_id: "agent-a".into(),
+                workload_id: "quality".into(),
+                cassette_sha256: "a".repeat(64),
+            })
+            .unwrap();
+        assert!(dispatch.offline_only);
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn v112_replay_dispatch_rejects_each_bound_tuple_mismatch() {
+        for mismatch in ["campaign", "profile", "agent", "workload", "cassette"] {
+            let (mut server, client) = UnixStream::pair().unwrap();
+            let mut response = crate::control_codec::RecordingReplayDispatch {
+                runner_instance_id: "runner-v112".into(),
+                generation: Revision(9),
+                campaign_id: "campaign-1".into(),
+                provider_profile_sha256: "b".repeat(64),
+                agent_id: "agent-a".into(),
+                workload_id: "quality".into(),
+                cassette_sha256: "a".repeat(64),
+                offline_only: true,
+            };
+            match mismatch {
+                "campaign" => response.campaign_id = "wrong-campaign".into(),
+                "profile" => response.provider_profile_sha256 = "c".repeat(64),
+                "agent" => response.agent_id = "agent-b".into(),
+                "workload" => response.workload_id = "other".into(),
+                "cassette" => response.cassette_sha256 = "d".repeat(64),
+                _ => unreachable!(),
+            }
+            let join = thread::spawn(move || {
+                let mut header = [0_u8; 4];
+                server.read_exact(&mut header).unwrap();
+                let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+                server.read_exact(&mut body).unwrap();
+                let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+                let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                    jsonrpc: control_codec::JSONRPC_VERSION.into(),
+                    id: request.id,
+                    result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                        request_sha256: "c".repeat(64),
+                        result: ControlResult::RecordingReplayDispatch(response),
+                    }),
+                });
+                server
+                    .write_all(&control_codec::encode(&response, 4096).unwrap())
+                    .unwrap();
+            });
+            let mut transport = FramedControlStream::adopt_broker(
+                client,
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getpid().as_raw_pid() as u32,
+                ControlLimits::default(),
+            )
+            .unwrap();
+            transport.negotiated = true;
+            transport.negotiated_version = Some(crate::control_codec::V1_12);
+            let mut session = AuthenticatedBrokerSession {
+                transport,
+                negotiated: crate::control_codec::Negotiated {
+                    version: crate::control_codec::V1_12,
+                    limits: ControlLimits::default(),
+                    runner_instance_id: "runner-v112".into(),
+                    oldest_revision: Revision(1),
+                    latest_revision: Revision(9),
+                },
+                continuity: None,
+                peer: BrokerPeerCredentials {
+                    uid: rustix::process::geteuid().as_raw(),
+                    pid: rustix::process::getpid().as_raw_pid() as u32,
+                },
+            };
+            assert_eq!(
+                session.recording_replay_dispatch(
+                    crate::control_codec::RecordingReplayDispatchParams {
+                        idempotency_key: "retry-1".into(),
+                        runner_instance_id: "runner-v112".into(),
+                        expected_generation: Revision(9),
+                        campaign_id: "campaign-1".into(),
+                        provider_profile_sha256: "b".repeat(64),
+                        agent_id: "agent-a".into(),
+                        workload_id: "quality".into(),
+                        cassette_sha256: "a".repeat(64),
+                    },
+                ),
+                Err(TransportError::Continuity)
+            );
+            join.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn v112_replay_dispatch_rejects_request_runner_mismatch_before_io() {
+        let (_server, client) = UnixStream::pair().unwrap();
+        let transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            ControlLimits::default(),
+        )
+        .unwrap();
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: crate::control_codec::Negotiated {
+                version: crate::control_codec::V1_12,
+                limits: ControlLimits::default(),
+                runner_instance_id: "runner-v112".into(),
+                oldest_revision: Revision(1),
+                latest_revision: Revision(9),
+            },
+            continuity: None,
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        assert_eq!(
+            session.recording_replay_dispatch(
+                crate::control_codec::RecordingReplayDispatchParams {
+                    idempotency_key: "retry-1".into(),
+                    runner_instance_id: "wrong-runner".into(),
+                    expected_generation: Revision(9),
+                    campaign_id: "campaign-1".into(),
+                    provider_profile_sha256: "b".repeat(64),
+                    agent_id: "agent-a".into(),
+                    workload_id: "quality".into(),
+                    cassette_sha256: "a".repeat(64),
+                },
+            ),
+            Err(TransportError::Continuity)
+        );
+    }
+
+    #[test]
+    fn v112_cassette_catalog_rejects_campaign_mismatch() {
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let join = thread::spawn(move || {
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+            server.read_exact(&mut body).unwrap();
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            let response = ControlResponse::Success(crate::control_codec::SuccessResponse {
+                jsonrpc: control_codec::JSONRPC_VERSION.into(),
+                id: request.id,
+                result: ControlSuccess::Operation(crate::control_codec::BoundResult {
+                    request_sha256: "c".repeat(64),
+                    result: ControlResult::RecordingCassetteCatalog(
+                        crate::control_codec::RecordingCassetteCatalog {
+                            runner_instance_id: "runner-v112".into(),
+                            generation: Revision(9),
+                            campaign_id: "wrong-campaign".into(),
+                            entries: vec![crate::control_codec::RecordingCassetteEntry {
+                                cassette_id: "cassette-1".into(),
+                                cassette_sha256: "a".repeat(64),
+                                provider_profile_sha256: "b".repeat(64),
+                                agent_id: "agent-a".into(),
+                                workload_id: "quality".into(),
+                                scorer_revision: "scorer-v1".into(),
+                            }],
+                        },
+                    ),
+                }),
+            });
+            server
+                .write_all(&control_codec::encode(&response, 4096).unwrap())
+                .unwrap();
+        });
+        let mut transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            ControlLimits::default(),
+        )
+        .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_12);
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: crate::control_codec::Negotiated {
+                version: crate::control_codec::V1_12,
+                limits: ControlLimits::default(),
+                runner_instance_id: "runner-v112".into(),
+                oldest_revision: Revision(1),
+                latest_revision: Revision(9),
+            },
+            continuity: None,
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        assert_eq!(
+            session.recording_cassette_catalog("campaign-1".into(), Revision(9)),
+            Err(TransportError::Continuity)
+        );
+        join.join().unwrap();
     }
 
     #[test]

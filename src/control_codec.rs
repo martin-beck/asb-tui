@@ -27,6 +27,10 @@ pub const V1_10: ControlVersion = ControlVersion {
     major: 1,
     minor: 10,
 };
+pub const V1_12: ControlVersion = ControlVersion {
+    major: 1,
+    minor: 12,
+};
 /// Minimum negotiated version that exposes the authenticated agent catalog.
 pub const CONTROL_AGENT_CATALOG_V1: ControlVersion = V1_4;
 /// Minimum negotiated version that exposes verified local-agent lifecycle calls.
@@ -179,6 +183,8 @@ pub enum ControlCall {
     RecordingCampaignCancel(RecordingCampaignCancelParams),
     RecordingCampaignReconcile(RecordingCampaignReconcileParams),
     RecordingCampaignOfflineDefault(RecordingCampaignOfflineDefaultParams),
+    RecordingCassetteCatalog(RecordingCassetteCatalogRequest),
+    RecordingReplayDispatch(RecordingReplayDispatchParams),
 }
 
 /// ASB publishes the benchmark catalog in control protocol v1.10.
@@ -227,6 +233,8 @@ impl ControlCall {
             Self::RecordingCampaignCancel(_) => "recording_campaign_cancel",
             Self::RecordingCampaignReconcile(_) => "recording_campaign_reconcile",
             Self::RecordingCampaignOfflineDefault(_) => "recording_campaign_offline_default",
+            Self::RecordingCassetteCatalog(_) => "recording_cassette_catalog",
+            Self::RecordingReplayDispatch(_) => "recording_replay_dispatch",
         }
     }
 
@@ -247,6 +255,7 @@ impl ControlCall {
             | Self::RecordingCampaignCancel(_)
             | Self::RecordingCampaignReconcile(_)
             | Self::RecordingCampaignOfflineDefault(_) => Some(V1_8),
+            Self::RecordingCassetteCatalog(_) | Self::RecordingReplayDispatch(_) => Some(V1_12),
             Self::AgentCatalog(_) => Some(CONTROL_AGENT_CATALOG_V1),
             Self::AgentInstall(_)
             | Self::AgentStatus(_)
@@ -522,6 +531,60 @@ pub struct RecordingCampaignOfflineDefaultParams {
     pub expected_generation: Revision,
     pub runner_instance_id: String,
     pub campaign_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCassetteCatalogRequest {
+    pub runner_instance_id: String,
+    pub campaign_id: String,
+    pub expected_generation: Revision,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCassetteEntry {
+    pub cassette_id: String,
+    pub cassette_sha256: String,
+    pub provider_profile_sha256: String,
+    pub agent_id: String,
+    pub workload_id: String,
+    pub scorer_revision: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCassetteCatalog {
+    pub runner_instance_id: String,
+    pub generation: Revision,
+    pub campaign_id: String,
+    pub entries: Vec<RecordingCassetteEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingReplayDispatchParams {
+    pub idempotency_key: String,
+    pub runner_instance_id: String,
+    pub expected_generation: Revision,
+    pub campaign_id: String,
+    pub provider_profile_sha256: String,
+    pub agent_id: String,
+    pub workload_id: String,
+    pub cassette_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingReplayDispatch {
+    pub runner_instance_id: String,
+    pub generation: Revision,
+    pub campaign_id: String,
+    pub provider_profile_sha256: String,
+    pub agent_id: String,
+    pub workload_id: String,
+    pub cassette_sha256: String,
+    pub offline_only: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1091,6 +1154,8 @@ pub enum ControlResult {
     RecordingCampaignStatus(RecordingCampaignStatus),
     RecordingCampaignEstimate(RecordingCampaignEstimate),
     RecordingCampaignLifecycle(RecordingCampaignLifecycle),
+    RecordingCassetteCatalog(RecordingCassetteCatalog),
+    RecordingReplayDispatch(RecordingReplayDispatch),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1269,7 +1334,7 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
                 || v.versions.iter().any(|v| {
                     !matches!(
                         *v,
-                        V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10
+                        V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10 | V1_12
                     )
                 })
             {
@@ -1383,6 +1448,25 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
             }
         }
         ControlCall::RecordingCampaignStatus(v) => validate_id(&v.runner_instance_id)?,
+        ControlCall::RecordingCassetteCatalog(v) => {
+            validate_id(&v.runner_instance_id)?;
+            validate_id(&v.campaign_id)?;
+            if v.expected_generation.0 == 0 {
+                return Err(CodecError::InvalidValue("expected_generation"));
+            }
+        }
+        ControlCall::RecordingReplayDispatch(v) => {
+            validate_id(&v.idempotency_key)?;
+            validate_id(&v.runner_instance_id)?;
+            validate_id(&v.campaign_id)?;
+            if v.expected_generation.0 == 0 {
+                return Err(CodecError::InvalidValue("expected_generation"));
+            }
+            validate_digest(&v.provider_profile_sha256)?;
+            validate_digest(&v.cassette_sha256)?;
+            validate_catalog_string(&v.agent_id)?;
+            validate_catalog_string(&v.workload_id)?;
+        }
         ControlCall::RecordingCampaignEstimate(v) => {
             validate_id(&v.runner_instance_id)?;
             validate_catalog_string(&v.provider_id)?;
@@ -1425,7 +1509,7 @@ fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(
         ControlSuccess::Negotiated(v) => {
             if !matches!(
                 v.version,
-                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10
+                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10 | V1_12
             ) || v.oldest_revision > v.latest_revision
             {
                 return Err(CodecError::InvalidVersion);
@@ -1507,6 +1591,8 @@ fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), 
         ControlResult::RecordingCampaignStatus(v) => validate_campaign_status(v)?,
         ControlResult::RecordingCampaignEstimate(v) => validate_campaign_estimate(v)?,
         ControlResult::RecordingCampaignLifecycle(v) => validate_campaign_lifecycle(v)?,
+        ControlResult::RecordingCassetteCatalog(v) => validate_cassette_catalog(v)?,
+        ControlResult::RecordingReplayDispatch(v) => validate_replay_dispatch(v)?,
     }
     Ok(())
 }
@@ -1703,6 +1789,48 @@ fn validate_campaign_lifecycle(v: &RecordingCampaignLifecycle) -> Result<(), Cod
     }
     Ok(())
 }
+
+fn validate_cassette_catalog(v: &RecordingCassetteCatalog) -> Result<(), CodecError> {
+    validate_id(&v.runner_instance_id)?;
+    validate_id(&v.campaign_id)?;
+    if v.generation.0 == 0 || v.entries.is_empty() || v.entries.len() > 256 {
+        return Err(CodecError::InvalidValue("cassette catalog"));
+    }
+    for entry in &v.entries {
+        validate_id(&entry.cassette_id)?;
+        validate_digest(&entry.cassette_sha256)?;
+        validate_digest(&entry.provider_profile_sha256)?;
+        validate_catalog_string(&entry.agent_id)?;
+        validate_catalog_string(&entry.workload_id)?;
+        validate_catalog_string(&entry.scorer_revision)?;
+    }
+    if v.entries.windows(2).any(|pair| {
+        (
+            pair[0].agent_id.as_str(),
+            pair[0].workload_id.as_str(),
+            pair[0].cassette_sha256.as_str(),
+        ) >= (
+            pair[1].agent_id.as_str(),
+            pair[1].workload_id.as_str(),
+            pair[1].cassette_sha256.as_str(),
+        )
+    }) {
+        return Err(CodecError::InvalidValue("cassette ordering"));
+    }
+    Ok(())
+}
+
+fn validate_replay_dispatch(v: &RecordingReplayDispatch) -> Result<(), CodecError> {
+    validate_id(&v.runner_instance_id)?;
+    validate_id(&v.campaign_id)?;
+    if v.generation.0 == 0 || !v.offline_only {
+        return Err(CodecError::InvalidValue("replay dispatch"));
+    }
+    validate_digest(&v.provider_profile_sha256)?;
+    validate_digest(&v.cassette_sha256)?;
+    validate_catalog_string(&v.agent_id)?;
+    validate_catalog_string(&v.workload_id)
+}
 fn validate_event(v: &ControlEvent) -> Result<(), CodecError> {
     let associated = v.run_id.is_some() && v.attempt_id.is_some();
     match v.kind {
@@ -1846,6 +1974,14 @@ impl ControlResult {
                 | (
                     ControlCall::RecordingCampaignOfflineDefault(_),
                     Self::RecordingCampaignLifecycle(_)
+                )
+                | (
+                    ControlCall::RecordingCassetteCatalog(_),
+                    Self::RecordingCassetteCatalog(_)
+                )
+                | (
+                    ControlCall::RecordingReplayDispatch(_),
+                    Self::RecordingReplayDispatch(_)
                 )
         )
     }
@@ -3030,6 +3166,66 @@ mod tests {
             }
             .minimum_version(),
             None
+        );
+    }
+
+    #[test]
+    fn v112_cassette_catalog_and_replay_dispatch_are_typed_and_offline_only() {
+        let digest = "a".repeat(64);
+        let profile = "b".repeat(64);
+        let call = ControlCall::RecordingCassetteCatalog(RecordingCassetteCatalogRequest {
+            runner_instance_id: "runner-1".into(),
+            campaign_id: "campaign-1".into(),
+            expected_generation: Revision(9),
+        });
+        let request = ControlRequest {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(1),
+            timeout_ms: 1_000,
+            call: call.clone(),
+        };
+        request.validate(ControlLimits::default()).unwrap();
+        let catalog = RecordingCassetteCatalog {
+            runner_instance_id: "runner-1".into(),
+            generation: Revision(9),
+            campaign_id: "campaign-1".into(),
+            entries: vec![RecordingCassetteEntry {
+                cassette_id: "cassette-1".into(),
+                cassette_sha256: digest.clone(),
+                provider_profile_sha256: profile.clone(),
+                agent_id: "agent-a".into(),
+                workload_id: "quality".into(),
+                scorer_revision: "scorer-v1".into(),
+            }],
+        };
+        let response = ControlResponse::Success(SuccessResponse {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id: RequestId(1),
+            result: ControlSuccess::Operation(BoundResult {
+                request_sha256: "c".repeat(64),
+                result: ControlResult::RecordingCassetteCatalog(catalog),
+            }),
+        });
+        response
+            .validate_for(&request, ControlLimits::default())
+            .unwrap();
+
+        let dispatch = RecordingReplayDispatch {
+            runner_instance_id: "runner-1".into(),
+            generation: Revision(9),
+            campaign_id: "campaign-1".into(),
+            provider_profile_sha256: profile,
+            agent_id: "agent-a".into(),
+            workload_id: "quality".into(),
+            cassette_sha256: digest,
+            offline_only: false,
+        };
+        assert_eq!(
+            validate_result(
+                &ControlResult::RecordingReplayDispatch(dispatch),
+                ControlLimits::default()
+            ),
+            Err(CodecError::InvalidValue("replay dispatch"))
         );
     }
 }

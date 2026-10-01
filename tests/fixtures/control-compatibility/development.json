@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "development_only": true,
-  "supported_control_minors": [0, 2, 3, 4, 5, 6, 7, 8, 10],
+  "supported_control_minors": [0, 2, 3, 4, 5, 6, 7, 8, 10, 12],
   "lifecycle_operations": [
     "agent_install",
     "agent_status",

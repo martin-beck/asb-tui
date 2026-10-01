@@ -3,8 +3,8 @@
 
 use asb_tui::{
     benchmark_route::{
-        CampaignError, CampaignStage, GuidedCampaign, GuidedCatalog, ReplayCatalog, ReplayChoice,
-        ReplayMode,
+        AuthenticatedCassetteCatalog, CampaignError, CampaignStage, GuidedCampaign, GuidedCatalog,
+        ReplayCatalog, ReplayChoice, ReplayMode,
     },
     control_codec::Revision,
     reports::{Artifact, EvidenceKind, MeasureResult, MeasureStatus, Report, ReportStatus, RunId},
@@ -132,6 +132,45 @@ fn replay_catalog_rejects_malformed_or_duplicate_choices() {
     assert_eq!(
         ReplayCatalog::new("b".repeat(64), "agent-a", vec![choice.clone(), choice],),
         Err(CampaignError::InvalidReplayCatalog)
+    );
+}
+
+#[test]
+fn v112_catalog_binds_campaign_generation_and_denies_live_fallback() {
+    let profile = "b".repeat(64);
+    let digest = "a".repeat(64);
+    let catalog =
+        AuthenticatedCassetteCatalog::try_from(asb_tui::control_codec::RecordingCassetteCatalog {
+            runner_instance_id: "runner-1".into(),
+            generation: Revision(9),
+            campaign_id: "campaign-1".into(),
+            entries: vec![asb_tui::control_codec::RecordingCassetteEntry {
+                cassette_id: "cassette-1".into(),
+                cassette_sha256: digest.clone(),
+                provider_profile_sha256: profile.clone(),
+                agent_id: "agent-a".into(),
+                workload_id: "quality".into(),
+                scorer_revision: "scorer-v1".into(),
+            }],
+        })
+        .unwrap();
+    let mut route = GuidedCampaign::new("quality").unwrap();
+    route.add_agent("agent-a").unwrap();
+    route.add_measure("quality.correctness").unwrap();
+    route.set_replay_mode(ReplayMode::OfflineReplay).unwrap();
+    route.review().unwrap();
+    route.bind_provider_profile_sha256(profile.clone()).unwrap();
+    let intent = route
+        .start_offline_replay_from_authenticated_catalog(&catalog, "quality", &digest)
+        .unwrap();
+    assert!(intent.offline_only);
+    assert_eq!(intent.campaign_id.as_deref(), Some("campaign-1"));
+    assert_eq!(intent.generation, Some(Revision(9)));
+    assert_eq!(intent.workload, "quality");
+    assert_eq!(
+        route.start(),
+        Err(CampaignError::InvalidTransition),
+        "strict replay must never become a live launch"
     );
 }
 
