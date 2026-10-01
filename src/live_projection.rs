@@ -379,6 +379,22 @@ impl ControlProjection {
                 self.require_monotonic_generation(value.generation)?;
                 self.recording_campaign_lifecycle = Some(value.clone());
             }
+            (
+                ControlCall::RecordingCampaignStatus(_),
+                ControlResult::RecordingCampaignStatus(value),
+            ) => {
+                self.require_recording_version(crate::control_codec::V1_7)?;
+                self.require_runner(&value.runner_instance_id)?;
+                self.require_monotonic_generation(value.generation)?;
+                if let Some(campaign) = &value.campaign {
+                    if campaign.runner_instance_id != value.runner_instance_id
+                        || campaign.generation != value.generation
+                    {
+                        return Err(ProjectionError::UnexpectedResult);
+                    }
+                    self.recording_campaign_lifecycle = Some(campaign.clone());
+                }
+            }
             (ControlCall::History(_), ControlResult::History(page)) => {
                 if self.runs.len() + page.items.len() > MAX_PROJECTED_RUNS {
                     return Err(ProjectionError::TooManyRuns);

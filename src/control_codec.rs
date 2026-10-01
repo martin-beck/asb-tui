@@ -465,7 +465,7 @@ pub struct RecordingCampaignStatusRequest {
 pub struct RecordingCampaignStatus {
     pub runner_instance_id: String,
     pub generation: Revision,
-    pub campaign: Option<RecordingCampaignPlan>,
+    pub campaign: Option<RecordingCampaignLifecycle>,
 }
 
 /// Read-only estimate for an exact recording matrix.
@@ -1718,7 +1718,7 @@ fn validate_campaign_status(v: &RecordingCampaignStatus) -> Result<(), CodecErro
         return Err(CodecError::InvalidValue("campaign status generation"));
     }
     if let Some(campaign) = &v.campaign {
-        validate_campaign_plan(campaign)?;
+        validate_campaign_lifecycle(campaign)?;
         if campaign.runner_instance_id != v.runner_instance_id
             || campaign.generation != v.generation
         {
@@ -2410,7 +2410,7 @@ mod tests {
             Err(CodecError::InvalidValue("credential_reference_sha256"))
         );
 
-        let mut plan = RecordingCampaignPlan {
+        let mut plan = RecordingCampaignLifecycle {
             runner_instance_id: "runner-1".into(),
             generation: Revision(1),
             campaign_id: "campaign-1".into(),
@@ -2419,6 +2419,7 @@ mod tests {
             agent_ids: vec!["codex".into()],
             workload_ids: vec!["workload-1".into()],
             tuple_count: 1,
+            covered_tuple_count: 0,
             state: "planned".into(),
             offline_ready: false,
             unavailable_reason: Some("recording-required".into()),
@@ -2431,7 +2432,10 @@ mod tests {
                 runner_instance_id: "runner-1".into(),
             }),
         };
+        plan.covered_tuple_count = 1;
+        plan.state = "complete".into();
         plan.offline_ready = true;
+        plan.unavailable_reason = None;
         let response = ControlResponse::Success(SuccessResponse {
             jsonrpc: JSONRPC_VERSION.into(),
             id: RequestId(12),
@@ -2446,7 +2450,7 @@ mod tests {
         });
         assert_eq!(
             response.validate_for(&request, ControlLimits::default()),
-            Err(CodecError::InvalidValue("campaign plan"))
+            Ok(())
         );
     }
 
@@ -2584,7 +2588,7 @@ mod tests {
         let mut identity_status = RecordingCampaignStatus {
             runner_instance_id: "runner".into(),
             generation: Revision(1),
-            campaign: Some(RecordingCampaignPlan {
+            campaign: Some(RecordingCampaignLifecycle {
                 runner_instance_id: "other-runner".into(),
                 generation: Revision(1),
                 campaign_id: "campaign-1".into(),
@@ -2593,6 +2597,7 @@ mod tests {
                 agent_ids: vec!["agent".into()],
                 workload_ids: vec!["workload".into()],
                 tuple_count: 1,
+                covered_tuple_count: 0,
                 state: "planned".into(),
                 offline_ready: false,
                 unavailable_reason: Some("recording-required".into()),

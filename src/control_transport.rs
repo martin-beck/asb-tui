@@ -2361,7 +2361,7 @@ mod tests {
             let recording = RecordingCampaignStatus {
                 runner_instance_id: runner.into(),
                 generation: Revision(5),
-                campaign: Some(RecordingCampaignPlan {
+                campaign: Some(RecordingCampaignLifecycle {
                     runner_instance_id: runner.into(),
                     generation: Revision(5),
                     campaign_id: "campaign-1".into(),
@@ -2370,6 +2370,7 @@ mod tests {
                     agent_ids: vec![agent_entry.agent_id.clone()],
                     workload_ids: vec!["latency-basic".into()],
                     tuple_count: 1,
+                    covered_tuple_count: 0,
                     state: "planned".into(),
                     offline_ready: false,
                     unavailable_reason: Some("recording-required".into()),
@@ -2513,7 +2514,7 @@ mod tests {
         assert!(snapshot.agent_lifecycle.is_some());
         assert!(snapshot.provider_catalog.is_some());
         assert!(snapshot.configuration.is_some());
-        assert!(snapshot.recording_campaign_lifecycle.is_none());
+        assert!(snapshot.recording_campaign_lifecycle.is_some());
         let provider = snapshot.provider_catalog.as_ref().unwrap();
         assert_eq!(provider.runner_instance_id, runner);
         assert_eq!(provider.generation, Revision(3));
@@ -2682,7 +2683,7 @@ mod tests {
             let recording = RecordingCampaignStatus {
                 runner_instance_id: runner.into(),
                 generation: Revision(5),
-                campaign: Some(RecordingCampaignPlan {
+                campaign: Some(RecordingCampaignLifecycle {
                     runner_instance_id: runner.into(),
                     generation: Revision(5),
                     campaign_id: "campaign-1".into(),
@@ -2691,6 +2692,7 @@ mod tests {
                     agent_ids: vec![agent_entry.agent_id.clone()],
                     workload_ids: vec!["latency-basic".into()],
                     tuple_count: 1,
+                    covered_tuple_count: 0,
                     state: "planned".into(),
                     offline_ready: false,
                     unavailable_reason: Some("recording-required".into()),
@@ -2819,7 +2821,7 @@ mod tests {
         assert!(snapshot.agent_lifecycle.is_some());
         assert!(snapshot.provider_catalog.is_some());
         assert!(snapshot.configuration.is_some());
-        assert!(snapshot.recording_campaign_lifecycle.is_none());
+        assert!(snapshot.recording_campaign_lifecycle.is_some());
         assert_eq!(snapshot.auth_status.unwrap().status, "active");
         drop(session);
         join.join().unwrap();
