@@ -33,6 +33,15 @@ asb-tui tui upgrade --channel dev --format json
 asb-tui tui remove --channel dev --format json
 ```
 
+The development channel is the only currently available channel. A fresh
+selection defaults to `dev`; the selected channel is projected in every
+delegated lifecycle response, including install, status, launch, upgrade
+(the reconfigure route), and remove. Requests for `stable`, `nightly`, or
+`experimental` return a typed `<channel>_channel_unavailable` response and
+never fall back to a different channel or create an installation. Existing channel
+state is retained unless the user explicitly selects another available
+channel.
+
 This copies the current executable into an owner-private temporary root and
 writes `provenance.json`; `ASB_TUI_DEV_INSTALL_ROOT` may select an existing
 owner-private absolute root. The response is always classified

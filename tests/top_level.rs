@@ -39,6 +39,29 @@ fn tui_status_uses_the_development_router_and_keeps_request_closed() {
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(response["code"], "install_root_unavailable");
     assert_eq!(response["classification"], "source_only_unverified");
+    assert_eq!(response["channel"], "dev");
+}
+
+#[test]
+fn unavailable_channels_are_reported_without_falling_back_to_stable_or_dev() {
+    for operation in ["install", "status", "launch", "upgrade", "remove"] {
+        for (channel, code) in [
+            ("stable", "stable_channel_unavailable"),
+            ("nightly", "nightly_channel_unavailable"),
+            ("experimental", "experimental_channel_unavailable"),
+        ] {
+            let output = binary()
+                .args(["tui", operation, "--channel", channel, "--format", "json"])
+                .output()
+                .expect("run channel selector");
+            assert_eq!(output.status.code(), Some(3));
+            let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(response["channel"], channel);
+            assert_eq!(response["code"], code);
+            assert_eq!(response["ok"], false);
+            assert!(output.stderr.is_empty());
+        }
+    }
 }
 
 #[test]

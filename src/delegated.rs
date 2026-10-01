@@ -75,6 +75,7 @@ pub enum LifecycleRequest {
 pub struct LifecycleResponse {
     pub schema_version: u64,
     pub classification: &'static str,
+    pub channel: &'static str,
     pub ok: bool,
     pub code: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,10 +101,11 @@ pub struct LifecycleResponse {
 }
 
 impl LifecycleResponse {
-    pub(crate) fn result(ok: bool, code: &'static str) -> Self {
+    pub fn result(ok: bool, code: &'static str) -> Self {
         Self {
             schema_version: 1,
             classification: compiled_classification().as_str(),
+            channel: "dev",
             ok,
             code,
             installed: None,
@@ -117,6 +119,11 @@ impl LifecycleResponse {
             source_commit: None,
             source_tree: None,
         }
+    }
+
+    pub fn with_channel(mut self, channel: &'static str) -> Self {
+        self.channel = channel;
+        self
     }
 }
 
@@ -163,6 +170,7 @@ pub fn execute(request: LifecycleRequest) -> LifecycleResponse {
                 } else {
                     compiled_classification().as_str()
                 },
+                channel: "dev",
                 ok: observed.verified,
                 code: observed.reason,
                 installed: Some(observed.installed),

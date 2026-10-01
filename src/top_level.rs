@@ -8,7 +8,11 @@
 //! A development marker is mandatory for lifecycle operations so a fixture can
 //! never be mistaken for production support.
 
-use crate::{delegated::LifecycleResponse, development_router};
+use crate::{
+    channel_selection::{ChannelSelection, ReleaseChannel},
+    delegated::LifecycleResponse,
+    development_router,
+};
 use serde_json::Value;
 use std::io::Read;
 
@@ -42,6 +46,8 @@ pub enum TuiCommand {
         operation: TuiOperation,
         development: bool,
         channel_dev: bool,
+        channel: ReleaseChannel,
+        selection: ChannelSelection,
     },
 }
 
@@ -82,15 +88,25 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
     };
     let mut development = false;
     let mut channel_dev = false;
+    let mut requested_channel = None;
     let mut format_json = false;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--development" if !development => development = true,
-            "--channel"
-                if !channel_dev && arguments.get(index + 1).map(String::as_str) == Some("dev") =>
-            {
-                channel_dev = true;
+            "--channel" if !channel_dev => {
+                let Some(value) = arguments.get(index + 1).map(String::as_str) else {
+                    return Err(ParseError::Usage);
+                };
+                let channel = match value {
+                    "dev" => ReleaseChannel::Dev,
+                    "stable" => ReleaseChannel::Stable,
+                    "nightly" => ReleaseChannel::Nightly,
+                    "experimental" => ReleaseChannel::Experimental,
+                    _ => return Err(ParseError::Usage),
+                };
+                requested_channel = Some(channel);
+                channel_dev = channel == ReleaseChannel::Dev;
                 development = true;
                 index += 1;
             }
@@ -112,10 +128,13 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
             ParseError::Usage
         });
     }
+    let selection = ChannelSelection::for_request(ReleaseChannel::Dev, requested_channel);
     Ok(TuiCommand::Lifecycle {
         operation,
         development,
         channel_dev,
+        channel: selection.active,
+        selection,
     })
 }
 
@@ -124,7 +143,11 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
 /// The request must be a development envelope and its operation must match the
 /// selected command.  The existing closed JSON parser then performs all path,
 /// manifest, signature, artifact and lifecycle checks.
-pub fn execute_lifecycle(operation: TuiOperation, mut input: impl Read) -> LifecycleResponse {
+pub fn execute_lifecycle(
+    operation: TuiOperation,
+    channel: ReleaseChannel,
+    mut input: impl Read,
+) -> LifecycleResponse {
     let mut bytes = Vec::new();
     if input
         .by_ref()
@@ -134,21 +157,28 @@ pub fn execute_lifecycle(operation: TuiOperation, mut input: impl Read) -> Lifec
         || bytes.is_empty()
         || bytes.len() > 128 * 1024
     {
-        return LifecycleResponse::result(false, "router_request_size_invalid");
+        return LifecycleResponse::result(false, "router_request_size_invalid")
+            .with_channel(channel.as_str());
     }
     let Ok(envelope) = serde_json::from_slice::<Value>(&bytes) else {
-        return LifecycleResponse::result(false, "router_request_invalid");
+        return LifecycleResponse::result(false, "router_request_invalid")
+            .with_channel(channel.as_str());
     };
     if envelope.get("profile").and_then(Value::as_str) != Some("development") {
-        return LifecycleResponse::result(false, "router_profile_unsupported");
+        return LifecycleResponse::result(false, "router_profile_unsupported")
+            .with_channel(channel.as_str());
     }
     let Some(request) = envelope.get("request") else {
-        return LifecycleResponse::result(false, "router_request_invalid");
+        return LifecycleResponse::result(false, "router_request_invalid")
+            .with_channel(channel.as_str());
     };
     if request.get("operation").and_then(Value::as_str) != Some(operation.as_str()) {
-        return LifecycleResponse::result(false, "router_operation_mismatch");
+        return LifecycleResponse::result(false, "router_operation_mismatch")
+            .with_channel(channel.as_str());
     }
-    development_router::execute_input(bytes.as_slice()).lifecycle
+    development_router::execute_input(bytes.as_slice())
+        .lifecycle
+        .with_channel(channel.as_str())
 }
 
 pub fn usage() -> &'static str {
@@ -180,6 +210,8 @@ mod tests {
                 operation: TuiOperation::Status,
                 development: true,
                 channel_dev: false,
+                channel: ReleaseChannel::Dev,
+                selection: ChannelSelection::fresh(),
             })
         );
     }
@@ -200,6 +232,11 @@ mod tests {
                 operation: TuiOperation::Install,
                 development: true,
                 channel_dev: true,
+                channel: ReleaseChannel::Dev,
+                selection: ChannelSelection::for_request(
+                    ReleaseChannel::Dev,
+                    Some(ReleaseChannel::Dev),
+                ),
             })
         );
         assert_eq!(
@@ -210,7 +247,16 @@ mod tests {
                 "--format",
                 "json"
             ])),
-            Err(ParseError::Usage)
+            Ok(TuiCommand::Lifecycle {
+                operation: TuiOperation::Install,
+                development: true,
+                channel_dev: false,
+                channel: ReleaseChannel::Dev,
+                selection: ChannelSelection::for_request(
+                    ReleaseChannel::Dev,
+                    Some(ReleaseChannel::Stable),
+                ),
+            })
         );
     }
 
@@ -218,6 +264,7 @@ mod tests {
     fn operation_mismatch_is_rejected_before_lifecycle_dispatch() {
         let response = execute_lifecycle(
             TuiOperation::Status,
+            ReleaseChannel::Dev,
             br#"{"router_version":1,"profile":"development","request":{"operation":"remove","schema_version":1,"install_root":"/tmp/asb-tui"}}"#.as_slice(),
         );
         assert_eq!(response.code, "router_operation_mismatch");
