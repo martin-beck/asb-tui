@@ -94,6 +94,31 @@ impl AdapterCatalog {
         ])
         .expect("development adapter catalog is valid")
     }
+
+    /// Build the adapter view from an authenticated provider catalog. The
+    /// runner remains authoritative; this adapter view only narrows the
+    /// provider/model/auth tuples exposed to the wizard.
+    pub fn from_provider_catalog(
+        catalog: &crate::control_codec::ProviderCatalog,
+    ) -> Result<Self, String> {
+        let mut record = AdapterRecord::new("opencode", "OpenCode");
+        for provider in &catalog.providers {
+            let models = provider.models.iter().map(|model| model.model_id.clone());
+            record = record.provider(provider.provider_id.clone(), models);
+            for auth in &provider.auth_methods {
+                record = record.auth(match auth {
+                    crate::control_codec::ProviderAuthMethod::CredentialReference => {
+                        AuthMethod::CredentialReference
+                    }
+                    crate::control_codec::ProviderAuthMethod::LocalDaemon => {
+                        AuthMethod::LocalDaemon
+                    }
+                    crate::control_codec::ProviderAuthMethod::None => AuthMethod::None,
+                });
+            }
+        }
+        Self::new([record])
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
