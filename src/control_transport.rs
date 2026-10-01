@@ -414,6 +414,29 @@ fn validate_socket_ancestors(parent: &Path) -> Result<(), TransportError> {
 }
 
 impl AuthenticatedBrokerSession {
+    fn ordered_bootstrap_calls(&self) -> Vec<ControlCall> {
+        let mut calls = vec![ControlCall::Capabilities];
+        if self.negotiated.version >= control_codec::CONTROL_BENCHMARK_CATALOG_V1 {
+            calls.push(ControlCall::BenchmarkCatalog);
+        }
+        if self.negotiated.version >= control_codec::CONTROL_MEASUREMENT_CATALOG_V1 {
+            calls.push(ControlCall::MeasurementCatalog);
+        }
+        calls.push(ControlCall::History(PageParams {
+            after: None::<Revision>,
+            limit: self.negotiated.limits.max_page_items,
+        }));
+        if self.negotiated.version >= control_codec::CONTROL_AGENT_CATALOG_V1 {
+            calls.push(ControlCall::AgentCatalog(
+                crate::agent_catalog::AgentCatalogRequest {
+                    action: crate::agent_catalog::AgentCatalogAction::Status,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    known_generation: None,
+                },
+            ));
+        }
+        calls
+    }
     /// Connect to an ASB owner-private control socket and negotiate before
     /// entering the interactive frontend. The socket is a local transport
     /// boundary; no path or peer metadata is accepted as authority.
@@ -1138,26 +1161,7 @@ impl AuthenticatedBrokerSession {
         next.accept_negotiated(self.negotiated.clone())
             .map_err(|_| TransportError::Projection)?;
         let limits = self.negotiated.limits;
-        let mut calls = vec![ControlCall::Capabilities];
-        if self.negotiated.version >= control_codec::CONTROL_BENCHMARK_CATALOG_V1 {
-            calls.push(ControlCall::BenchmarkCatalog);
-        }
-        if self.negotiated.version >= control_codec::CONTROL_MEASUREMENT_CATALOG_V1 {
-            calls.push(ControlCall::MeasurementCatalog);
-        }
-        calls.push(ControlCall::History(PageParams {
-            after: None::<Revision>,
-            limit: limits.max_page_items,
-        }));
-        if self.negotiated.version >= control_codec::CONTROL_AGENT_CATALOG_V1 {
-            calls.push(ControlCall::AgentCatalog(
-                crate::agent_catalog::AgentCatalogRequest {
-                    action: crate::agent_catalog::AgentCatalogAction::Status,
-                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
-                    known_generation: None,
-                },
-            ));
-        }
+        let calls = self.ordered_bootstrap_calls();
         let bootstrap_count = calls.len();
         for (offset, call) in calls.into_iter().enumerate() {
             let id = RequestId(u64::try_from(offset + 2).map_err(|_| TransportError::Io)?);
@@ -1868,6 +1872,21 @@ mod tests {
             },
         };
         let mut projection = crate::live_projection::ControlProjection::default();
+        let bootstrap = session.ordered_bootstrap_calls();
+        assert!(matches!(bootstrap.first(), Some(ControlCall::Capabilities)));
+        assert!(matches!(
+            bootstrap.get(1),
+            Some(ControlCall::BenchmarkCatalog)
+        ));
+        assert!(matches!(
+            bootstrap.get(2),
+            Some(ControlCall::MeasurementCatalog)
+        ));
+        assert!(matches!(bootstrap.get(3), Some(ControlCall::History(_))));
+        assert!(matches!(
+            bootstrap.get(4),
+            Some(ControlCall::AgentCatalog(_))
+        ));
         session.poll_projection(&mut projection).unwrap();
         let snapshot = projection.snapshot();
         assert!(snapshot.capabilities.is_some());
