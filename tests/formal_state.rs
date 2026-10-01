@@ -67,6 +67,15 @@ fn development_catalog_fallback_is_declared_in_the_formal_model() {
 }
 
 #[test]
+fn stale_live_catalog_publications_are_declared_in_the_formal_model() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    let contract = model["catalog_contract"].as_str().unwrap();
+    assert!(contract.contains("digest-validated"));
+    assert!(contract.contains("generation-fenced"));
+}
+
+#[test]
 fn auth_unavailability_provenance_is_declared_in_the_formal_model() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
