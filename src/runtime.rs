@@ -158,22 +158,10 @@ pub fn dispatch_control_action(
                 "authenticated cassette catalog unavailable",
             ))
         })?;
-        if catalog.entries.is_empty() {
-            return Err(RuntimeError(io::Error::other(
-                "authenticated cassette catalog is empty",
-            )));
-        }
-        let next = recording
-            .selected_cassette_sha256
-            .as_deref()
-            .and_then(|selected| {
-                catalog
-                    .entries
-                    .iter()
-                    .position(|entry| entry.cassette_sha256 == selected)
-            })
-            .map_or(0, |index| (index + 1) % catalog.entries.len());
-        recording.select_cassette(catalog.entries[next].cassette_sha256.clone());
+        recording.select_cassette(select_next_authenticated_cassette(
+            catalog,
+            recording.selected_cassette_sha256.as_deref(),
+        )?);
         return Ok(crate::recording_dispatch::RecordingDispatchOutcome::CassetteSelected);
     }
     if action == crate::actions::UiAction::ReplaySelected {
@@ -223,6 +211,26 @@ pub fn dispatch_control_action(
         )?);
     }
     Ok(outcome)
+}
+
+fn select_next_authenticated_cassette(
+    catalog: &crate::benchmark_route::AuthenticatedCassetteCatalog,
+    selected: Option<&str>,
+) -> Result<String, RuntimeError> {
+    if catalog.entries.is_empty() {
+        return Err(RuntimeError(io::Error::other(
+            "authenticated cassette catalog is empty",
+        )));
+    }
+    let next = selected
+        .and_then(|selected| {
+            catalog
+                .entries
+                .iter()
+                .position(|entry| entry.cassette_sha256 == selected)
+        })
+        .map_or(0, |index| (index + 1) % catalog.entries.len());
+    Ok(catalog.entries[next].cassette_sha256.clone())
 }
 
 fn prepare_authenticated_replay_campaign(
@@ -1157,5 +1165,88 @@ mod tests {
         assert_eq!(intent.campaign_id.as_deref(), Some("campaign-1"));
         assert_eq!(intent.generation, Some(crate::control_codec::Revision(7)));
         assert_eq!(intent.cassette_sha256.as_deref(), Some(digest.as_str()));
+    }
+
+    #[test]
+    fn cassette_selector_cycles_only_authenticated_entries() {
+        let entry = |id: &str, digest: &str| crate::benchmark_route::AuthenticatedCassetteEntry {
+            cassette_id: id.into(),
+            cassette_sha256: digest.into(),
+            provider_profile_sha256: "b".repeat(64),
+            agent_id: "agent-1".into(),
+            workload_id: "workload-1".into(),
+            scorer_revision: "scorer-1".into(),
+        };
+        let catalog = crate::benchmark_route::AuthenticatedCassetteCatalog {
+            runner_instance_id: "runner-1".into(),
+            generation: crate::control_codec::Revision(7),
+            campaign_id: "campaign-1".into(),
+            entries: vec![
+                entry("cassette-1", &"a".repeat(64)),
+                entry("cassette-2", &"c".repeat(64)),
+            ],
+        };
+        assert_eq!(
+            select_next_authenticated_cassette(&catalog, None).unwrap(),
+            "a".repeat(64)
+        );
+        assert_eq!(
+            select_next_authenticated_cassette(&catalog, Some(&"a".repeat(64))).unwrap(),
+            "c".repeat(64)
+        );
+        assert_eq!(
+            select_next_authenticated_cassette(&catalog, Some(&"c".repeat(64))).unwrap(),
+            "a".repeat(64)
+        );
+        let empty = crate::benchmark_route::AuthenticatedCassetteCatalog {
+            entries: Vec::new(),
+            ..catalog
+        };
+        assert!(select_next_authenticated_cassette(&empty, None).is_err());
+    }
+
+    #[test]
+    fn select_cassette_action_updates_dispatch_state_without_transport_io() {
+        use std::os::unix::net::UnixStream;
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let mut session = AuthenticatedBrokerSession::test_session(stream).unwrap();
+        let mut recording = crate::recording_dispatch::RecordingDispatchState::new(
+            "provider".into(),
+            "model".into(),
+            vec!["agent-1".into()],
+            crate::recording_campaign::WorkloadScope::All,
+        )
+        .unwrap();
+        recording.authenticated_catalog =
+            Some(crate::benchmark_route::AuthenticatedCassetteCatalog {
+                runner_instance_id: "runner-1".into(),
+                generation: crate::control_codec::Revision(7),
+                campaign_id: "campaign-1".into(),
+                entries: vec![crate::benchmark_route::AuthenticatedCassetteEntry {
+                    cassette_id: "cassette-1".into(),
+                    cassette_sha256: "a".repeat(64),
+                    provider_profile_sha256: "b".repeat(64),
+                    agent_id: "agent-1".into(),
+                    workload_id: "workload-1".into(),
+                    scorer_revision: "scorer-1".into(),
+                }],
+            });
+        let mut projection = ControlProjection::default();
+        let outcome = dispatch_control_action(
+            crate::actions::UiAction::SelectOfflineCassette,
+            &mut recording,
+            &mut session,
+            &mut projection,
+            "select-1".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            crate::recording_dispatch::RecordingDispatchOutcome::CassetteSelected
+        );
+        assert_eq!(
+            recording.selected_cassette_sha256.as_deref(),
+            Some("a".repeat(64).as_str())
+        );
     }
 }
