@@ -207,3 +207,26 @@ fn missing_file_in_existing_private_directory_is_first_run_only() {
     assert!(missing_parent.load_or_default().is_err());
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[cfg(unix)]
+#[test]
+fn save_rejects_symlinked_parent_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!(
+        "asb-tui-provider-defaults-symlink-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    let real = root.join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let link = root.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let store = ProviderDefaultsStore::new(link.join("defaults.json"));
+    assert!(matches!(
+        store.save(&SharedProviderDefaults::default()),
+        Err(asb_tui::provider_catalog::ProviderDefaultsError::SymlinkRefused)
+    ));
+    let _ = std::fs::remove_dir_all(root);
+}

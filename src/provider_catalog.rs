@@ -335,7 +335,10 @@ impl ProviderDefaultsStore {
             .path
             .parent()
             .ok_or_else(|| ProviderDefaultsError::Invalid("defaults path has no parent".into()))?;
-        let metadata = fs::metadata(parent)?;
+        let metadata = fs::symlink_metadata(parent)?;
+        if metadata.file_type().is_symlink() {
+            return Err(ProviderDefaultsError::SymlinkRefused);
+        }
         if !metadata.is_dir() {
             return Err(ProviderDefaultsError::NotRegularFile);
         }
