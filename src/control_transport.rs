@@ -419,8 +419,10 @@ impl AuthenticatedBrokerSession {
     pub(crate) fn test_session(stream: UnixStream) -> Result<Self, TransportError> {
         let uid = rustix::process::geteuid().as_raw();
         let pid = std::process::id();
-        let transport =
+        let mut transport =
             FramedControlStream::adopt_broker(stream, uid, pid, ControlLimits::default())?;
+        transport.negotiated = true;
+        transport.negotiated_version = Some(crate::control_codec::V1_12);
         Ok(Self {
             transport,
             negotiated: crate::control_codec::Negotiated {

@@ -1292,4 +1292,85 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn replay_action_dispatches_authenticated_offline_result() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut header = [0_u8; 4];
+            peer.read_exact(&mut header).unwrap();
+            let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+            peer.read_exact(&mut body).unwrap();
+            let request: crate::control_codec::ControlRequest =
+                serde_json::from_slice(&body).unwrap();
+            assert!(matches!(
+                request.call,
+                crate::control_codec::ControlCall::RecordingReplayDispatch(_)
+            ));
+            let response = crate::control_codec::ControlResponse::Success(
+                crate::control_codec::SuccessResponse {
+                    jsonrpc: crate::control_codec::JSONRPC_VERSION.into(),
+                    id: request.id,
+                    result: crate::control_codec::ControlSuccess::Operation(
+                        crate::control_codec::BoundResult {
+                            request_sha256: "c".repeat(64),
+                            result: crate::control_codec::ControlResult::RecordingReplayDispatch(
+                                crate::control_codec::RecordingReplayDispatch {
+                                    runner_instance_id: "runner-1".into(),
+                                    generation: crate::control_codec::Revision(7),
+                                    campaign_id: "campaign-1".into(),
+                                    provider_profile_sha256: "b".repeat(64),
+                                    agent_id: "agent-1".into(),
+                                    workload_id: "workload-1".into(),
+                                    cassette_sha256: "a".repeat(64),
+                                    offline_only: true,
+                                },
+                            ),
+                        },
+                    ),
+                },
+            );
+            peer.write_all(&crate::control_codec::encode(&response, 64 * 1024).unwrap())
+                .unwrap();
+        });
+        let mut session = AuthenticatedBrokerSession::test_session(stream).unwrap();
+        let mut recording = crate::recording_dispatch::RecordingDispatchState::new(
+            "provider".into(),
+            "model".into(),
+            vec!["agent-1".into()],
+            crate::recording_campaign::WorkloadScope::All,
+        )
+        .unwrap();
+        recording.authenticated_catalog =
+            Some(crate::benchmark_route::AuthenticatedCassetteCatalog {
+                runner_instance_id: "runner-1".into(),
+                generation: crate::control_codec::Revision(7),
+                campaign_id: "campaign-1".into(),
+                entries: vec![crate::benchmark_route::AuthenticatedCassetteEntry {
+                    cassette_id: "cassette-1".into(),
+                    cassette_sha256: "a".repeat(64),
+                    provider_profile_sha256: "b".repeat(64),
+                    agent_id: "agent-1".into(),
+                    workload_id: "workload-1".into(),
+                    scorer_revision: "scorer-1".into(),
+                }],
+            });
+        recording.selected_cassette_sha256 = Some("a".repeat(64));
+        let mut projection = ControlProjection::default();
+        let outcome = dispatch_control_action(
+            crate::actions::UiAction::ReplaySelected,
+            &mut recording,
+            &mut session,
+            &mut projection,
+            "replay-3".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            crate::recording_dispatch::RecordingDispatchOutcome::ReplayDispatched
+        );
+        server.join().unwrap();
+    }
 }
