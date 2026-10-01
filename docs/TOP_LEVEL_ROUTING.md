@@ -42,12 +42,22 @@ never fall back to a different channel or create an installation. Existing chann
 state is retained unless the user explicitly selects another available
 channel.
 
-This copies the current executable into an owner-private temporary root and
-writes `provenance.json`; `ASB_TUI_DEV_INSTALL_ROOT` may select an existing
-owner-private absolute root. The response is always classified
-`development_only`, and launch only reports that the materialized executable
-is verified and ready. It does not claim a signed release or production
-authentication.
+The development install performs a shallow clone of the selected TUI source
+(`ASB_TUI_DEV_REPOSITORY`, defaulting to the public asb-tui repository, and
+`ASB_TUI_DEV_REF`, defaulting to `main`) into a private temporary workspace,
+then runs a locked release Cargo build with private Cargo-home and target
+directories. When Cargo is a rustup proxy, its trusted toolchain home must be
+provided explicitly through `ASB_TUI_DEV_RUSTUP_HOME`; host `RUSTUP_HOME`,
+Cargo configuration, proxy, flags, and credentials are never inherited. The
+source commit and tree are read from the clone itself and
+written with the executable digest to `provenance.json`; `ASB_TUI_DEV_INSTALL_ROOT`
+may select an existing owner-private absolute root. Clone/build output is
+streamed with a hard cap, monitored against the aggregate workspace quota, and
+terminated as a process group on timeout or quota failure. Publication is
+atomic and failed upgrades retain the previous pair. The response is always
+classified `development_only`, and launch only reports that the materialized
+executable is verified and ready. It does not claim a signed release or
+production authentication.
 
 The parent ASB command may invoke the same target as `asb tui <operation>`.
 The request remains the v1 development-router envelope from

@@ -10,11 +10,25 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(not(test))]
+use std::{
+    io::{ErrorKind, Read},
+    process::{Command, Stdio},
+    thread,
+    time::Duration,
+};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const CHANNEL: &str = "dev";
+const DEFAULT_REPOSITORY: &str = "https://github.com/martin-beck/asb-tui.git";
+#[cfg(not(test))]
+const MAX_WORKSPACE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+#[cfg(not(test))]
+const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+#[cfg(not(test))]
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[cfg(test)]
 static FAIL_RENAME_AT: AtomicUsize = AtomicUsize::new(0);
@@ -43,6 +57,7 @@ struct State {
     source_commit: String,
     source_tree: String,
     executable_sha256: String,
+    source_repository: String,
 }
 
 fn response(code: &'static str, ok: bool) -> Response {
@@ -115,23 +130,6 @@ fn read_state(root: &Path) -> Result<Option<State>, &'static str> {
         .map_err(|_| "development_state_invalid")
 }
 
-fn identity(tree: bool) -> Result<String, &'static str> {
-    let value = if tree {
-        option_env!("ASB_TUI_SOURCE_TREE")
-    } else {
-        option_env!("ASB_TUI_SOURCE_COMMIT")
-    };
-    value
-        .filter(|value| {
-            value.len() == 40
-                && value
-                    .bytes()
-                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        })
-        .map(str::to_owned)
-        .ok_or("development_provenance_unavailable")
-}
-
 fn valid_identity(value: &str) -> bool {
     value.len() == 40
         && value
@@ -159,6 +157,7 @@ fn status(root: &Path) -> Response {
     let valid = state.schema_version == 1
         && state.channel == CHANNEL
         && state.development_only
+        && state.source_repository == dev_repository()
         && valid_identity(&state.source_commit)
         && valid_identity(&state.source_tree)
         && digest_hex(&bytes) == state.executable_sha256;
@@ -178,36 +177,309 @@ fn status(root: &Path) -> Response {
     result
 }
 
+fn dev_repository() -> String {
+    env::var("ASB_TUI_DEV_REPOSITORY").unwrap_or_else(|_| DEFAULT_REPOSITORY.to_owned())
+}
+
+#[cfg(not(test))]
+fn trusted_executable(variable: &str, name: &str) -> Result<PathBuf, &'static str> {
+    let candidates = env::var_os(variable)
+        .map(|value| vec![PathBuf::from(value)])
+        .unwrap_or_else(|| {
+            env::var_os("PATH")
+                .unwrap_or_default()
+                .to_string_lossy()
+                .split(':')
+                .filter(|part| !part.is_empty())
+                .map(|part| Path::new(part).join(name))
+                .collect()
+        });
+    for candidate in candidates {
+        let is_symlink = fs::symlink_metadata(&candidate)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        let Ok(canonical) = fs::canonicalize(&candidate) else {
+            continue;
+        };
+        let Ok(metadata) = fs::symlink_metadata(&canonical) else {
+            continue;
+        };
+        if metadata.is_file()
+            && (metadata.uid() == rustix::process::getuid().as_raw() || metadata.uid() == 0)
+            && metadata.mode() & 0o022 == 0
+        {
+            // Preserve a trusted shim's argv[0] (notably cargo -> rustup),
+            // while validating the resolved target's ownership and mode.
+            return Ok(if is_symlink { candidate } else { canonical });
+        }
+    }
+    Err("development_tool_unavailable")
+}
+
+#[cfg(not(test))]
+fn trusted_tools() -> Result<(PathBuf, PathBuf, PathBuf, String), &'static str> {
+    let setsid = trusted_executable("ASB_TUI_DEV_SETSID", "setsid")?;
+    let git = trusted_executable("ASB_TUI_DEV_GIT", "git")?;
+    let cargo = trusted_executable("ASB_TUI_DEV_CARGO", "cargo")?;
+    let mut path = std::collections::BTreeSet::new();
+    for tool in [&setsid, &git, &cargo] {
+        if let Some(parent) = tool.parent() {
+            path.insert(parent.to_string_lossy().into_owned());
+        }
+    }
+    Ok((
+        setsid,
+        git,
+        cargo,
+        path.into_iter().collect::<Vec<_>>().join(":"),
+    ))
+}
+
+#[cfg(not(test))]
+fn dev_ref() -> String {
+    env::var("ASB_TUI_DEV_REF").unwrap_or_else(|_| "main".to_owned())
+}
+
+#[cfg(not(test))]
+fn bounded_size(root: &Path, limit: u64) -> Result<u64, &'static str> {
+    fn visit(path: &Path, total: &mut u64, limit: u64) -> Result<(), &'static str> {
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err("development_workspace_unavailable"),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|_| "development_workspace_unavailable")?;
+            let metadata = match fs::symlink_metadata(entry.path()) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(_) => return Err("development_workspace_unavailable"),
+            };
+            if metadata.file_type().is_symlink() {
+                return Err("development_workspace_invalid");
+            }
+            *total = total.saturating_add(metadata.len());
+            if *total > limit {
+                return Ok(());
+            }
+            if metadata.is_dir() {
+                visit(&entry.path(), total, limit)?;
+            }
+        }
+        Ok(())
+    }
+    let mut total = 0;
+    visit(root, &mut total, limit)?;
+    Ok(total)
+}
+
+#[cfg(not(test))]
+fn run_bounded(mut command: Command, workspace: &Path) -> Result<Vec<u8>, &'static str> {
+    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = command
+        .spawn()
+        .map_err(|_| "development_tool_unavailable")?;
+    let pid =
+        rustix::process::Pid::from_raw(child.id() as i32).ok_or("development_tool_unavailable")?;
+    let mut stdout = child.stdout.take().ok_or("development_tool_unavailable")?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 8192];
+        let mut oversized = false;
+        loop {
+            let count = stdout.read(&mut buffer).map_err(|_| ())?;
+            if count == 0 {
+                break;
+            }
+            let room = MAX_OUTPUT_BYTES.saturating_sub(bytes.len());
+            bytes.extend_from_slice(&buffer[..count.min(room)]);
+            oversized |= count > room;
+        }
+        Ok::<_, ()>((bytes, oversized))
+    });
+    let started = std::time::Instant::now();
+    loop {
+        match bounded_size(workspace, MAX_WORKSPACE_BYTES) {
+            Ok(size) if size <= MAX_WORKSPACE_BYTES => {}
+            Ok(_) => {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                let _ = fs::remove_dir_all(workspace);
+                return Err("development_workspace_quota_exceeded");
+            }
+            Err(error) => {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                let _ = fs::remove_dir_all(workspace);
+                return Err(error);
+            }
+        }
+        if let Some(status) = child.try_wait().map_err(|_| "development_command_failed")? {
+            // The wrapper may have exited while a descendant still owns the
+            // pipe. Kill/reap the whole session before joining the reader.
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            let _ = child.wait();
+            let (output, oversized) = reader
+                .join()
+                .map_err(|_| "development_command_failed")?
+                .map_err(|_| "development_command_failed")?;
+            if oversized || !status.success() {
+                return Err("development_command_failed");
+            }
+            return Ok(output);
+        }
+        if started.elapsed() >= COMMAND_TIMEOUT {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err("development_command_timeout");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(test))]
+fn source_identity(source: &Path, name: &str) -> Result<String, &'static str> {
+    let (setsid, git, _cargo, path) = trusted_tools()?;
+    let output = run_bounded(
+        {
+            let mut command = Command::new(&setsid);
+            command
+                .args(["--wait"])
+                .arg(&git)
+                .current_dir(source)
+                .env_clear()
+                .env("PATH", path)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .args(["rev-parse", name]);
+            command
+        },
+        source,
+    )?;
+    let value = String::from_utf8(output).map_err(|_| "development_provenance_invalid")?;
+    let value = value.trim();
+    if valid_identity(value) {
+        Ok(value.to_owned())
+    } else {
+        Err("development_provenance_invalid")
+    }
+}
+
+#[cfg(not(test))]
+fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
+    let source = workspace.join("source");
+    let target = workspace.join("target");
+    let cargo_home = workspace.join("cargo-home");
+    fs::create_dir_all(&target).map_err(|_| "development_workspace_create_failed")?;
+    fs::create_dir_all(&cargo_home).map_err(|_| "development_workspace_create_failed")?;
+    let repository = dev_repository();
+    let reference = dev_ref();
+    let (setsid, git, cargo, path) = trusted_tools()?;
+    let rustup_home = env::var_os("ASB_TUI_DEV_RUSTUP_HOME");
+    let mut clone = Command::new(&setsid);
+    clone
+        .args(["--wait"])
+        .arg(&git)
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            "--branch",
+            &reference,
+            "--",
+            &repository,
+        ])
+        .env_clear()
+        .env("PATH", &path)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .arg(&source);
+    run_bounded(clone, workspace)?;
+    let commit = source_identity(&source, "HEAD")?;
+    let tree = source_identity(&source, "HEAD^{tree}")?;
+    let mut build = Command::new(&setsid);
+    build
+        .args(["--wait"])
+        .arg(&cargo)
+        .current_dir(&source)
+        .env_clear()
+        .env("PATH", &path)
+        .env("HOME", workspace)
+        .env("CARGO_HOME", &cargo_home)
+        .env("CARGO_TARGET_DIR", &target)
+        .env("RUSTFLAGS", "")
+        .args(["build", "--locked", "--release", "--bin", "asb-tui"]);
+    if let Some(rustup_home) = rustup_home {
+        build.env("RUSTUP_HOME", rustup_home);
+    }
+    run_bounded(build, workspace)?;
+    let executable = target.join("release/asb-tui");
+    let metadata = fs::metadata(&executable).map_err(|_| "development_build_missing")?;
+    if !metadata.is_file() {
+        return Err("development_build_invalid");
+    }
+    let bytes = fs::read(&executable).map_err(|_| "development_build_unavailable")?;
+    let state = State {
+        schema_version: 1,
+        channel: CHANNEL.into(),
+        development_only: true,
+        source_commit: commit,
+        source_tree: tree,
+        executable_sha256: digest_hex(&bytes),
+        source_repository: repository,
+    };
+    Ok((bytes, state))
+}
+
+#[cfg(test)]
+fn build_candidate(_workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
+    let bytes = b"test-development-build".to_vec();
+    Ok((
+        bytes.clone(),
+        State {
+            schema_version: 1,
+            channel: CHANNEL.into(),
+            development_only: true,
+            source_commit: "a".repeat(40),
+            source_tree: "b".repeat(40),
+            executable_sha256: digest_hex(&bytes),
+            source_repository: dev_repository(),
+        },
+    ))
+}
+
 fn materialize(root: &Path, replacing: bool) -> Result<Response, &'static str> {
     private_root(root)?;
     if !replacing && read_state(root)?.is_some() {
         return Err("development_already_installed");
-    }
-    let source = env::current_exe().map_err(|_| "development_source_unavailable")?;
-    let metadata = fs::symlink_metadata(&source).map_err(|_| "development_source_unavailable")?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err("development_source_unavailable");
     }
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "development_clock_invalid")?
         .as_nanos();
     let stage = root.join(format!(".stage-{nonce}"));
+    let workspace = root.join(format!(".workspace-{nonce}"));
     fs::create_dir(&stage).map_err(|_| "development_stage_failed")?;
+    fs::create_dir(&workspace).map_err(|_| "development_workspace_create_failed")?;
+    fs::set_permissions(&stage, fs::Permissions::from_mode(0o700))
+        .map_err(|_| "development_stage_failed")?;
+    fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700))
+        .map_err(|_| "development_workspace_create_failed")?;
     let result = (|| {
+        let (bytes, state) = build_candidate(&workspace)?;
         let staged = stage.join("asb-tui");
-        fs::copy(&source, &staged).map_err(|_| "development_stage_failed")?;
+        fs::write(&staged, &bytes).map_err(|_| "development_stage_failed")?;
         fs::set_permissions(&staged, fs::Permissions::from_mode(0o700))
             .map_err(|_| "development_stage_failed")?;
-        let bytes = fs::read(&staged).map_err(|_| "development_stage_failed")?;
-        let state = State {
-            schema_version: 1,
-            channel: CHANNEL.into(),
-            development_only: true,
-            source_commit: identity(false)?,
-            source_tree: identity(true)?,
-            executable_sha256: digest_hex(&bytes),
-        };
         fs::write(
             stage.join("provenance.json"),
             serde_json::to_vec(&state).map_err(|_| "development_stage_failed")?,
@@ -263,6 +535,7 @@ fn materialize(root: &Path, replacing: bool) -> Result<Response, &'static str> {
         Ok(())
     })();
     let _ = fs::remove_dir_all(&stage);
+    let _ = fs::remove_dir_all(&workspace);
     result?;
     Ok(status(root))
 }
@@ -344,10 +617,6 @@ mod tests {
 
     #[test]
     fn missing_build_provenance_fails_closed() {
-        assert!(
-            identity(false).is_ok(),
-            "test checkout build derives git identity"
-        );
         let state = State {
             schema_version: 1,
             channel: CHANNEL.into(),
@@ -355,6 +624,7 @@ mod tests {
             source_commit: "unknown".into(),
             source_tree: "unknown".into(),
             executable_sha256: digest_hex(b"candidate"),
+            source_repository: DEFAULT_REPOSITORY.into(),
         };
         let root = temp_root("malformed");
         fs::write(state_path(&root), serde_json::to_vec(&state).unwrap()).unwrap();
