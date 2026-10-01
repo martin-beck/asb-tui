@@ -18,9 +18,10 @@ use asb_tui::{
     },
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
+    terminal_handoff::{redirect_stdin_to_controlling_terminal, redirect_stdin_to_terminal_path},
     top_level::{self, TuiCommand},
 };
-use std::{env, io::IsTerminal, process::ExitCode};
+use std::{env, process::ExitCode};
 
 const DIAGNOSTIC: &str = concat!(
     "{\"classification\":\"source_only_unverified\",",
@@ -227,7 +228,15 @@ fn launch_broker_entry(development_mode: bool) -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-    if redirect_stdin_to_controlling_terminal().is_err() {
+    let terminal_result = if development_mode {
+        match env::var_os("ASB_TUI_DEVELOPMENT_TERMINAL_PATH") {
+            Some(path) => redirect_stdin_to_terminal_path(std::path::Path::new(&path)),
+            None => redirect_stdin_to_controlling_terminal(),
+        }
+    } else {
+        redirect_stdin_to_controlling_terminal()
+    };
+    if terminal_result.is_err() {
         eprintln!("controlling terminal unavailable");
         return ExitCode::from(2);
     }
@@ -263,18 +272,6 @@ fn launch_broker_entry(development_mode: bool) -> ExitCode {
             ExitCode::from(2)
         }
     }
-}
-
-fn redirect_stdin_to_controlling_terminal() -> std::io::Result<()> {
-    use std::os::unix::fs::FileTypeExt;
-    let terminal = std::fs::File::open("/dev/tty")?;
-    let metadata = terminal.metadata()?;
-    if !terminal.is_terminal() || !metadata.file_type().is_char_device() {
-        return Err(std::io::Error::other(
-            "controlling terminal is not a character device",
-        ));
-    }
-    rustix::stdio::dup2_stdin(&terminal).map_err(std::io::Error::other)
 }
 
 fn launch_socket_entry(path: &str) -> ExitCode {

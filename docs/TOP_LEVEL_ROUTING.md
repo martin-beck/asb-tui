@@ -83,6 +83,12 @@ redirects only its interactive input there; the control stream remains a
 separate owned descriptor. If no controlling terminal is available, the
 command exits fail-closed instead of reading broker frames as keystrokes.
 
+Credential-free development qualification may provide an owner-private PTY
+slave through `ASB_TUI_DEVELOPMENT_TERMINAL_PATH`. The development-only seam
+accepts only a bounded, non-symlink `/dev/pts/<number>` character device owned
+by the current uid. Stable broker mode ignores this variable and always uses
+the validated controlling-terminal path.
+
 Exit codes are stable: `0` means the lifecycle response is successful, `2`
 means command usage is invalid, and `3` means the bounded request was accepted
 but the lifecycle operation was rejected or could not complete.
