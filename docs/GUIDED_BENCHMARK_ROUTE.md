@@ -13,6 +13,10 @@ The route has three explicit execution modes:
 - `Record` requests a campaign with response capture through that seam.
 - `OfflineReplay` requires a recording identifier and produces a replay intent
   marked `offline_only`; it cannot be started through the live launch method.
+  When ASB supplies a recording catalog, `start_offline_replay_from_catalog`
+  additionally requires the exact compatible cassette SHA-256 and selected
+  agent/profile identity; unavailable or stale choices fail closed without a
+  live fallback.
 
 Before review, the measurement screen can use `selection::BenchmarkSelection`.
 It projects a generation-bound nested catalog of pool → group → benchmark →
