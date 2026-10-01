@@ -243,7 +243,7 @@ impl fmt::Display for ProviderDefaultsDiagnostic {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProviderDefaultsError {
     Invalid(String),
-    Io(String),
+    Io(io::ErrorKind),
     TooLarge,
     SymlinkRefused,
     NotRegularFile,
@@ -251,7 +251,7 @@ pub enum ProviderDefaultsError {
 
 impl From<io::Error> for ProviderDefaultsError {
     fn from(error: io::Error) -> Self {
-        Self::Io(error.kind().to_string())
+        Self::Io(error.kind())
     }
 }
 
@@ -259,7 +259,7 @@ impl fmt::Display for ProviderDefaultsError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(reason) => write!(output, "invalid provider defaults: {reason}"),
-            Self::Io(kind) => write!(output, "provider defaults I/O failure: {kind}"),
+            Self::Io(kind) => write!(output, "provider defaults I/O failure: {kind:?}"),
             Self::TooLarge => output.write_str("provider defaults file is too large"),
             Self::SymlinkRefused => output.write_str("provider defaults symlink refused"),
             Self::NotRegularFile => {
@@ -303,15 +303,28 @@ impl ProviderDefaultsStore {
     pub fn load_or_default(&self) -> Result<SharedProviderDefaults, ProviderDefaultsError> {
         match self.load() {
             Ok(value) => Ok(value),
-            Err(ProviderDefaultsError::Io(kind))
-                if kind == io::ErrorKind::NotFound.to_string()
-                    && self
-                        .path
-                        .parent()
-                        .and_then(|parent| fs::symlink_metadata(parent).ok())
-                        .is_some_and(|metadata| metadata.is_dir()) =>
-            {
-                Ok(SharedProviderDefaults::default())
+            Err(ProviderDefaultsError::Io(io::ErrorKind::NotFound)) => {
+                let parent = self.path.parent().ok_or_else(|| {
+                    ProviderDefaultsError::Invalid("defaults path has no parent".into())
+                })?;
+                let metadata = fs::symlink_metadata(parent)?;
+                #[cfg(unix)]
+                let private = {
+                    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                    metadata.is_dir()
+                        && metadata.uid() == rustix::process::geteuid().as_raw()
+                        && metadata.permissions().mode() & 0o077 == 0
+                };
+                #[cfg(not(unix))]
+                let private = metadata.is_dir();
+                if private {
+                    Ok(SharedProviderDefaults::default())
+                } else {
+                    Err(ProviderDefaultsError::Invalid(
+                        "defaults directory is not a private directory owned by the current user"
+                            .into(),
+                    ))
+                }
             }
             Err(error) => Err(error),
         }
@@ -345,7 +358,7 @@ impl ProviderDefaultsStore {
         }
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| ProviderDefaultsError::Io("clock".into()))?
+            .map_err(|_| ProviderDefaultsError::Io(io::ErrorKind::Other))?
             .as_nanos();
         let temp = parent.join(format!(".asb-tui-provider-defaults-{nonce}.tmp"));
         let text = serde_json::to_string_pretty(defaults)

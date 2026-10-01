@@ -197,6 +197,12 @@ fn missing_file_in_existing_private_directory_is_first_run_only() {
         store.load_or_default().unwrap(),
         SharedProviderDefaults::default()
     );
+    std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert!(matches!(
+        store.load_or_default(),
+        Err(asb_tui::provider_catalog::ProviderDefaultsError::Invalid(message))
+            if message.contains("private directory")
+    ));
     let missing_parent = ProviderDefaultsStore::new(root.join("missing").join("defaults.json"));
     assert!(missing_parent.load_or_default().is_err());
     let _ = std::fs::remove_dir_all(root);
