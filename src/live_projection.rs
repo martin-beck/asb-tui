@@ -11,7 +11,7 @@ use crate::control_codec::{
     AnalysisSummary, AuthStatusResponse, ConfigurationSnapshot, ControlCall, ControlLimits,
     ControlRequest, ControlResponse, ControlResult, ControlSuccess, MeasurementCatalog, Negotiated,
     ProviderCatalog, RecordingCampaignEstimate, RecordingCampaignLifecycle, RecordingCampaignPlan,
-    Revision, RunSummary,
+    Revision, RunSummary, FanoutAdmission,
 };
 use std::{collections::BTreeMap, fmt};
 
@@ -120,6 +120,7 @@ pub struct ControlProjection {
     recording_campaign: Option<RecordingCampaignPlan>,
     recording_estimate: Option<RecordingCampaignEstimate>,
     recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
+    fanout: Option<FanoutAdmission>,
     runs: BTreeMap<String, RunSummary>,
     analysis: Option<AnalysisSummary>,
 }
@@ -343,6 +344,13 @@ impl ControlProjection {
                 }
                 self.configuration = Some(value.clone());
             }
+            (ControlCall::Fanout(_), ControlResult::Fanout(value)) => {
+                if self.negotiated.as_ref().is_none_or(|session| session.version < crate::control_codec::V1_14) {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.fanout = Some(value.clone());
+            }
+            (ControlCall::FanoutCancel(_), ControlResult::Acknowledged(_)) => {}
             (
                 ControlCall::AuthHelperInvoke(_) | ControlCall::AuthStatus(_),
                 ControlResult::AuthStatus(value),
