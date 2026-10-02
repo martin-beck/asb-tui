@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(defaults, before);
         let diagnostic = defaults.diagnostic();
         assert_eq!(diagnostic.scopes, vec!["all"]);
-        assert!(diagnostic.to_json().unwrap().contains("provider default") == false);
+        assert!(!diagnostic.to_json().unwrap().contains("provider default"));
         assert!(diagnostic.to_string().contains("schema 1"));
     }
 
