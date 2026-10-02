@@ -20,8 +20,8 @@ use asb_tui::{
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
     terminal_handoff::{
-        redirect_stdin_to_controlling_terminal, redirect_stdin_to_development_terminal,
-        redirect_stdin_to_terminal_path,
+        preflight_terminal_path, redirect_stdin_to_controlling_terminal,
+        redirect_stdin_to_development_terminal, redirect_stdin_to_terminal_path,
     },
     top_level::{self, TuiCommand},
 };
@@ -283,14 +283,25 @@ fn launch_broker_entry(development_mode: bool) -> ExitCode {
             development_mode,
             env::var_os("ASB_TUI_DEVELOPMENT_TERMINAL_PATH"),
         ) {
-            Some(path) => redirect_stdin_to_terminal_path(std::path::Path::new(&path)),
+            Some(path) => {
+                let path = std::path::Path::new(&path);
+                if preflight_terminal_path(path).is_err() {
+                    eprintln!("environment_path_invalid");
+                    return ExitCode::from(2);
+                }
+                redirect_stdin_to_terminal_path(path)
+            }
             None => redirect_stdin_to_development_terminal(),
         }
     } else {
         redirect_stdin_to_controlling_terminal()
     };
     if terminal_result.is_err() {
-        eprintln!("controlling terminal unavailable");
+        if development_mode && env::var_os("ASB_TUI_DEVELOPMENT_TERMINAL_PATH").is_some() {
+            eprintln!("environment_path_invalid");
+        } else {
+            eprintln!("controlling terminal unavailable");
+        }
         return ExitCode::from(2);
     }
     let mut evidence = TerminalEvidence::from_environment();
@@ -425,6 +436,7 @@ fn launch() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{DIAGNOSTIC, development_terminal_path};
+    use asb_tui::terminal_handoff::preflight_terminal_path;
     use std::ffi::OsString;
 
     #[test]
@@ -443,5 +455,22 @@ mod tests {
             development_terminal_path(true, Some(OsString::from("/dev/pts/7"))),
             Some(OsString::from("/dev/pts/7"))
         );
+    }
+
+    #[test]
+    fn development_terminal_preflight_accepts_only_numeric_pts_paths() {
+        assert!(preflight_terminal_path(std::path::Path::new("/dev/pts/7")).is_ok());
+        for value in [
+            "",
+            "/dev/null",
+            "relative",
+            "/dev/pts/+1",
+            "/dev/pts/../null",
+        ] {
+            assert_eq!(
+                preflight_terminal_path(std::path::Path::new(value)),
+                Err("environment_path_invalid")
+            );
+        }
     }
 }

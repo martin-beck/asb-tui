@@ -43,19 +43,7 @@ pub fn redirect_stdin_to_development_terminal() -> std::io::Result<()> {
 /// Development-only injection seam for a qualification PTY. Production code
 /// must use [`redirect_stdin_to_controlling_terminal`].
 pub fn redirect_stdin_to_terminal_path(path: &Path) -> std::io::Result<()> {
-    let path_text = path
-        .to_str()
-        .ok_or_else(|| std::io::Error::other("terminal path is not valid UTF-8"))?;
-    let Some(pty_name) = path_text.strip_prefix("/dev/pts/") else {
-        return Err(std::io::Error::other("terminal path is outside /dev/pts"));
-    };
-    if pty_name.is_empty()
-        || pty_name.len() > 16
-        || !pty_name.bytes().all(|byte| byte.is_ascii_digit())
-        || path_text.len() > 64
-    {
-        return Err(std::io::Error::other("terminal path is malformed"));
-    }
+    preflight_terminal_path(path).map_err(std::io::Error::other)?;
     let metadata = std::fs::symlink_metadata(path)?;
     use std::os::unix::fs::MetadataExt;
     if !metadata.file_type().is_char_device()
@@ -71,6 +59,27 @@ pub fn redirect_stdin_to_terminal_path(path: &Path) -> std::io::Result<()> {
         ));
     }
     redirect_open_terminal(terminal)
+}
+
+/// Validate the development-only terminal selection without opening it.
+///
+/// Ownership, device type, and PTY cleanup remain enforced by
+/// [`redirect_stdin_to_terminal_path`]. This syntax-only preflight lets the
+/// launcher return a stable, actionable diagnostic before attempting the
+/// repository-owned handoff.
+pub fn preflight_terminal_path(path: &Path) -> Result<(), &'static str> {
+    let path_text = path.to_str().ok_or("environment_path_invalid")?;
+    let Some(pty_name) = path_text.strip_prefix("/dev/pts/") else {
+        return Err("environment_path_invalid");
+    };
+    if pty_name.is_empty()
+        || pty_name.len() > 16
+        || !pty_name.bytes().all(|byte| byte.is_ascii_digit())
+        || path_text.len() > 64
+    {
+        return Err("environment_path_invalid");
+    }
+    Ok(())
 }
 
 fn redirect_open_terminal(terminal: std::fs::File) -> std::io::Result<()> {
