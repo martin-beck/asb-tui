@@ -3153,6 +3153,33 @@ mod tests {
                 state.help = false;
             }
         }
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        for (width, height, tier) in [
+            (120, 40, CapabilityTier::TrueColor),
+            (60, 18, CapabilityTier::BasicColor),
+            (24, 6, CapabilityTier::Plain),
+        ] {
+            terminal.backend_mut().resize(width, height);
+            state.apply_resize(width, height);
+            for screen in [
+                Screen::Landing,
+                Screen::DevelopmentHandoff,
+                Screen::Measures,
+                Screen::Configuration,
+                Screen::RunControl,
+                Screen::Reports,
+                Screen::Help,
+            ] {
+                state.screen = screen;
+                terminal
+                    .draw(|frame| {
+                        let mut render_policy = policy();
+                        render_policy.tier = tier;
+                        render(frame, &state, render_policy)
+                    })
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
