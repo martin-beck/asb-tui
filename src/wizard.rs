@@ -1145,4 +1145,38 @@ mod tests {
         wizard.cancel();
         assert!(wizard.cancelled());
     }
+
+    #[test]
+    fn wizard_validation_covers_auth_modes_and_terminal_boundaries() {
+        let mut wizard = Wizard::default();
+        assert!(matches!(wizard.advance(), Err(WizardError::Missing)));
+        assert!(matches!(
+            wizard.select_openrouter_adapter(),
+            Err(WizardError::InvalidValue)
+        ));
+        for value in ["agent", "openrouter", "openai/gpt-4o", "defaults"] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        wizard.set_value("bad").unwrap();
+        assert!(wizard.select_openrouter_adapter().is_err());
+        wizard.set_value("credential_reference:deadbeef").unwrap();
+        let _ = wizard.select_openrouter_adapter();
+        wizard.set_value("local_daemon").unwrap();
+        let _ = wizard.select_openrouter_adapter();
+        wizard.set_value("none").unwrap();
+        let _ = wizard.select_openrouter_adapter();
+        for value in ["record", "replay"] {
+            wizard.advance().unwrap();
+            wizard.set_value(value).unwrap();
+        }
+        wizard.advance().unwrap();
+        assert_eq!(wizard.step(), Step::Review);
+        assert!(matches!(
+            wizard.set_value("review"),
+            Err(WizardError::InvalidValue)
+        ));
+        assert!(matches!(wizard.advance(), Err(WizardError::AtEnd)));
+        assert_eq!(wizard.complete(), Ok(()));
+    }
 }
