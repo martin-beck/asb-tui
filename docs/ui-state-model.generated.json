@@ -351,6 +351,16 @@
       "key": "]"
     },
     {
+      "action": "retry_run",
+      "element": "reports.row",
+      "key": "t"
+    },
+    {
+      "action": "compare_live_offline",
+      "element": "reports.compare",
+      "key": "C"
+    },
+    {
       "action": "seal_recording",
       "element": "run.status",
       "key": "S"
@@ -364,16 +374,6 @@
       "action": "remove_recording_cassette",
       "element": "run.status",
       "key": "D"
-    },
-    {
-      "action": "retry_run",
-      "element": "reports.row",
-      "key": "t"
-    },
-    {
-      "action": "compare_live_offline",
-      "element": "reports.compare",
-      "key": "C"
     }
   ],
   "routes": [

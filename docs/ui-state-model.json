@@ -68,11 +68,11 @@
     ,{"action":"activate_offline_default","element":"run.status","key":"o"}
     ,{"action":"replay_selected","element":"run.status","key":"J"}
     ,{"action":"select_offline_cassette","element":"run.status","key":"]"}
+    ,{"action":"retry_run","element":"reports.row","key":"t"}
+    ,{"action":"compare_live_offline","element":"reports.compare","key":"C"}
     ,{"action":"seal_recording","element":"run.status","key":"S"}
     ,{"action":"reopen_recording","element":"run.status","key":"U"}
     ,{"action":"remove_recording_cassette","element":"run.status","key":"D"}
-    ,{"action":"retry_run","element":"reports.row","key":"t"}
-    ,{"action":"compare_live_offline","element":"reports.compare","key":"C"}
   ],
   "routes": [
     {"id":"landing","elements":["landing.primary","navigation","status.connection"]},
