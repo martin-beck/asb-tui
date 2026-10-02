@@ -213,6 +213,32 @@ pub fn dispatch_control_action(
     Ok(outcome)
 }
 
+/// Execute the explicit operator retry action against one selected run.
+/// Selection and eligibility remain runner-authoritative; this helper only
+/// carries the typed identity and stable idempotency key.
+pub fn dispatch_retry_run(
+    session: &mut AuthenticatedBrokerSession,
+    projection: &mut ControlProjection,
+    run_id: crate::control_codec::RunId,
+    idempotency_key: String,
+) -> Result<(), RuntimeError> {
+    session
+        .repeat_run(projection, run_id, idempotency_key)
+        .map_err(|error| RuntimeError(io::Error::other(error)))
+}
+
+/// Execute the explicit live/offline comparison action. ASB validates run
+/// compatibility and returns the digest-bound analysis projection.
+pub fn dispatch_compare_live_offline(
+    session: &mut AuthenticatedBrokerSession,
+    projection: &mut ControlProjection,
+    run_ids: Vec<crate::control_codec::RunId>,
+) -> Result<(), RuntimeError> {
+    session
+        .analyze_runs(projection, run_ids)
+        .map_err(|error| RuntimeError(io::Error::other(error)))
+}
+
 fn select_next_authenticated_cassette(
     catalog: &crate::benchmark_route::AuthenticatedCassetteCatalog,
     selected: Option<&str>,
@@ -726,6 +752,10 @@ fn run_interactive_loop(
                             }
                         }
                         if let Some(recording) = recording_state.as_mut() {
+                            let (selected_run, comparison_runs) =
+                                workspace.operator_run_selection();
+                            recording.selected_run_id = selected_run;
+                            recording.comparison_run_ids = comparison_runs;
                             dispatch_control_action(
                                 control_action,
                                 recording,

@@ -48,6 +48,7 @@ pub enum CampaignPhase {
     Recording,
     NeedsReconciliation,
     Complete,
+    Removed,
     Cancelled,
     Failed,
 }
@@ -99,6 +100,11 @@ impl TryFrom<&crate::control_codec::RecordingCampaignLifecycle> for CampaignObse
             "recording" => CampaignPhase::Recording,
             "needs_reconciliation" => CampaignPhase::NeedsReconciliation,
             "complete" => CampaignPhase::Complete,
+            // ASB's seal operation publishes the canonical `complete` state;
+            // accept the older descriptive spelling as the same state so the
+            // TUI never invents a divergent lifecycle phase.
+            "sealed" => CampaignPhase::Complete,
+            "removed" => CampaignPhase::Removed,
             "cancelled" => CampaignPhase::Cancelled,
             "failed" => CampaignPhase::Failed,
             _ => return Err(RecordingModelError::InvalidObservation),
@@ -180,6 +186,15 @@ pub enum RecordingAction {
     Cancel,
     Reconcile,
     ActivateOfflineDefault,
+    /// Publish immutable cassette metadata for a completed capture.
+    Seal,
+    /// Resume an interrupted capture after the runner has reconciled it.
+    Reopen,
+    /// Remove one selected development cassette; production deletion remains
+    /// runner-authorized and fail-closed.
+    Remove,
+    /// Retry a failed or reconciled campaign with the same identity.
+    Retry,
 }
 
 /// Validated intent for the authenticated transport adapter.
@@ -267,6 +282,22 @@ impl RecordingCampaignModel {
             RecordingAction::Reconcile if phase == CampaignPhase::NeedsReconciliation => {}
             RecordingAction::ActivateOfflineDefault
                 if phase == CampaignPhase::Complete && self.observation.coverage.is_complete() => {}
+            RecordingAction::Seal
+                if phase == CampaignPhase::Complete && self.observation.coverage.is_complete() => {}
+            RecordingAction::Reopen
+                if matches!(
+                    phase,
+                    CampaignPhase::Complete
+                        | CampaignPhase::Failed
+                        | CampaignPhase::Cancelled
+                        | CampaignPhase::NeedsReconciliation
+                ) => {}
+            RecordingAction::Remove if phase == CampaignPhase::Complete => {}
+            RecordingAction::Retry
+                if matches!(
+                    phase,
+                    CampaignPhase::Failed | CampaignPhase::NeedsReconciliation
+                ) => {}
             _ => return Err(RecordingModelError::ActionUnavailable),
         }
         Ok(RecordingIntent {
@@ -388,6 +419,41 @@ mod tests {
     }
 
     #[test]
+    fn explicit_seal_reopen_and_development_remove_are_typed_actions() {
+        let mut model = RecordingCampaignModel::new(
+            WorkloadScope::Selected(vec!["workload-a".into()]),
+            observation(CampaignPhase::Complete, 1, 1),
+        )
+        .unwrap();
+        assert_eq!(
+            model.request(RecordingAction::Seal).unwrap().action,
+            RecordingAction::Seal
+        );
+        model
+            .apply(observation(CampaignPhase::Complete, 1, 1))
+            .unwrap();
+        assert_eq!(
+            model.request(RecordingAction::Remove).unwrap().action,
+            RecordingAction::Remove
+        );
+
+        let interrupted = RecordingCampaignModel::new(
+            WorkloadScope::All,
+            observation(CampaignPhase::NeedsReconciliation, 1, 0),
+        )
+        .unwrap();
+        let mut interrupted = interrupted;
+        assert_eq!(
+            interrupted.request(RecordingAction::Reopen).unwrap().action,
+            RecordingAction::Reopen
+        );
+        assert_eq!(
+            interrupted.request(RecordingAction::Seal),
+            Err(RecordingModelError::ActionUnavailable)
+        );
+    }
+
+    #[test]
     fn interrupted_capture_requires_reconciliation() {
         let mut model = RecordingCampaignModel::new(
             WorkloadScope::All,
@@ -448,6 +514,44 @@ mod tests {
             }
         );
         assert_eq!(observation.generation, 4);
+    }
+
+    #[test]
+    fn seal_uses_asb_complete_state_without_inventing_a_sealed_phase() {
+        let lifecycle = crate::control_codec::RecordingCampaignLifecycle {
+            runner_instance_id: "runner-1".into(),
+            generation: crate::control_codec::Revision(5),
+            campaign_id: "campaign-1".into(),
+            provider_id: "provider-1".into(),
+            model_id: "model-1".into(),
+            agent_ids: vec!["agent-1".into()],
+            workload_ids: vec!["workload-1".into()],
+            tuple_count: 1,
+            covered_tuple_count: 1,
+            state: "complete".into(),
+            offline_ready: true,
+            unavailable_reason: None,
+        };
+        let observation = CampaignObservation::try_from(&lifecycle).unwrap();
+        assert_eq!(observation.phase, CampaignPhase::Complete);
+        assert!(observation.offline_ready);
+    }
+
+    #[test]
+    fn reopen_accepts_all_asb_admitted_terminal_recovery_states() {
+        for phase in [
+            CampaignPhase::Complete,
+            CampaignPhase::Failed,
+            CampaignPhase::Cancelled,
+            CampaignPhase::NeedsReconciliation,
+        ] {
+            let mut model =
+                RecordingCampaignModel::new(WorkloadScope::All, observation(phase, 1, 0)).unwrap();
+            assert_eq!(
+                model.request(RecordingAction::Reopen).unwrap().action,
+                RecordingAction::Reopen
+            );
+        }
     }
 
     #[test]

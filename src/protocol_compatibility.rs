@@ -9,6 +9,7 @@
 
 use crate::control_codec::{
     ControlCall, ControlVersion, V1_0, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_10, V1_12,
+    V1_13,
 };
 use std::collections::BTreeSet;
 
@@ -16,8 +17,9 @@ pub const MATRIX_SCHEMA_VERSION: u16 = 1;
 
 /// Exact ASB control minors represented by this TUI codec.  Gaps are
 /// intentional: only published, independently validated minors are offered.
-pub const SUPPORTED_CONTROL_VERSIONS: &[ControlVersion] =
-    &[V1_0, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_10, V1_12];
+pub const SUPPORTED_CONTROL_VERSIONS: &[ControlVersion] = &[
+    V1_0, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_10, V1_12, V1_13,
+];
 
 /// Public matrix row for tooling and development qualification reports.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,6 +186,22 @@ pub fn operation_matrix() -> Vec<OperationRow> {
             name: "recording_replay_dispatch",
             minimum: V1_12,
         },
+        OperationRow {
+            name: "recording_campaign_seal",
+            minimum: V1_13,
+        },
+        OperationRow {
+            name: "recording_campaign_reopen",
+            minimum: V1_13,
+        },
+        OperationRow {
+            name: "recording_campaign_remove",
+            minimum: V1_13,
+        },
+        OperationRow {
+            name: "recording_campaign_retry",
+            minimum: V1_13,
+        },
     ]
 }
 
@@ -237,9 +255,10 @@ mod tests {
 
     #[test]
     fn matrix_is_explicit_and_has_no_unsupported_gaps() {
-        assert_eq!(SUPPORTED_CONTROL_VERSIONS.len(), 10);
+        assert_eq!(SUPPORTED_CONTROL_VERSIONS.len(), 11);
         assert!(validate_version(V1_10).is_ok());
         assert!(validate_version(V1_12).is_ok());
+        assert!(validate_version(V1_13).is_ok());
         assert_eq!(
             validate_version(ControlVersion { major: 1, minor: 9 }),
             Err(CompatibilityError::UnsupportedVersion)

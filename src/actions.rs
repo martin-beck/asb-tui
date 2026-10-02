@@ -44,6 +44,11 @@ pub enum UiAction {
     CancelRecording,
     ReconcileRecording,
     ActivateOfflineDefault,
+    SealRecording,
+    ReopenRecording,
+    RemoveRecordingCassette,
+    RetryRun,
+    CompareLiveOffline,
     ReplaySelected,
     SelectOfflineCassette,
     WizardDevelopmentEnroll,
@@ -59,7 +64,7 @@ pub enum UiAction {
 
 impl UiAction {
     /// Every action, in stable display order.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 45] = [
         Self::Quit,
         Self::GoBack,
         Self::OpenLanding,
@@ -89,6 +94,11 @@ impl UiAction {
         Self::CancelRecording,
         Self::ReconcileRecording,
         Self::ActivateOfflineDefault,
+        Self::SealRecording,
+        Self::ReopenRecording,
+        Self::RemoveRecordingCassette,
+        Self::RetryRun,
+        Self::CompareLiveOffline,
         Self::ReplaySelected,
         Self::SelectOfflineCassette,
         Self::WizardDevelopmentEnroll,
@@ -135,6 +145,11 @@ impl UiAction {
             Self::CancelRecording => "cancel_recording",
             Self::ReconcileRecording => "reconcile_recording",
             Self::ActivateOfflineDefault => "activate_offline_default",
+            Self::SealRecording => "seal_recording",
+            Self::ReopenRecording => "reopen_recording",
+            Self::RemoveRecordingCassette => "remove_recording_cassette",
+            Self::RetryRun => "retry_run",
+            Self::CompareLiveOffline => "compare_live_offline",
             Self::ReplaySelected => "replay_selected",
             Self::SelectOfflineCassette => "select_offline_cassette",
             Self::WizardDevelopmentEnroll => "wizard_development_enroll",
@@ -290,7 +305,11 @@ const fn action_context_route(action: UiAction) -> Route {
         | UiAction::CancelRecording
         | UiAction::ReconcileRecording
         | UiAction::ActivateOfflineDefault => Route::RunControl,
-        UiAction::ReplaySelected => Route::RunControl,
+        UiAction::SealRecording
+        | UiAction::ReopenRecording
+        | UiAction::RemoveRecordingCassette
+        | UiAction::ReplaySelected => Route::RunControl,
+        UiAction::RetryRun | UiAction::CompareLiveOffline => Route::Reports,
         UiAction::SelectOfflineCassette => Route::RunControl,
         UiAction::WizardDevelopmentEnroll
         | UiAction::WizardDevelopmentTest
@@ -516,6 +535,41 @@ fn descriptor(
             ActionContext::Route(Route::RunControl),
             None,
         ),
+        UiAction::SealRecording => (
+            KeyChord::Char('S'),
+            "Seal capture",
+            "Publish immutable cassette metadata for complete coverage",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::ReopenRecording => (
+            KeyChord::Char('U'),
+            "Reopen capture",
+            "Resume an interrupted capture after runner reconciliation",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::RemoveRecordingCassette => (
+            KeyChord::Char('D'),
+            "Remove cassette",
+            "Remove a selected development cassette after explicit confirmation",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::RetryRun => (
+            KeyChord::Char('t'),
+            "Retry run",
+            "Repeat a failed or interrupted run with a bounded idempotent request",
+            ActionContext::Route(Route::Reports),
+            None,
+        ),
+        UiAction::CompareLiveOffline => (
+            KeyChord::Char('C'),
+            "Compare live/offline",
+            "Compare digest-bound live and offline evidence",
+            ActionContext::Route(Route::Reports),
+            None,
+        ),
         UiAction::ReplaySelected => (
             KeyChord::Char('r'),
             "Replay selected cassette",
@@ -674,6 +728,9 @@ fn action_backend_status(
         | UiAction::CancelRecording
         | UiAction::ReconcileRecording
         | UiAction::ActivateOfflineDefault
+        | UiAction::SealRecording
+        | UiAction::ReopenRecording
+        | UiAction::RemoveRecordingCassette
             if !caps.planning =>
         {
             Some(ActionDisabledReason::Planning)
@@ -725,7 +782,7 @@ mod tests {
                 .any(|d| d.action == UiAction::ToggleMeasure)
         );
         assert!(!descriptors.iter().any(|d| d.action == UiAction::StartRun));
-        assert_eq!(UiAction::ALL.len(), 40);
+        assert_eq!(UiAction::ALL.len(), 45);
         for action in UiAction::ALL {
             assert!(
                 ActionRegistry::search(action.id())

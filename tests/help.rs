@@ -32,7 +32,7 @@ fn contextual_entries_include_disabled_actions_and_search_is_global() {
             .iter()
             .map(|e| e.action.id())
             .collect::<Vec<_>>(),
-        ["compare_runs"]
+        ["compare_runs", "compare_live_offline"]
     );
 }
 

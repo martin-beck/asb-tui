@@ -301,12 +301,16 @@ fn validate_credential_free_profile(value: &serde_json::Value) -> Result<(), Tra
     walk(value, 0, &mut 0)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum RecordingMutation {
     Execute,
     Cancel,
     Reconcile,
     OfflineDefault,
+    Seal,
+    Reopen,
+    Remove(String),
+    Retry,
 }
 
 /// Continuity evidence carried by a broker handoff. Epoch and sequence are
@@ -1060,6 +1064,97 @@ impl AuthenticatedBrokerSession {
         )
     }
 
+    pub fn seal_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.recording_mutation(
+            projection,
+            campaign_id,
+            idempotency_key,
+            RecordingMutation::Seal,
+            RequestId(9_000_000_010),
+        )
+    }
+
+    pub fn reopen_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.recording_mutation(
+            projection,
+            campaign_id,
+            idempotency_key,
+            RecordingMutation::Reopen,
+            RequestId(9_000_000_011),
+        )
+    }
+
+    pub fn remove_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+        idempotency_key: String,
+        cassette_sha256: String,
+    ) -> Result<(), TransportError> {
+        self.recording_mutation(
+            projection,
+            campaign_id,
+            idempotency_key,
+            RecordingMutation::Remove(cassette_sha256),
+            RequestId(9_000_000_012),
+        )
+    }
+
+    pub fn retry_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign_id: String,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.recording_mutation(
+            projection,
+            campaign_id,
+            idempotency_key,
+            RecordingMutation::Retry,
+            RequestId(9_000_000_013),
+        )
+    }
+
+    /// Repeat one eligible run through the runner-owned idempotent route.
+    pub fn repeat_run(
+        &mut self,
+        projection: &mut ControlProjection,
+        run_id: crate::control_codec::RunId,
+        idempotency_key: String,
+    ) -> Result<(), TransportError> {
+        self.require_version(crate::control_codec::V1_0)?;
+        let request = self.recording_request(
+            RequestId(9_000_000_014),
+            ControlCall::Repeat(crate::control_codec::RepeatParams {
+                run_id,
+                idempotency_key,
+            }),
+        );
+        self.apply_recording_response(projection, &request)
+    }
+
+    /// Analyze an explicit compatible run set using ASB's digest-bound result.
+    pub fn analyze_runs(
+        &mut self,
+        projection: &mut ControlProjection,
+        run_ids: Vec<crate::control_codec::RunId>,
+    ) -> Result<(), TransportError> {
+        self.require_version(crate::control_codec::V1_0)?;
+        let request =
+            self.recording_request(RequestId(9_000_000_015), ControlCall::Analyze { run_ids });
+        self.apply_recording_response(projection, &request)
+    }
+
     fn require_version(
         &self,
         minimum: control_codec::ControlVersion,
@@ -1229,7 +1324,19 @@ impl AuthenticatedBrokerSession {
                     .map(|campaign| campaign.generation)
             })
             .ok_or(TransportError::Projection)?;
-        self.require_version(control_codec::V1_8)?;
+        self.require_version(
+            if matches!(
+                mutation,
+                RecordingMutation::Seal
+                    | RecordingMutation::Reopen
+                    | RecordingMutation::Remove(_)
+                    | RecordingMutation::Retry
+            ) {
+                control_codec::V1_13
+            } else {
+                control_codec::V1_8
+            },
+        )?;
         let call = match mutation {
             RecordingMutation::Execute => ControlCall::RecordingCampaignExecute(
                 control_codec::RecordingCampaignExecuteParams {
@@ -1263,6 +1370,39 @@ impl AuthenticatedBrokerSession {
                     campaign_id,
                 },
             ),
+            RecordingMutation::Seal => {
+                ControlCall::RecordingCampaignSeal(control_codec::RecordingCampaignSealParams {
+                    idempotency_key,
+                    expected_generation,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                })
+            }
+            RecordingMutation::Reopen => {
+                ControlCall::RecordingCampaignReopen(control_codec::RecordingCampaignReopenParams {
+                    idempotency_key,
+                    expected_generation,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                })
+            }
+            RecordingMutation::Remove(cassette_sha256) => {
+                ControlCall::RecordingCampaignRemove(control_codec::RecordingCampaignRemoveParams {
+                    idempotency_key,
+                    expected_generation,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                    cassette_sha256,
+                })
+            }
+            RecordingMutation::Retry => {
+                ControlCall::RecordingCampaignRetry(control_codec::RecordingCampaignRetryParams {
+                    idempotency_key,
+                    expected_generation,
+                    runner_instance_id: self.negotiated.runner_instance_id.clone(),
+                    campaign_id,
+                })
+            }
         };
         let request = self.recording_request(request_id, call);
         self.apply_recording_response(projection, &request)

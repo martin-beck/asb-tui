@@ -17,6 +17,17 @@ use crate::{
 };
 
 pub trait RecordingBackend {
+    fn repeat_run(
+        &mut self,
+        projection: &mut ControlProjection,
+        run_id: crate::control_codec::RunId,
+        key: String,
+    ) -> Result<(), TransportError>;
+    fn compare_live_offline(
+        &mut self,
+        projection: &mut ControlProjection,
+        run_ids: Vec<crate::control_codec::RunId>,
+    ) -> Result<(), TransportError>;
     fn refresh_provider_catalog(
         &mut self,
         projection: &mut ControlProjection,
@@ -67,6 +78,31 @@ pub trait RecordingBackend {
         campaign: String,
         key: String,
     ) -> Result<(), TransportError>;
+    fn seal_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign: String,
+        key: String,
+    ) -> Result<(), TransportError>;
+    fn reopen_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign: String,
+        key: String,
+    ) -> Result<(), TransportError>;
+    fn remove_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign: String,
+        key: String,
+        cassette_sha256: String,
+    ) -> Result<(), TransportError>;
+    fn retry_recording_campaign(
+        &mut self,
+        projection: &mut ControlProjection,
+        campaign: String,
+        key: String,
+    ) -> Result<(), TransportError>;
 }
 
 macro_rules! forward_backend {
@@ -78,6 +114,8 @@ macro_rules! forward_backend {
 }
 
 impl RecordingBackend for AuthenticatedBrokerSession {
+    forward_backend!(repeat_run, repeat_run, (run_id: crate::control_codec::RunId, key: String), (run_id, key));
+    forward_backend!(compare_live_offline, analyze_runs, (run_ids: Vec<crate::control_codec::RunId>), (run_ids));
     forward_backend!(refresh_provider_catalog, refresh_provider_catalog, (), ());
     forward_backend!(estimate_recording_campaign, estimate_recording_campaign, (provider: String, model: String, agents: Vec<String>, workloads: Vec<String>), (provider, model, agents, workloads));
     forward_backend!(plan_recording_campaign, plan_recording_campaign, (provider: String, model: String, agents: Vec<String>, workloads: Vec<String>, key: String), (provider, model, agents, workloads, key));
@@ -86,6 +124,10 @@ impl RecordingBackend for AuthenticatedBrokerSession {
     forward_backend!(cancel_recording_campaign, cancel_recording_campaign, (campaign: String, key: String), (campaign, key));
     forward_backend!(reconcile_recording_campaign, reconcile_recording_campaign, (campaign: String, key: String), (campaign, key));
     forward_backend!(set_recording_campaign_offline_default, set_recording_campaign_offline_default, (campaign: String, key: String), (campaign, key));
+    forward_backend!(seal_recording_campaign, seal_recording_campaign, (campaign: String, key: String), (campaign, key));
+    forward_backend!(reopen_recording_campaign, reopen_recording_campaign, (campaign: String, key: String), (campaign, key));
+    forward_backend!(remove_recording_campaign, remove_recording_campaign, (campaign: String, key: String, cassette_sha256: String), (campaign, key, cassette_sha256));
+    forward_backend!(retry_recording_campaign, retry_recording_campaign, (campaign: String, key: String), (campaign, key));
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -108,6 +150,9 @@ pub struct RecordingDispatchState {
     /// A frontend must not turn a stalled runner into an unbounded poll loop.
     progress_requests: u16,
     progress_campaign_id: Option<String>,
+    pub selected_run_id: Option<crate::control_codec::RunId>,
+    pub comparison_run_ids: Vec<crate::control_codec::RunId>,
+    remove_confirmation_required: bool,
 }
 
 impl RecordingDispatchState {
@@ -128,6 +173,9 @@ impl RecordingDispatchState {
             selected_cassette_sha256: None,
             progress_requests: 0,
             progress_campaign_id: None,
+            selected_run_id: None,
+            comparison_run_ids: Vec::new(),
+            remove_confirmation_required: false,
         })
     }
 
@@ -169,6 +217,12 @@ pub enum RecordingDispatchOutcome {
     CancelRequested,
     ReconcileRequested,
     OfflineDefaultRequested,
+    SealRequested,
+    ReopenRequested,
+    RemoveRequested,
+    RemovalConfirmationRequired,
+    RetryRequested,
+    ComparisonRequested,
     ReplayDispatched,
     CassetteSelected,
 }
@@ -351,6 +405,61 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
                 .map_err(RecordingDispatchError::from)?;
             Ok(RecordingDispatchOutcome::OfflineDefaultRequested)
         }
+        UiAction::SealRecording => {
+            model.request(RecordingAction::Seal)?;
+            let campaign_id = campaign_id(&snapshot)?;
+            session.seal_recording_campaign(projection, campaign_id, idempotency_key)?;
+            Ok(RecordingDispatchOutcome::SealRequested)
+        }
+        UiAction::ReopenRecording => {
+            model.request(RecordingAction::Reopen)?;
+            let campaign_id = campaign_id(&snapshot)?;
+            session.reopen_recording_campaign(projection, campaign_id, idempotency_key)?;
+            Ok(RecordingDispatchOutcome::ReopenRequested)
+        }
+        UiAction::RemoveRecordingCassette => {
+            model.request(RecordingAction::Remove)?;
+            let selected = state
+                .selected_cassette_sha256
+                .as_deref()
+                .ok_or(RecordingDispatchError::InvalidWorkloadScope)?;
+            if state.authenticated_catalog.as_ref().is_none_or(|catalog| {
+                !catalog
+                    .entries
+                    .iter()
+                    .any(|entry| entry.cassette_sha256 == selected)
+            }) {
+                return Err(RecordingDispatchError::InvalidWorkloadScope);
+            }
+            if !state.remove_confirmation_required {
+                state.remove_confirmation_required = true;
+                return Ok(RecordingDispatchOutcome::RemovalConfirmationRequired);
+            }
+            state.remove_confirmation_required = false;
+            let campaign_id = campaign_id(&snapshot)?;
+            session.remove_recording_campaign(
+                projection,
+                campaign_id,
+                idempotency_key,
+                selected.to_owned(),
+            )?;
+            Ok(RecordingDispatchOutcome::RemoveRequested)
+        }
+        UiAction::RetryRun => {
+            let run_id = state
+                .selected_run_id
+                .clone()
+                .ok_or(RecordingDispatchError::MissingCampaign)?;
+            session.repeat_run(projection, run_id, idempotency_key)?;
+            Ok(RecordingDispatchOutcome::RetryRequested)
+        }
+        UiAction::CompareLiveOffline => {
+            if state.comparison_run_ids.len() != 2 {
+                return Err(RecordingDispatchError::InvalidWorkloadScope);
+            }
+            session.compare_live_offline(projection, state.comparison_run_ids.clone())?;
+            Ok(RecordingDispatchOutcome::ComparisonRequested)
+        }
         UiAction::ReplaySelected | UiAction::SelectOfflineCassette => {
             Err(RecordingDispatchError::InvalidWorkloadScope)
         }
@@ -381,9 +490,30 @@ mod tests {
     struct FakeBackend {
         calls: Vec<&'static str>,
         workloads: Vec<String>,
+        repeated_run: Option<String>,
+        compared_runs: Vec<String>,
     }
 
     impl RecordingBackend for FakeBackend {
+        fn repeat_run(
+            &mut self,
+            _: &mut ControlProjection,
+            run: crate::control_codec::RunId,
+            _: String,
+        ) -> Result<(), TransportError> {
+            self.calls.push("repeat");
+            self.repeated_run = Some(run.0);
+            Ok(())
+        }
+        fn compare_live_offline(
+            &mut self,
+            _: &mut ControlProjection,
+            runs: Vec<crate::control_codec::RunId>,
+        ) -> Result<(), TransportError> {
+            self.calls.push("compare");
+            self.compared_runs = runs.into_iter().map(|run| run.0).collect();
+            Ok(())
+        }
         fn refresh_provider_catalog(
             &mut self,
             _: &mut ControlProjection,
@@ -458,6 +588,43 @@ mod tests {
             _: String,
         ) -> Result<(), TransportError> {
             self.calls.push("offline");
+            Ok(())
+        }
+        fn seal_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), TransportError> {
+            self.calls.push("seal");
+            Ok(())
+        }
+        fn reopen_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), TransportError> {
+            self.calls.push("reopen");
+            Ok(())
+        }
+        fn remove_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+            _: String,
+        ) -> Result<(), TransportError> {
+            self.calls.push("remove");
+            Ok(())
+        }
+        fn retry_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), TransportError> {
+            self.calls.push("retry");
             Ok(())
         }
     }
@@ -565,6 +732,21 @@ mod tests {
     fn capture_requires_two_explicit_dispatches_and_lifecycle_actions_are_gated() {
         let mut backend = FakeBackend::default();
         let mut state = state(WorkloadScope::All);
+        state.selected_run_id = Some(crate::control_codec::RunId("run-1".into()));
+        state.selected_cassette_sha256 = Some("a".repeat(64));
+        state.authenticated_catalog = Some(crate::benchmark_route::AuthenticatedCassetteCatalog {
+            runner_instance_id: "runner".into(),
+            generation: crate::control_codec::Revision(2),
+            campaign_id: "campaign".into(),
+            entries: vec![crate::benchmark_route::AuthenticatedCassetteEntry {
+                cassette_id: "cassette".into(),
+                cassette_sha256: "a".repeat(64),
+                provider_profile_sha256: "b".repeat(64),
+                agent_id: "agent".into(),
+                workload_id: "workload".into(),
+                scorer_revision: "scorer".into(),
+            }],
+        });
         let mut planned = projection("planned", 0, false);
         assert_eq!(
             dispatch_with_backend(
@@ -843,5 +1025,98 @@ mod tests {
             Ok(RecordingDispatchOutcome::ProgressRequested)
         );
         assert_eq!(state.progress_requests(), 1);
+    }
+
+    #[test]
+    fn repair_actions_dispatch_typed_backend_operations() {
+        let mut backend = FakeBackend::default();
+        let mut state = state(WorkloadScope::All);
+        state.selected_run_id = Some(crate::control_codec::RunId("run-1".into()));
+        state.selected_cassette_sha256 = Some("a".repeat(64));
+        state.authenticated_catalog = Some(crate::benchmark_route::AuthenticatedCassetteCatalog {
+            runner_instance_id: "runner".into(),
+            generation: crate::control_codec::Revision(2),
+            campaign_id: "campaign".into(),
+            entries: vec![crate::benchmark_route::AuthenticatedCassetteEntry {
+                cassette_id: "cassette".into(),
+                cassette_sha256: "a".repeat(64),
+                provider_profile_sha256: "b".repeat(64),
+                agent_id: "agent".into(),
+                workload_id: "workload".into(),
+                scorer_revision: "scorer".into(),
+            }],
+        });
+        state.selected_run_id = Some(crate::control_codec::RunId("run-1".into()));
+        state.selected_cassette_sha256 = Some("a".repeat(64));
+        for (action, expected, phase, covered) in [
+            (
+                UiAction::SealRecording,
+                RecordingDispatchOutcome::SealRequested,
+                "complete",
+                2,
+            ),
+            (
+                UiAction::ReopenRecording,
+                RecordingDispatchOutcome::ReopenRequested,
+                "needs_reconciliation",
+                1,
+            ),
+            (
+                UiAction::RemoveRecordingCassette,
+                RecordingDispatchOutcome::RemoveRequested,
+                "complete",
+                2,
+            ),
+            (
+                UiAction::RetryRun,
+                RecordingDispatchOutcome::RetryRequested,
+                "needs_reconciliation",
+                1,
+            ),
+        ] {
+            let mut projection = projection(phase, covered, phase == "complete");
+            if action == UiAction::RemoveRecordingCassette {
+                assert_eq!(
+                    dispatch_with_backend(
+                        action,
+                        &mut state,
+                        &mut backend,
+                        &mut projection,
+                        "confirm".into()
+                    )
+                    .unwrap(),
+                    RecordingDispatchOutcome::RemovalConfirmationRequired
+                );
+            }
+            assert_eq!(
+                dispatch_with_backend(
+                    action,
+                    &mut state,
+                    &mut backend,
+                    &mut projection,
+                    "repair".into()
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(backend.calls, ["seal", "reopen", "remove", "repeat"]);
+        assert_eq!(backend.repeated_run.as_deref(), Some("run-1"));
+        state.comparison_run_ids = vec![
+            crate::control_codec::RunId("run-a".into()),
+            crate::control_codec::RunId("run-b".into()),
+        ];
+        let mut comparison_projection = ControlProjection::default();
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::CompareLiveOffline,
+                &mut state,
+                &mut backend,
+                &mut comparison_projection,
+                "compare".into()
+            ),
+            Ok(RecordingDispatchOutcome::ComparisonRequested)
+        );
+        assert_eq!(backend.compared_runs, ["run-a", "run-b"]);
     }
 }
