@@ -1039,5 +1039,15 @@ mod tests {
         .unwrap();
         assert!(registry.available_models().is_empty());
         assert_eq!(registry.diagnostic().status, "unavailable");
+        assert!(
+            ProviderDefaultsStore::new("defaults.json")
+                .load_or_default()
+                .is_err()
+        );
+        assert!(
+            ProviderDefaultsStore::new("/no/such/parent/defaults.json")
+                .save(&SharedProviderDefaults::default())
+                .is_err()
+        );
     }
 }
