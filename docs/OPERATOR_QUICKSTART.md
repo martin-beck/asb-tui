@@ -1,3 +1,6 @@
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Operator quickstart
 
 `asb-tui` is the selection-driven frontend for the ASB operator journey. It
