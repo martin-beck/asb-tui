@@ -379,7 +379,11 @@ impl ControlProjection {
                 | ControlCall::RecordingCampaignProgress(_)
                 | ControlCall::RecordingCampaignCancel(_)
                 | ControlCall::RecordingCampaignReconcile(_)
-                | ControlCall::RecordingCampaignOfflineDefault(_),
+                | ControlCall::RecordingCampaignOfflineDefault(_)
+                | ControlCall::RecordingCampaignSeal(_)
+                | ControlCall::RecordingCampaignReopen(_)
+                | ControlCall::RecordingCampaignRemove(_)
+                | ControlCall::RecordingCampaignRetry(_),
                 ControlResult::RecordingCampaignLifecycle(value),
             ) => {
                 self.require_recording_version(crate::control_codec::V1_8)?;
@@ -404,6 +408,20 @@ impl ControlProjection {
                         &params.campaign_id
                     }
                     ControlCall::RecordingCampaignOfflineDefault(params) => {
+                        if value.generation < params.expected_generation {
+                            return Err(ProjectionError::StaleRun);
+                        }
+                        &params.campaign_id
+                    }
+                    ControlCall::RecordingCampaignSeal(params)
+                    | ControlCall::RecordingCampaignReopen(params)
+                    | ControlCall::RecordingCampaignRetry(params) => {
+                        if value.generation < params.expected_generation {
+                            return Err(ProjectionError::StaleRun);
+                        }
+                        &params.campaign_id
+                    }
+                    ControlCall::RecordingCampaignRemove(params) => {
                         if value.generation < params.expected_generation {
                             return Err(ProjectionError::StaleRun);
                         }

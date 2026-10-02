@@ -31,6 +31,11 @@ pub const V1_12: ControlVersion = ControlVersion {
     major: 1,
     minor: 12,
 };
+/// Minimum negotiated version for explicit cassette repair operations.
+pub const V1_13: ControlVersion = ControlVersion {
+    major: 1,
+    minor: 13,
+};
 /// Minimum negotiated version that exposes the authenticated agent catalog.
 pub const CONTROL_AGENT_CATALOG_V1: ControlVersion = V1_4;
 /// Minimum negotiated version that exposes verified local-agent lifecycle calls.
@@ -183,6 +188,10 @@ pub enum ControlCall {
     RecordingCampaignCancel(RecordingCampaignCancelParams),
     RecordingCampaignReconcile(RecordingCampaignReconcileParams),
     RecordingCampaignOfflineDefault(RecordingCampaignOfflineDefaultParams),
+    RecordingCampaignSeal(RecordingCampaignSealParams),
+    RecordingCampaignReopen(RecordingCampaignReopenParams),
+    RecordingCampaignRemove(RecordingCampaignRemoveParams),
+    RecordingCampaignRetry(RecordingCampaignRetryParams),
     RecordingCassetteCatalog(RecordingCassetteCatalogRequest),
     RecordingReplayDispatch(RecordingReplayDispatchParams),
 }
@@ -233,6 +242,10 @@ impl ControlCall {
             Self::RecordingCampaignCancel(_) => "recording_campaign_cancel",
             Self::RecordingCampaignReconcile(_) => "recording_campaign_reconcile",
             Self::RecordingCampaignOfflineDefault(_) => "recording_campaign_offline_default",
+            Self::RecordingCampaignSeal(_) => "recording_campaign_seal",
+            Self::RecordingCampaignReopen(_) => "recording_campaign_reopen",
+            Self::RecordingCampaignRemove(_) => "recording_campaign_remove",
+            Self::RecordingCampaignRetry(_) => "recording_campaign_retry",
             Self::RecordingCassetteCatalog(_) => "recording_cassette_catalog",
             Self::RecordingReplayDispatch(_) => "recording_replay_dispatch",
         }
@@ -256,6 +269,10 @@ impl ControlCall {
             | Self::RecordingCampaignReconcile(_)
             | Self::RecordingCampaignOfflineDefault(_) => Some(V1_8),
             Self::RecordingCassetteCatalog(_) | Self::RecordingReplayDispatch(_) => Some(V1_12),
+            Self::RecordingCampaignSeal(_)
+            | Self::RecordingCampaignReopen(_)
+            | Self::RecordingCampaignRemove(_)
+            | Self::RecordingCampaignRetry(_) => Some(V1_13),
             Self::AgentCatalog(_) => Some(CONTROL_AGENT_CATALOG_V1),
             Self::AgentInstall(_)
             | Self::AgentStatus(_)
@@ -532,6 +549,23 @@ pub struct RecordingCampaignOfflineDefaultParams {
     pub runner_instance_id: String,
     pub campaign_id: String,
 }
+
+/// Idempotent request to seal a campaign after coverage validation.
+pub type RecordingCampaignSealParams = RecordingCampaignOfflineDefaultParams;
+/// Idempotent request to reopen a campaign for another capture attempt.
+pub type RecordingCampaignReopenParams = RecordingCampaignOfflineDefaultParams;
+/// Idempotent request to remove a campaign and its development artifacts.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingCampaignRemoveParams {
+    pub idempotency_key: String,
+    pub expected_generation: Revision,
+    pub runner_instance_id: String,
+    pub campaign_id: String,
+    pub cassette_sha256: String,
+}
+/// Idempotent request to retry a failed or reconciled campaign.
+pub type RecordingCampaignRetryParams = RecordingCampaignOfflineDefaultParams;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1334,7 +1368,16 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
                 || v.versions.iter().any(|v| {
                     !matches!(
                         *v,
-                        V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10 | V1_12
+                        V1_0 | V1_2
+                            | V1_3
+                            | V1_4
+                            | V1_5
+                            | V1_6
+                            | V1_7
+                            | V1_8
+                            | V1_10
+                            | V1_12
+                            | V1_13
                     )
                 })
             {
@@ -1498,6 +1541,33 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
             &v.runner_instance_id,
             &v.campaign_id,
         )?,
+        ControlCall::RecordingCampaignSeal(v) => validate_campaign_mutation(
+            &v.idempotency_key,
+            v.expected_generation,
+            &v.runner_instance_id,
+            &v.campaign_id,
+        )?,
+        ControlCall::RecordingCampaignReopen(v) => validate_campaign_mutation(
+            &v.idempotency_key,
+            v.expected_generation,
+            &v.runner_instance_id,
+            &v.campaign_id,
+        )?,
+        ControlCall::RecordingCampaignRemove(v) => {
+            validate_campaign_mutation(
+                &v.idempotency_key,
+                v.expected_generation,
+                &v.runner_instance_id,
+                &v.campaign_id,
+            )?;
+            validate_digest(&v.cassette_sha256)?;
+        }
+        ControlCall::RecordingCampaignRetry(v) => validate_campaign_mutation(
+            &v.idempotency_key,
+            v.expected_generation,
+            &v.runner_instance_id,
+            &v.campaign_id,
+        )?,
         ControlCall::RecordingCampaignProgress(v) => {
             validate_campaign_read(&v.runner_instance_id, &v.campaign_id)?;
         }
@@ -1509,7 +1579,7 @@ fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(
         ControlSuccess::Negotiated(v) => {
             if !matches!(
                 v.version,
-                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10 | V1_12
+                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10 | V1_12 | V1_13
             ) || v.oldest_revision > v.latest_revision
             {
                 return Err(CodecError::InvalidVersion);
@@ -1976,6 +2046,22 @@ impl ControlResult {
                     Self::RecordingCampaignLifecycle(_)
                 )
                 | (
+                    ControlCall::RecordingCampaignSeal(_),
+                    Self::RecordingCampaignLifecycle(_)
+                )
+                | (
+                    ControlCall::RecordingCampaignReopen(_),
+                    Self::RecordingCampaignLifecycle(_)
+                )
+                | (
+                    ControlCall::RecordingCampaignRemove(_),
+                    Self::RecordingCampaignLifecycle(_)
+                )
+                | (
+                    ControlCall::RecordingCampaignRetry(_),
+                    Self::RecordingCampaignLifecycle(_)
+                )
+                | (
                     ControlCall::RecordingCassetteCatalog(_),
                     Self::RecordingCassetteCatalog(_)
                 )
@@ -2102,6 +2188,52 @@ mod tests {
             latest_revision: Revision(0),
         });
         assert!(validate_success(&success, ControlLimits::default()).is_ok());
+    }
+
+    #[test]
+    fn recording_repair_operations_match_asb_wire_names_and_bind_generation() {
+        let base = RecordingCampaignOfflineDefaultParams {
+            idempotency_key: "repair-1".into(),
+            expected_generation: Revision(7),
+            runner_instance_id: "runner-1".into(),
+            campaign_id: "campaign-1".into(),
+        };
+        let calls = [
+            ControlCall::RecordingCampaignSeal(base.clone()),
+            ControlCall::RecordingCampaignReopen(base.clone()),
+            ControlCall::RecordingCampaignRemove(RecordingCampaignRemoveParams {
+                idempotency_key: base.idempotency_key.clone(),
+                expected_generation: base.expected_generation,
+                runner_instance_id: base.runner_instance_id.clone(),
+                campaign_id: base.campaign_id.clone(),
+                cassette_sha256: "a".repeat(64),
+            }),
+            ControlCall::RecordingCampaignRetry(base),
+        ];
+        assert_eq!(
+            calls
+                .iter()
+                .map(ControlCall::operation_name)
+                .collect::<Vec<_>>(),
+            vec![
+                "recording_campaign_seal",
+                "recording_campaign_reopen",
+                "recording_campaign_remove",
+                "recording_campaign_retry",
+            ]
+        );
+        for call in calls {
+            let request = ControlRequest {
+                jsonrpc: JSONRPC_VERSION.into(),
+                id: RequestId(91),
+                timeout_ms: 1000,
+                call,
+            };
+            request.validate(ControlLimits::default()).unwrap();
+            let wire = encode(&request, MAX_FRAME_BYTES).unwrap();
+            let decoded: ControlRequest = decode(&wire, MAX_FRAME_BYTES).unwrap();
+            assert_eq!(decoded, request);
+        }
     }
 
     fn catalog() -> MeasurementCatalogPublication {

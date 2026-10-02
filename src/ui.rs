@@ -83,6 +83,8 @@ pub struct WorkspaceState {
     /// materialization and retained across reconnect/cancellation.
     pub(crate) launch_state: Option<crate::launch_statistics::LaunchState>,
     pub report_cursor: usize,
+    /// Explicit report rows selected for comparison.
+    pub report_selection: Vec<crate::control_codec::RunId>,
     configuration_draft: crate::configuration::ConfigurationDraft,
     configuration_path: Option<PathBuf>,
     configuration_save_state: ConfigurationSaveState,
@@ -193,6 +195,7 @@ impl Default for WorkspaceState {
             reviewed_provider_setup: None,
             launch_state: None,
             report_cursor: 0,
+            report_selection: Vec::new(),
             configuration_draft: crate::configuration::ConfigurationDraft::new(
                 crate::configuration::Configuration::default(),
             )
@@ -211,6 +214,29 @@ impl Default for WorkspaceState {
 }
 
 impl WorkspaceState {
+    /// Return the report run currently under the cursor and the bounded pair
+    /// used by the explicit live/offline comparison action.
+    pub fn operator_run_selection(
+        &self,
+    ) -> (
+        Option<crate::control_codec::RunId>,
+        Vec<crate::control_codec::RunId>,
+    ) {
+        let Some(snapshot) = self.live.as_ref() else {
+            return (None, Vec::new());
+        };
+        let selected = snapshot
+            .runs
+            .get(self.report_cursor)
+            .map(|run| run.run_id.clone());
+        let comparison = snapshot
+            .runs
+            .iter()
+            .filter(|run| self.report_selection.contains(&run.run_id))
+            .map(|run| run.run_id.clone())
+            .collect();
+        (selected, comparison)
+    }
     /// Keep run-control key handling coupled to the executable state model.
     /// The runtime owns the durable launch state; this bounded check ensures a
     /// UI action is only emitted when its documented route transition exists.
@@ -792,6 +818,12 @@ impl WorkspaceState {
             self.ensure_development_catalog();
             self.open_wizard();
         }
+        self.report_selection = self
+            .report_selection
+            .iter()
+            .filter(|run_id| snapshot.runs.iter().any(|run| &run.run_id == *run_id))
+            .cloned()
+            .collect();
         self.live = Some(snapshot);
         self.report_cursor = 0;
         self.clamp_measure_cursor();
@@ -1037,6 +1069,40 @@ impl WorkspaceState {
             }
             return UiAction::None;
         }
+        if self.screen == Screen::Reports && key.code == KeyCode::Char(' ') {
+            if let Some(run_id) = self
+                .live
+                .as_ref()
+                .and_then(|snapshot| snapshot.runs.get(self.report_cursor))
+                .map(|run| run.run_id.clone())
+            {
+                if let Some(position) = self
+                    .report_selection
+                    .iter()
+                    .position(|selected| *selected == run_id)
+                {
+                    self.report_selection.remove(position);
+                } else if self.report_selection.len() < 2 {
+                    self.report_selection.push(run_id);
+                }
+            }
+            return UiAction::None;
+        }
+        if self.screen == Screen::Reports && key.code == KeyCode::Char('t') {
+            return UiAction::Control(crate::actions::UiAction::RetryRun);
+        }
+        if self.screen == Screen::Reports && key.code == KeyCode::Char('v') {
+            return UiAction::Control(crate::actions::UiAction::CompareLiveOffline);
+        }
+        if self.screen == Screen::RunControl && key.code == KeyCode::Char('S') {
+            return UiAction::Control(crate::actions::UiAction::SealRecording);
+        }
+        if self.screen == Screen::RunControl && key.code == KeyCode::Char('U') {
+            return UiAction::Control(crate::actions::UiAction::ReopenRecording);
+        }
+        if self.screen == Screen::RunControl && key.code == KeyCode::Char('D') {
+            return UiAction::Control(crate::actions::UiAction::RemoveRecordingCassette);
+        }
         match key.code {
             KeyCode::Char('f') if self.screen == Screen::Configuration => {
                 UiAction::Control(crate::actions::UiAction::RefreshProviderCatalog)
@@ -1046,6 +1112,9 @@ impl WorkspaceState {
             }
             KeyCode::Char('P') if self.screen != Screen::Measures => {
                 UiAction::Control(crate::actions::UiAction::PlanRecording)
+            }
+            KeyCode::Char('C') if self.screen == Screen::Reports => {
+                UiAction::Control(crate::actions::UiAction::CompareLiveOffline)
             }
             KeyCode::Char('C') => {
                 UiAction::Control(crate::actions::UiAction::ConfirmRecordingCapture)
@@ -2998,7 +3067,7 @@ mod tests {
         for (key_code, action) in [
             ('e', crate::actions::UiAction::EstimateRecording),
             ('P', crate::actions::UiAction::PlanRecording),
-            ('C', crate::actions::UiAction::ConfirmRecordingCapture),
+            ('C', crate::actions::UiAction::CompareLiveOffline),
             ('G', crate::actions::UiAction::ProgressRecording),
             ('X', crate::actions::UiAction::CancelRecording),
             ('Y', crate::actions::UiAction::ReconcileRecording),
@@ -3071,6 +3140,34 @@ mod tests {
         assert_eq!(state.config_cursor, 3);
         state.screen = Screen::Reports;
         assert_eq!(state.report_cursor, 1);
+    }
+
+    #[test]
+    fn report_operator_actions_use_explicit_cursor_selection() {
+        let mut state = WorkspaceState {
+            screen: Screen::Reports,
+            ..WorkspaceState::default()
+        };
+        state.report_selection = vec![
+            crate::control_codec::RunId("run-a".into()),
+            crate::control_codec::RunId("run-b".into()),
+        ];
+        assert!(matches!(
+            state.handle_key(key(KeyCode::Char(' '))),
+            UiAction::None
+        ));
+        assert_eq!(state.report_selection.len(), 2);
+        state.report_cursor = 1;
+        state.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(state.report_selection.len(), 2);
+        assert!(matches!(
+            state.handle_key(key(KeyCode::Char('v'))),
+            UiAction::Control(crate::actions::UiAction::CompareLiveOffline)
+        ));
+        assert!(matches!(
+            state.handle_key(key(KeyCode::Char('t'))),
+            UiAction::Control(crate::actions::UiAction::RetryRun)
+        ));
     }
 
     #[test]
