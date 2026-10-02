@@ -3116,6 +3116,46 @@ mod tests {
     }
 
     #[test]
+    fn renders_routes_across_all_layout_tiers_and_overlays() {
+        let mut state = WorkspaceState::default();
+        let policies = [
+            policy(),
+            RenderPolicy {
+                tier: CapabilityTier::BasicColor,
+                unicode: true,
+                ..policy()
+            },
+            RenderPolicy {
+                tier: CapabilityTier::Plain,
+                unicode: false,
+                ..policy()
+            },
+        ];
+        for (width, height) in [(120, 40), (80, 24), (30, 8)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for screen in [
+                Screen::Landing,
+                Screen::Measures,
+                Screen::Configuration,
+                Screen::Reports,
+                Screen::Help,
+            ] {
+                state.screen = screen;
+                for render_policy in policies {
+                    terminal
+                        .draw(|frame| render(frame, &state, render_policy))
+                        .unwrap();
+                }
+                state.help = true;
+                terminal
+                    .draw(|frame| render(frame, &state, policy()))
+                    .unwrap();
+                state.help = false;
+            }
+        }
+    }
+
+    #[test]
     fn key_handling_covers_help_navigation_and_search_edges() {
         let mut state = WorkspaceState::default();
         assert_eq!(state.handle_key(key(KeyCode::Char('h'))), UiAction::None);
