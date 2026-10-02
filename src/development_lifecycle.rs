@@ -19,7 +19,10 @@ use std::{
 };
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Mutex, OnceLock,
+    atomic::{AtomicUsize, Ordering},
+};
 
 const CHANNEL: &str = "dev";
 const DEFAULT_REPOSITORY: &str = "https://github.com/martin-beck/asb-tui.git";
@@ -32,6 +35,17 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[cfg(test)]
 static FAIL_RENAME_AT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+static ACTIVATION_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[cfg(test)]
+fn activation_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    ACTIVATION_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("activation test lock")
+}
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct Response {
@@ -635,6 +649,7 @@ mod tests {
 
     #[test]
     fn second_activation_rename_restores_previous_pair() {
+        let _guard = activation_test_guard();
         let root = temp_root("rollback");
         assert!(materialize(&root, false).unwrap().verified);
         let before = status(&root);
@@ -655,6 +670,7 @@ mod tests {
 
     #[test]
     fn development_install_status_launch_upgrade_and_remove_are_reentrant() {
+        let _guard = activation_test_guard();
         FAIL_RENAME_AT.store(0, Ordering::SeqCst);
         let root = temp_root("operations");
         assert_eq!(status(&root).code, "development_not_installed");
