@@ -16,6 +16,9 @@ pub enum ReleaseChannel {
     Experimental,
 }
 
+const CHANNEL_STATE_SCHEMA_VERSION: u64 = 1;
+const MAX_CHANNEL_STATE_BYTES: u64 = 4096;
+
 impl ReleaseChannel {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -93,9 +96,13 @@ impl ChannelSelection {
     /// to the caller (it is never silently replaced with dev).
     pub fn persisted() -> Option<ReleaseChannel> {
         let path = state_path()?;
+        let metadata = fs::symlink_metadata(&path).ok()?;
+        if !metadata.file_type().is_file() || metadata.len() > MAX_CHANNEL_STATE_BYTES {
+            return None;
+        }
         let bytes = fs::read(path).ok()?;
         let state: PersistedChannel = serde_json::from_slice(&bytes).ok()?;
-        if state.schema_version != 1 {
+        if state.schema_version != CHANNEL_STATE_SCHEMA_VERSION {
             return None;
         }
         ReleaseChannel::parse(&state.channel)
@@ -108,7 +115,7 @@ impl ChannelSelection {
         let parent = path.parent().ok_or("channel_state_path_invalid")?;
         fs::create_dir_all(parent).map_err(|_| "channel_state_unavailable")?;
         let state = PersistedChannel {
-            schema_version: 1,
+            schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             channel: channel.as_str().to_owned(),
         };
         let bytes = serde_json::to_vec(&state).map_err(|_| "channel_state_unavailable")?;
@@ -119,6 +126,7 @@ impl ChannelSelection {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct PersistedChannel {
     schema_version: u64,
     channel: String,
@@ -200,5 +208,18 @@ mod tests {
         assert_eq!(selected.requested, ReleaseChannel::Nightly);
         assert_eq!(selected.active, ReleaseChannel::Nightly);
         assert_eq!(selected.warning, Some("nightly_channel_unavailable"));
+    }
+
+    #[test]
+    fn persisted_state_rejects_unknown_fields_and_wrong_schema() {
+        assert!(
+            serde_json::from_str::<PersistedChannel>(
+                r#"{"schema_version":1,"channel":"dev","unexpected":true}"#
+            )
+            .is_err()
+        );
+        let state: PersistedChannel =
+            serde_json::from_str(r#"{"schema_version":2,"channel":"dev"}"#).unwrap();
+        assert_ne!(state.schema_version, CHANNEL_STATE_SCHEMA_VERSION);
     }
 }
