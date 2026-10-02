@@ -215,11 +215,11 @@ mod tests {
     #[test]
     fn lifecycle_defaults_to_human_and_accepts_explicit_json() {
         assert_eq!(
-            parse(&args(&["status", "--format", "json"])),
+            parse(&args(&["status", "--development", "--format", "json"])),
             Ok(TuiCommand::Lifecycle {
                 operation: TuiOperation::Status,
                 development: true,
-                channel_dev: true,
+                channel_dev: false,
                 channel: ReleaseChannel::Dev,
                 selection: ChannelSelection::fresh(),
             })

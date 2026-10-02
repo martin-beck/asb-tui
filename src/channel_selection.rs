@@ -162,4 +162,43 @@ mod tests {
         assert_eq!(selected.active, ReleaseChannel::Dev);
         assert_eq!(selected.warning, None);
     }
+
+    #[test]
+    fn channel_names_and_availability_are_closed_and_renderer_neutral() {
+        for (name, channel, available, warning) in [
+            ("dev", ReleaseChannel::Dev, true, None),
+            (
+                "stable",
+                ReleaseChannel::Stable,
+                false,
+                Some("stable_channel_unavailable"),
+            ),
+            (
+                "nightly",
+                ReleaseChannel::Nightly,
+                false,
+                Some("nightly_channel_unavailable"),
+            ),
+            (
+                "experimental",
+                ReleaseChannel::Experimental,
+                false,
+                Some("experimental_channel_unavailable"),
+            ),
+        ] {
+            assert_eq!(ReleaseChannel::parse(name), Some(channel));
+            assert_eq!(channel.as_str(), name);
+            assert_eq!(channel.available(), available);
+            assert_eq!(channel.warning(), warning);
+        }
+        assert_eq!(ReleaseChannel::parse("unknown"), None);
+    }
+
+    #[test]
+    fn absent_request_retains_active_channel_and_warning() {
+        let selected = ChannelSelection::for_request(ReleaseChannel::Nightly, None);
+        assert_eq!(selected.requested, ReleaseChannel::Nightly);
+        assert_eq!(selected.active, ReleaseChannel::Nightly);
+        assert_eq!(selected.warning, Some("nightly_channel_unavailable"));
+    }
 }
