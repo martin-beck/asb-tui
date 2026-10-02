@@ -3180,6 +3180,22 @@ mod tests {
                     .unwrap();
             }
         }
+        state.screen = Screen::Wizard;
+        state.help = false;
+        terminal.backend_mut().resize(120, 40);
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        state.help = true;
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        state.help = false;
+        state.screen = Screen::Landing;
+        state.help = true;
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
     }
 
     #[test]
