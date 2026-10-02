@@ -219,6 +219,21 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // An explicit selector is durable across restart and reconfiguration. A
+    // failed write is surfaced as a diagnostic instead of pretending the
+    // choice was retained.
+    if arguments.windows(2).any(|window| window[0] == "--channel") {
+        if let TuiCommand::Lifecycle { selection, .. } = command {
+            if let Err(code) =
+                asb_tui::channel_selection::ChannelSelection::persist(selection.requested)
+            {
+                let response = asb_tui::delegated::LifecycleResponse::result(false, code)
+                    .with_channel(selection.requested.as_str());
+                print_lifecycle_response(&response, json);
+                return ExitCode::from(3);
+            }
+        }
+    }
     match command {
         TuiCommand::LaunchUi => launch(),
         TuiCommand::Lifecycle {

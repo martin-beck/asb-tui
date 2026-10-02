@@ -2,12 +2,30 @@
 // SPDX-License-Identifier: MIT
 //! Renderer-neutral release-channel selection for the standalone lifecycle.
 
+use serde::{Deserialize, Serialize};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReleaseChannel {
     Dev,
     Stable,
     Nightly,
     Experimental,
+}
+
+impl ReleaseChannel {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "dev" => Some(Self::Dev),
+            "stable" => Some(Self::Stable),
+            "nightly" => Some(Self::Nightly),
+            "experimental" => Some(Self::Experimental),
+            _ => None,
+        }
+    }
 }
 
 impl ReleaseChannel {
@@ -69,6 +87,52 @@ impl ChannelSelection {
             warning: requested.warning(),
         }
     }
+
+    /// Read the last explicit choice. A missing or malformed file is treated as
+    /// a fresh setup, while an unavailable channel remains selected and visible
+    /// to the caller (it is never silently replaced with dev).
+    pub fn persisted() -> Option<ReleaseChannel> {
+        let path = state_path()?;
+        let bytes = fs::read(path).ok()?;
+        let state: PersistedChannel = serde_json::from_slice(&bytes).ok()?;
+        if state.schema_version != 1 {
+            return None;
+        }
+        ReleaseChannel::parse(&state.channel)
+    }
+
+    /// Persist only the public channel name. This file contains no credentials,
+    /// signatures, or trust material and is replaced atomically.
+    pub fn persist(channel: ReleaseChannel) -> Result<(), &'static str> {
+        let path = state_path().ok_or("channel_state_path_invalid")?;
+        let parent = path.parent().ok_or("channel_state_path_invalid")?;
+        fs::create_dir_all(parent).map_err(|_| "channel_state_unavailable")?;
+        let state = PersistedChannel {
+            schema_version: 1,
+            channel: channel.as_str().to_owned(),
+        };
+        let bytes = serde_json::to_vec(&state).map_err(|_| "channel_state_unavailable")?;
+        let temporary = path.with_extension("json.tmp");
+        fs::write(&temporary, bytes).map_err(|_| "channel_state_unavailable")?;
+        fs::rename(temporary, path).map_err(|_| "channel_state_unavailable")
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct PersistedChannel {
+    schema_version: u64,
+    channel: String,
+}
+
+fn state_path() -> Option<PathBuf> {
+    if let Some(value) = env::var_os("ASB_TUI_CHANNEL_STATE") {
+        let path = PathBuf::from(value);
+        return path.is_absolute().then_some(path);
+    }
+    let base = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| Path::new(&home).join(".config")))?;
+    Some(base.join("asb-tui").join("channel.json"))
 }
 
 #[cfg(test)]

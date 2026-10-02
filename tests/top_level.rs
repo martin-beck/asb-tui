@@ -99,6 +99,32 @@ fn tui_lifecycle_defaults_to_human_output_and_json_is_opt_in() {
 }
 
 #[test]
+fn selected_channel_survives_restart_without_fallback() {
+    let state = env::temp_dir().join(format!("asb-tui-channel-state-{}", std::process::id()));
+    let _ = fs::remove_file(&state);
+    let selected = binary()
+        .args(["tui", "status", "--channel", "nightly", "--json"])
+        .env("ASB_TUI_CHANNEL_STATE", &state)
+        .output()
+        .unwrap();
+    assert_eq!(selected.status.code(), Some(3));
+    let selected_json: serde_json::Value = serde_json::from_slice(&selected.stdout).unwrap();
+    assert_eq!(selected_json["channel"], "nightly");
+    assert_eq!(selected_json["code"], "nightly_channel_unavailable");
+
+    let restarted = binary()
+        .args(["tui", "status", "--json"])
+        .env("ASB_TUI_CHANNEL_STATE", &state)
+        .output()
+        .unwrap();
+    assert_eq!(restarted.status.code(), Some(3));
+    let restarted_json: serde_json::Value = serde_json::from_slice(&restarted.stdout).unwrap();
+    assert_eq!(restarted_json["channel"], "nightly");
+    assert_eq!(restarted_json["code"], "nightly_channel_unavailable");
+    fs::remove_file(state).unwrap();
+}
+
+#[test]
 fn tui_status_uses_the_development_router_and_keeps_request_closed() {
     let request = br#"{"router_version":1,"profile":"development","channel":"dev","current_main":{"asb_source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asb_source_tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tui_source_commit":"cccccccccccccccccccccccccccccccccccccccc","tui_source_tree":"dddddddddddddddddddddddddddddddddddddddd"},"request":{"operation":"status","schema_version":1,"install_root":"/tmp/asb-tui-no-such-root"}}"#;
     let output = binary()

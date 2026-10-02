@@ -104,13 +104,7 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
                 let Some(value) = arguments.get(index + 1).map(String::as_str) else {
                     return Err(ParseError::Usage);
                 };
-                let channel = match value {
-                    "dev" => ReleaseChannel::Dev,
-                    "stable" => ReleaseChannel::Stable,
-                    "nightly" => ReleaseChannel::Nightly,
-                    "experimental" => ReleaseChannel::Experimental,
-                    _ => return Err(ParseError::Usage),
-                };
+                let channel = ReleaseChannel::parse(value).ok_or(ParseError::Usage)?;
                 requested_channel = Some(channel);
                 channel_dev = channel == ReleaseChannel::Dev;
                 channel_selected = true;
@@ -134,6 +128,7 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
     // `dev` is the safe default.  `--development` is retained as an explicit
     // compatibility spelling, while `--channel stable|nightly|experimental`
     // remains selectable but unavailable rather than falling back to dev.
+    let requested_channel = requested_channel.or_else(ChannelSelection::persisted);
     let selection = ChannelSelection::for_request(ReleaseChannel::Dev, requested_channel);
     Ok(TuiCommand::Lifecycle {
         operation,
@@ -182,9 +177,17 @@ pub fn execute_lifecycle(
         return LifecycleResponse::result(false, "router_operation_mismatch")
             .with_channel(channel.as_str());
     }
-    development_router::execute_input(bytes.as_slice())
+    let lifecycle = development_router::execute_input(bytes.as_slice())
         .lifecycle
-        .with_channel(channel.as_str())
+        .with_channel(channel.as_str());
+    match envelope
+        .get("current_main")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+    {
+        Some(identity) => lifecycle.with_current_main(identity),
+        None => lifecycle,
+    }
 }
 
 pub fn usage() -> &'static str {
