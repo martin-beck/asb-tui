@@ -1049,5 +1049,14 @@ mod tests {
                 .save(&SharedProviderDefaults::default())
                 .is_err()
         );
+        let file_parent =
+            std::env::temp_dir().join(format!("asb-provider-parent-{}", std::process::id()));
+        std::fs::write(&file_parent, b"file").unwrap();
+        assert!(
+            ProviderDefaultsStore::new(file_parent.join("defaults.json"))
+                .save(&SharedProviderDefaults::default())
+                .is_err()
+        );
+        std::fs::remove_file(file_parent).unwrap();
     }
 }
