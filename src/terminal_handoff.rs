@@ -19,6 +19,27 @@ pub fn redirect_stdin_to_controlling_terminal() -> std::io::Result<()> {
     redirect_open_terminal(terminal)
 }
 
+/// Development-only fallback for a broker child whose stdin is the inherited
+/// control stream and which therefore has no usable `/dev/tty`. The ASB
+/// launcher keeps the child's stdout attached to the user's terminal; accept
+/// that already-attached terminal only after validating its type and
+/// terminal capability. Stable launches must continue using `/dev/tty`.
+pub fn redirect_stdin_to_development_terminal() -> std::io::Result<()> {
+    if let Ok(terminal) = std::fs::File::open("/dev/tty")
+        && redirect_open_terminal(terminal).is_ok()
+    {
+        return Ok(());
+    }
+    let terminal = std::fs::File::open("/proc/self/fd/1")?;
+    let metadata = terminal.metadata()?;
+    if !terminal.is_terminal() || !metadata.file_type().is_char_device() {
+        return Err(std::io::Error::other(
+            "attached development output is not a terminal",
+        ));
+    }
+    redirect_open_terminal(terminal)
+}
+
 /// Development-only injection seam for a qualification PTY. Production code
 /// must use [`redirect_stdin_to_controlling_terminal`].
 pub fn redirect_stdin_to_terminal_path(path: &Path) -> std::io::Result<()> {
@@ -78,6 +99,13 @@ mod tests {
         assert!(redirect_stdin_to_terminal_path(Path::new("/dev/pts/999999")).is_err());
         assert!(redirect_stdin_to_terminal_path(Path::new("/dev/pts/../null")).is_err());
         assert!(redirect_stdin_to_terminal_path(Path::new("/dev/pts/+1")).is_err());
+    }
+
+    #[test]
+    fn development_attached_terminal_fallback_fails_closed_without_terminal() {
+        if !std::io::stdout().is_terminal() {
+            assert!(redirect_stdin_to_development_terminal().is_err());
+        }
     }
 
     #[test]
