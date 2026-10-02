@@ -99,7 +99,12 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
-            "--development" if development && !channel_selected => channel_dev = false,
+            "--development" if development && !channel_selected => {
+                channel_dev = false;
+                // The compatibility marker is an explicit development intent,
+                // so it must not inherit an unavailable persisted channel.
+                requested_channel = Some(ReleaseChannel::Dev);
+            }
             "--channel" if !channel_selected => {
                 let Some(value) = arguments.get(index + 1).map(String::as_str) else {
                     return Err(ParseError::Usage);

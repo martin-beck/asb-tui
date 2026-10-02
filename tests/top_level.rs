@@ -145,6 +145,27 @@ fn selected_channel_survives_restart_without_fallback() {
 }
 
 #[test]
+fn explicit_development_marker_overrides_persisted_unavailable_channel() {
+    let state = isolated_channel_state("development-override");
+    let selected = binary()
+        .args(["tui", "status", "--channel", "nightly", "--json"])
+        .env("ASB_TUI_CHANNEL_STATE", &state)
+        .output()
+        .unwrap();
+    assert_eq!(selected.status.code(), Some(3));
+    let overridden = binary()
+        .args(["tui", "status", "--development", "--json"])
+        .env("ASB_TUI_CHANNEL_STATE", &state)
+        .output()
+        .unwrap();
+    assert_eq!(overridden.status.code(), Some(3));
+    let response: serde_json::Value = serde_json::from_slice(&overridden.stdout).unwrap();
+    assert_eq!(response["channel"], "dev");
+    assert_eq!(response["code"], "router_request_size_invalid");
+    let _ = fs::remove_file(state);
+}
+
+#[test]
 fn tui_status_uses_the_development_router_and_keeps_request_closed() {
     let state = isolated_channel_state("router");
     let request = br#"{"router_version":1,"profile":"development","channel":"dev","current_main":{"asb_source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asb_source_tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tui_source_commit":"cccccccccccccccccccccccccccccccccccccccc","tui_source_tree":"dddddddddddddddddddddddddddddddddddddddd"},"request":{"operation":"status","schema_version":1,"install_root":"/tmp/asb-tui-no-such-root"}}"#;
