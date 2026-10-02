@@ -1461,6 +1461,19 @@ impl AuthenticatedBrokerSession {
                 .checked_add(u64::try_from(bootstrap_count).map_err(|_| TransportError::Io)?)
                 .ok_or(TransportError::Io)?;
             for (offset, entry) in catalog.agents.iter().enumerate() {
+                // A development catalog may deliberately expose the complete
+                // agent choice set while every entry is unavailable until its
+                // package/provenance is installed.  Asking ASB for a
+                // lifecycle status for such an entry is not a control failure:
+                // there is no lifecycle record to read yet.  Keep the
+                // unavailable choice visible and only poll statuses for
+                // entries that the authoritative catalog marks available.
+                if matches!(
+                    entry.availability,
+                    crate::agent_catalog::AgentAvailability::Unavailable(_)
+                ) {
+                    continue;
+                }
                 let request = ControlRequest {
                     jsonrpc: control_codec::JSONRPC_VERSION.into(),
                     id: RequestId(
