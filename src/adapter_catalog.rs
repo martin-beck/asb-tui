@@ -84,6 +84,83 @@ pub struct AdapterCatalog {
     records: BTreeMap<String, AdapterRecord>,
 }
 
+/// Explicit compatibility view used by setup and offline replay.  It keeps
+/// unavailable provider reasons visible while filtering model choices to the
+/// selected adapter/provider tuple.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompatibilityMatrix {
+    catalog: AdapterCatalog,
+    unavailable: BTreeMap<String, String>,
+    defaults: BTreeMap<String, AdapterSelection>,
+    overrides: BTreeMap<String, AdapterSelection>,
+}
+
+impl CompatibilityMatrix {
+    pub fn development() -> Self {
+        Self {
+            catalog: AdapterCatalog::development(),
+            unavailable: BTreeMap::new(),
+            defaults: BTreeMap::new(),
+            overrides: BTreeMap::new(),
+        }
+    }
+    pub fn mark_unavailable(&mut self, provider: impl Into<String>, reason: impl Into<String>) {
+        self.unavailable.insert(provider.into(), reason.into());
+    }
+    pub fn options(
+        &self,
+        adapter: &str,
+        provider: Option<&str>,
+    ) -> Result<CompatibilityOptions, SelectionError> {
+        let mut options = SelectionSession::new(self.catalog.clone())
+            .compatibility_options_for(adapter, provider)?;
+        for option in &mut options.providers {
+            if let Some(reason) = self.unavailable.get(&option.id) {
+                option.available = false;
+                option.reason = Some(reason.clone());
+            }
+        }
+        if let Some(provider) = provider
+            && self.unavailable.contains_key(provider)
+        {
+            for option in &mut options.models {
+                option.available = false;
+                option.reason = self.unavailable.get(provider).cloned();
+            }
+        }
+        Ok(options)
+    }
+    pub fn set_default(
+        &mut self,
+        agent: impl Into<String>,
+        selection: AdapterSelection,
+    ) -> Result<(), SelectionError> {
+        SelectionSession::new(self.catalog.clone()).validate(selection.clone())?;
+        self.defaults.insert(agent.into(), selection);
+        Ok(())
+    }
+    pub fn set_override(
+        &mut self,
+        agent: impl Into<String>,
+        selection: AdapterSelection,
+    ) -> Result<(), SelectionError> {
+        SelectionSession::new(self.catalog.clone()).validate(selection.clone())?;
+        self.overrides.insert(agent.into(), selection);
+        Ok(())
+    }
+    pub fn resolve(&self, agent: &str) -> Option<&AdapterSelection> {
+        self.overrides
+            .get(agent)
+            .or_else(|| self.defaults.get(agent))
+    }
+    pub fn restart(&mut self) {
+        self.overrides.clear();
+    }
+    pub fn validate_offline(&self, selection: AdapterSelection) -> Result<(), SelectionError> {
+        SelectionSession::new(self.catalog.clone()).validate(selection)
+    }
+}
+
 impl AdapterCatalog {
     pub fn new(records: impl IntoIterator<Item = AdapterRecord>) -> Result<Self, String> {
         let records: BTreeMap<String, AdapterRecord> =

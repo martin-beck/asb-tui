@@ -1,0 +1,121 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+// SPDX-License-Identifier: MIT
+
+use asb_tui::{
+    adapter_catalog::{AdapterSelection, AuthMethod, CompatibilityMatrix},
+    control_codec::{
+        ProviderAuthMethod, ProviderAvailability, ProviderCatalog, ProviderCatalogEntry,
+        ProviderModel, Revision,
+    },
+    provider_catalog::{ConnectedProviderRegistry, ProviderProfile, ProviderRefreshError},
+    wizard::Wizard,
+};
+
+fn catalog(provider: &str, model: &str) -> ProviderCatalog {
+    ProviderCatalog {
+        runner_instance_id: "fixture".into(),
+        generation: Revision(2),
+        catalog_sha256: "a".repeat(64),
+        refreshed: true,
+        providers: vec![ProviderCatalogEntry {
+            provider_id: provider.into(),
+            display_name: provider.into(),
+            auth_methods: vec![ProviderAuthMethod::None],
+            availability: ProviderAvailability::Available,
+            models: vec![ProviderModel {
+                model_id: model.into(),
+                revision: "1".into(),
+                availability: ProviderAvailability::Available,
+            }],
+        }],
+    }
+}
+
+fn profile() -> ProviderProfile {
+    ProviderProfile {
+        provider_id: "openrouter".into(),
+        display_name: "OpenRouter".into(),
+        auth_method: ProviderAuthMethod::None,
+        credential_reference_sha256: None,
+    }
+}
+
+#[test]
+fn add_refresh_filters_models_and_cancel_preserves_last_valid_profile() {
+    let mut registry = ConnectedProviderRegistry::new(None, None).unwrap();
+    registry.begin_add(profile()).unwrap();
+    registry
+        .refresh(|_| Ok(catalog("openrouter", "fixture-model")))
+        .unwrap();
+    assert_eq!(
+        registry
+            .available_models()
+            .iter()
+            .map(|m| m.model_id.as_str())
+            .collect::<Vec<_>>(),
+        ["fixture-model"]
+    );
+    registry.begin_edit().unwrap();
+    registry.cancel();
+    assert_eq!(registry.profile().unwrap().provider_id, "openrouter");
+}
+
+#[test]
+fn failed_refresh_is_typed_redacted_and_keeps_catalog() {
+    let mut registry = ConnectedProviderRegistry::new(None, None).unwrap();
+    registry.begin_add(profile()).unwrap();
+    registry
+        .refresh(|_| Ok(catalog("openrouter", "fixture-model")))
+        .unwrap();
+    registry.begin_edit().unwrap();
+    let error = registry
+        .refresh(|_| Err("raw api_key=never-returned".into()))
+        .unwrap_err();
+    assert!(matches!(error, ProviderRefreshError::Unavailable(_)));
+    assert_eq!(registry.available_models().len(), 1);
+    let json = registry.diagnostic().to_json().unwrap();
+    assert!(!json.contains("api_key") && !json.contains("never-returned"));
+}
+
+#[test]
+fn wizard_projects_connected_provider_choices_without_erasing_draft() {
+    let mut wizard = Wizard::default();
+    wizard.set_provider_catalog(catalog("openrouter", "fixture-model"));
+    let (_, models) = wizard.connected_provider_options().unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].id, "fixture-model");
+}
+
+#[test]
+fn compatibility_matrix_supports_defaults_overrides_restart_and_offline_validation() {
+    let mut matrix = CompatibilityMatrix::development();
+    let default = AdapterSelection {
+        adapter_id: "opencode".into(),
+        provider_id: "openai".into(),
+        model_id: "gpt-4o".into(),
+        auth: AuthMethod::None,
+    };
+    let override_selection = AdapterSelection {
+        provider_id: "openrouter".into(),
+        model_id: "openai/gpt-4o".into(),
+        ..default.clone()
+    };
+    matrix.set_default("agent-a", default.clone()).unwrap();
+    matrix
+        .set_override("agent-a", override_selection.clone())
+        .unwrap();
+    assert_eq!(matrix.resolve("agent-a"), Some(&override_selection));
+    matrix.mark_unavailable("openrouter", "development auth unavailable");
+    let options = matrix.options("opencode", Some("openrouter")).unwrap();
+    assert!(!options.models[0].available);
+    assert!(
+        options.models[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("development")
+    );
+    assert!(matrix.validate_offline(override_selection).is_ok());
+    matrix.restart();
+    assert_eq!(matrix.resolve("agent-a"), Some(&default));
+}

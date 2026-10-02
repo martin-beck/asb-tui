@@ -541,6 +541,181 @@ pub fn wizard_options(
     Ok((providers, models))
 }
 
+/// A renderer-neutral provider add/edit session.  The committed profile and
+/// catalog remain intact while a draft is edited or refreshed; cancellation
+/// and failed refreshes therefore cannot erase the last valid configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderProfile {
+    pub provider_id: String,
+    pub display_name: String,
+    pub auth_method: ProviderAuthMethod,
+    pub credential_reference_sha256: Option<String>,
+}
+
+impl ProviderProfile {
+    pub fn validate(&self) -> Result<(), String> {
+        if !is_safe_id(&self.provider_id) || self.display_name.trim().is_empty() {
+            return Err("provider profile identity is invalid".into());
+        }
+        if matches!(self.auth_method, ProviderAuthMethod::CredentialReference)
+            != self.credential_reference_sha256.is_some()
+        {
+            return Err("credential reference does not match authentication".into());
+        }
+        if let Some(digest) = &self.credential_reference_sha256
+            && (digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Err("credential reference must be a SHA-256 digest".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProviderRefreshError {
+    Invalid(String),
+    Unavailable(String),
+    Cancelled,
+}
+
+impl fmt::Display for ProviderRefreshError {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid(reason) => write!(output, "invalid provider profile: {reason}"),
+            Self::Unavailable(reason) => write!(output, "provider catalog unavailable: {reason}"),
+            Self::Cancelled => output.write_str("provider refresh cancelled"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ConnectedProviderRegistry {
+    committed_profile: Option<ProviderProfile>,
+    draft_profile: Option<ProviderProfile>,
+    catalog: Option<ProviderCatalog>,
+}
+
+impl ConnectedProviderRegistry {
+    pub fn new(
+        catalog: Option<ProviderCatalog>,
+        profile: Option<ProviderProfile>,
+    ) -> Result<Self, String> {
+        if let Some(profile) = &profile {
+            profile.validate()?;
+        }
+        Ok(Self {
+            committed_profile: profile,
+            draft_profile: None,
+            catalog,
+        })
+    }
+    pub fn profile(&self) -> Option<&ProviderProfile> {
+        self.committed_profile.as_ref()
+    }
+    pub fn draft(&self) -> Option<&ProviderProfile> {
+        self.draft_profile.as_ref()
+    }
+    pub fn catalog(&self) -> Option<&ProviderCatalog> {
+        self.catalog.as_ref()
+    }
+    pub fn begin_add(&mut self, profile: ProviderProfile) -> Result<(), ProviderRefreshError> {
+        profile.validate().map_err(ProviderRefreshError::Invalid)?;
+        self.draft_profile = Some(profile);
+        Ok(())
+    }
+    pub fn begin_edit(&mut self) -> Result<(), ProviderRefreshError> {
+        self.draft_profile = self.committed_profile.clone();
+        self.draft_profile
+            .as_ref()
+            .ok_or(ProviderRefreshError::Cancelled)
+            .map(|_| ())
+    }
+    pub fn cancel(&mut self) {
+        self.draft_profile = None;
+    }
+    pub fn refresh<F>(&mut self, fetch: F) -> Result<&ProviderCatalog, ProviderRefreshError>
+    where
+        F: FnOnce(&ProviderProfile) -> Result<ProviderCatalog, String>,
+    {
+        let profile = self
+            .draft_profile
+            .as_ref()
+            .ok_or(ProviderRefreshError::Cancelled)?;
+        let next = fetch(profile).map_err(ProviderRefreshError::Unavailable)?;
+        if next.generation.0 == 0
+            || next
+                .providers
+                .iter()
+                .all(|p| p.provider_id != profile.provider_id)
+        {
+            return Err(ProviderRefreshError::Unavailable(
+                "provider is absent from catalog".into(),
+            ));
+        }
+        self.catalog = Some(next);
+        self.committed_profile = self.draft_profile.take();
+        Ok(self.catalog.as_ref().expect("catalog set above"))
+    }
+    pub fn available_models(&self) -> Vec<&ProviderModel> {
+        let Some(profile) = self.committed_profile.as_ref() else {
+            return Vec::new();
+        };
+        self.catalog
+            .as_ref()
+            .into_iter()
+            .flat_map(|catalog| catalog.providers.iter())
+            .filter(|provider| {
+                provider.provider_id == profile.provider_id
+                    && matches!(provider.availability, ProviderAvailability::Available)
+            })
+            .flat_map(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .filter(|model| matches!(model.availability, ProviderAvailability::Available))
+            })
+            .collect()
+    }
+    pub fn diagnostic(&self) -> ProviderRegistryDiagnostic {
+        let (provider_id, status) = match (&self.committed_profile, &self.catalog) {
+            (Some(profile), Some(catalog)) => (
+                Some(profile.provider_id.clone()),
+                catalog
+                    .providers
+                    .iter()
+                    .find(|p| p.provider_id == profile.provider_id)
+                    .map_or_else(
+                        || "unavailable".into(),
+                        |p| match &p.availability {
+                            ProviderAvailability::Available => "connected".into(),
+                            ProviderAvailability::Unavailable(_) => "unavailable".into(),
+                        },
+                    ),
+            ),
+            (Some(profile), None) => (Some(profile.provider_id.clone()), "unavailable".into()),
+            _ => (None, "not_configured".into()),
+        };
+        ProviderRegistryDiagnostic {
+            provider_id,
+            status,
+            model_count: self.available_models().len(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProviderRegistryDiagnostic {
+    pub provider_id: Option<String>,
+    pub status: String,
+    pub model_count: usize,
+}
+
+impl ProviderRegistryDiagnostic {
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+}
+
 fn model_option(
     provider_id: &str,
     model: &ProviderModel,
