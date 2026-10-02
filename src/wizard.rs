@@ -11,9 +11,11 @@ use crate::{
         AdapterCatalog, AdapterOption, AdapterSelection, AuthMethod, CompatibilityOptions,
         SelectionSession,
     },
+    control_codec::{ProviderAuthMethod, ProviderCatalog},
     development_auth::{
         DevelopmentAuthError, DevelopmentAuthFlow, DevelopmentAuthMethod, DevelopmentAuthSnapshot,
     },
+    provider_catalog::{ProviderProfile, wizard_options},
     terminal::RenderPolicy,
     wizard_catalog::{OptionKind, WizardCatalog, WizardCatalogState},
 };
@@ -95,6 +97,7 @@ pub struct Wizard {
     development_auth: DevelopmentAuthFlow,
     adapter_selection: Option<SelectionSession>,
     mode: WizardMode,
+    provider_catalog: Option<ProviderCatalog>,
 }
 
 impl Default for Wizard {
@@ -108,6 +111,7 @@ impl Default for Wizard {
                 .expect("static development provider is valid"),
             adapter_selection: Some(SelectionSession::new(AdapterCatalog::development())),
             mode: WizardMode::Development,
+            provider_catalog: None,
         }
     }
 }
@@ -160,6 +164,44 @@ impl Wizard {
     #[must_use]
     pub const fn mode(&self) -> WizardMode {
         self.mode
+    }
+
+    pub fn set_provider_catalog(&mut self, catalog: ProviderCatalog) {
+        self.provider_catalog = Some(catalog);
+    }
+
+    pub fn provider_catalog(&self) -> Option<&ProviderCatalog> {
+        self.provider_catalog.as_ref()
+    }
+
+    pub fn connected_provider_options(
+        &self,
+    ) -> Result<
+        (
+            Vec<crate::wizard_catalog::WizardOption>,
+            Vec<crate::wizard_catalog::WizardOption>,
+        ),
+        WizardError,
+    > {
+        self.provider_catalog
+            .as_ref()
+            .ok_or_else(|| WizardError::Catalog("provider catalog unavailable".into()))
+            .and_then(|catalog| wizard_options(catalog).map_err(WizardError::Catalog))
+    }
+
+    pub fn begin_provider_edit(&mut self, profile: &ProviderProfile) -> Result<(), WizardError> {
+        profile.validate().map_err(WizardError::Catalog)?;
+        self.values[Step::Provider as usize] = profile.provider_id.clone();
+        self.values[Step::Authentication as usize] =
+            match (&profile.auth_method, &profile.credential_reference_sha256) {
+                (ProviderAuthMethod::CredentialReference, Some(digest)) => {
+                    format!("credential_reference:{digest}")
+                }
+                (ProviderAuthMethod::LocalDaemon, _) => "local_daemon".into(),
+                (ProviderAuthMethod::None, _) => "none".into(),
+                _ => return Err(WizardError::InvalidValue),
+            };
+        Ok(())
     }
 
     pub fn adapter_options(&self) -> Vec<AdapterOption> {
