@@ -696,7 +696,8 @@ mod tests {
         };
         fs::write(state_path(&root), serde_json::to_vec(&valid).unwrap()).unwrap();
         assert!(status(&root).verified);
-        let mutations: [(&str, fn(&mut State)); 7] = [
+        type Mutation = (&'static str, fn(&mut State));
+        let mutations: [Mutation; 7] = [
             ("schema", |state: &mut State| state.schema_version = 2),
             ("channel", |state: &mut State| {
                 state.channel = "stable".into()
