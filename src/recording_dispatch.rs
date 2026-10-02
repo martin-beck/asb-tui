@@ -7,6 +7,7 @@
 //! and readiness claims remain runner-owned.
 
 use crate::{
+    agent_catalog::AgentCatalog,
     actions::UiAction,
     control_transport::{AuthenticatedBrokerSession, TransportError},
     live_projection::{ControlProjection, LiveSnapshot},
@@ -14,6 +15,7 @@ use crate::{
         CampaignObservation, CampaignPhase, RecordingAction, RecordingCampaignModel,
         RecordingModelError, WorkloadScope,
     },
+    provider_catalog::AgentScope,
 };
 
 pub trait RecordingBackend {
@@ -177,6 +179,23 @@ impl RecordingDispatchState {
             comparison_run_ids: Vec::new(),
             remove_confirmation_required: false,
         })
+    }
+
+    /// Construct a recording state from the explicit selected/all agent scope.
+    /// `All` is resolved against the authenticated catalog before it reaches
+    /// the wire, so the backend keeps its non-empty, digest-bound agent list
+    /// contract while the frontend still exposes an honest all-agents choice.
+    pub fn with_agent_scope(
+        provider_id: String,
+        model_id: String,
+        scope: AgentScope,
+        agents: &AgentCatalog,
+        workload_scope: WorkloadScope,
+    ) -> Result<Self, RecordingModelError> {
+        let agent_ids = scope
+            .resolve(agents)
+            .map_err(|_| RecordingModelError::InvalidScope)?;
+        Self::new(provider_id, model_id, agent_ids, workload_scope)
     }
 
     #[must_use]
