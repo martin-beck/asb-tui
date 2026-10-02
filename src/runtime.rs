@@ -910,6 +910,10 @@ fn run_interactive_loop(
         }
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
     }
+    if let Some((cancelled, receiver)) = development_worker.take() {
+        cancelled.store(true, Ordering::Relaxed);
+        let _ = receiver.recv_timeout(Duration::from_secs(5));
+    }
     drop(terminal);
     session.restore()
 }
