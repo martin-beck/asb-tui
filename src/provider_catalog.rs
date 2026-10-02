@@ -932,4 +932,44 @@ mod tests {
         std::fs::remove_file(link).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn unavailable_options_and_registry_refresh_failures_are_explicit() {
+        let mut unavailable_catalog = catalog();
+        unavailable_catalog.providers[0].availability =
+            ProviderAvailability::Unavailable("offline".into());
+        unavailable_catalog.providers[0].models[0].availability =
+            ProviderAvailability::Unavailable("offline".into());
+        let (providers, models) = wizard_options(&unavailable_catalog).unwrap();
+        assert!(!providers[0].available && !models[0].available);
+        let mut registry = ConnectedProviderRegistry::new(None, None).unwrap();
+        let profile = ProviderProfile {
+            provider_id: "openrouter".into(),
+            display_name: "OpenRouter".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: None,
+        };
+        registry.begin_add(profile).unwrap();
+        assert!(matches!(
+            registry.refresh(|_| Err("offline".into())),
+            Err(ProviderRefreshError::Unavailable(_))
+        ));
+        assert!(matches!(
+            registry.refresh(|_| Ok(ProviderCatalog {
+                generation: Revision(0),
+                ..catalog()
+            })),
+            Err(ProviderRefreshError::Unavailable(_))
+        ));
+        assert!(
+            ProviderProfile {
+                provider_id: "openrouter".into(),
+                display_name: " ".into(),
+                auth_method: ProviderAuthMethod::None,
+                credential_reference_sha256: None,
+            }
+            .validate()
+            .is_err()
+        );
+    }
 }
