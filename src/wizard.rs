@@ -1125,4 +1125,24 @@ mod tests {
         }
         assert_eq!(wizard.complete(), Ok(()));
     }
+
+    #[test]
+    fn development_catalog_cursor_query_and_provider_edit_paths_are_bounded() {
+        let catalog = WizardCatalog::development().unwrap();
+        let mut wizard = Wizard::with_catalog(catalog);
+        assert!(wizard.connected_provider_options().is_err());
+        wizard.set_provider_catalog(crate::provider_catalog::development_openrouter_catalog());
+        assert!(wizard.connected_provider_options().is_ok());
+        wizard.set_catalog_query("fake").unwrap();
+        wizard.move_catalog_cursor(99).unwrap();
+        wizard.select_catalog_cursor().unwrap();
+        wizard.select_all_agents().unwrap();
+        assert!(!wizard.current_value().is_empty());
+        assert!(wizard.set_catalog_query("\u{7f}").is_err());
+        assert!(wizard.set_value("x".repeat(257)).is_err());
+        assert!(wizard.set_value("\u{1f}").is_err());
+        wizard.back().unwrap_err();
+        wizard.cancel();
+        assert!(wizard.cancelled());
+    }
 }
