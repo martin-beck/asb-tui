@@ -48,7 +48,7 @@ pub struct Response {
     pub executable_sha256: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct State {
     schema_version: u64,
@@ -650,6 +650,110 @@ mod tests {
         assert_eq!(after.source_commit, before.source_commit);
         assert_eq!(after.source_tree, before.source_tree);
         assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn development_install_status_launch_upgrade_and_remove_are_reentrant() {
+        FAIL_RENAME_AT.store(0, Ordering::SeqCst);
+        let root = temp_root("operations");
+        assert_eq!(status(&root).code, "development_not_installed");
+        assert_eq!(
+            materialize(&root, false).unwrap().code,
+            "development_installed"
+        );
+        assert_eq!(
+            materialize(&root, false),
+            Err("development_already_installed")
+        );
+        let installed = status(&root);
+        assert!(installed.installed && installed.verified);
+        assert_eq!(
+            materialize(&root, true).unwrap().code,
+            "development_installed"
+        );
+        assert_eq!(status(&root).code, "development_installed");
+        fs::rename(root.join("asb-tui"), root.join("asb-tui.staged")).unwrap();
+        assert_eq!(status(&root).code, "development_installation_invalid");
+        fs::rename(root.join("asb-tui.staged"), root.join("asb-tui")).unwrap();
+        assert_eq!(status(&root).code, "development_installed");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn development_state_validation_rejects_every_mutable_identity() {
+        let root = temp_root("state-validation");
+        let bytes = b"candidate";
+        fs::write(executable_path(&root), bytes).unwrap();
+        let valid = State {
+            schema_version: 1,
+            channel: CHANNEL.into(),
+            development_only: true,
+            source_commit: "a".repeat(40),
+            source_tree: "b".repeat(40),
+            executable_sha256: digest_hex(bytes),
+            source_repository: DEFAULT_REPOSITORY.into(),
+        };
+        fs::write(state_path(&root), serde_json::to_vec(&valid).unwrap()).unwrap();
+        assert!(status(&root).verified);
+        let mutations: [(&str, fn(&mut State)); 7] = [
+            ("schema", |state: &mut State| state.schema_version = 2),
+            ("channel", |state: &mut State| {
+                state.channel = "stable".into()
+            }),
+            ("development", |state: &mut State| {
+                state.development_only = false
+            }),
+            ("repository", |state: &mut State| {
+                state.source_repository = "other".into()
+            }),
+            ("commit", |state: &mut State| {
+                state.source_commit = "unknown".into()
+            }),
+            ("tree", |state: &mut State| {
+                state.source_tree = "unknown".into()
+            }),
+            ("digest", |state: &mut State| {
+                state.executable_sha256 = "0".repeat(64)
+            }),
+        ];
+        for (label, mutate) in mutations {
+            let mut state = valid.clone();
+            mutate(&mut state);
+            fs::write(state_path(&root), serde_json::to_vec(&state).unwrap()).unwrap();
+            assert_eq!(
+                status(&root).code,
+                "development_installation_invalid",
+                "{label}"
+            );
+        }
+        fs::write(state_path(&root), serde_json::to_vec(&valid).unwrap()).unwrap();
+        fs::write(executable_path(&root), b"tampered").unwrap();
+        assert_eq!(status(&root).code, "development_installation_invalid");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn development_root_and_state_fail_closed_for_unsafe_filesystem_entries() {
+        let root = temp_root("unsafe");
+        assert!(private_root(&root).is_ok());
+        let mode = fs::metadata(&root).unwrap().permissions().mode();
+        fs::set_permissions(&root, fs::Permissions::from_mode(mode | 0o077)).unwrap();
+        assert_eq!(private_root(&root), Err("development_root_invalid"));
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(state_path(&root), vec![b'x'; 16 * 1024 + 1]).unwrap();
+        assert!(matches!(
+            read_state(&root),
+            Err("development_state_invalid")
+        ));
+        fs::remove_file(state_path(&root)).unwrap();
+        fs::create_dir(state_path(&root)).unwrap();
+        assert!(matches!(
+            read_state(&root),
+            Err("development_state_invalid")
+        ));
+        fs::remove_dir(state_path(&root)).unwrap();
+        assert_eq!(read_state(&root), Ok(None));
         fs::remove_dir_all(root).unwrap();
     }
 }
