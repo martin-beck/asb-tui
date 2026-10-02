@@ -247,6 +247,24 @@ fn recording_dispatch_actions_are_declared_in_the_formal_model() {
 }
 
 #[test]
+fn fanout_control_actions_are_declared_in_the_formal_model() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    assert!(model["state_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "fanout_projection"));
+    let bindings = model["bindings"].as_array().unwrap();
+    for action in ["admit_fanout", "cancel_fanout"] {
+        assert!(
+            bindings.iter().any(|binding| binding["action"] == action),
+            "missing formal binding for {action}"
+        );
+    }
+}
+
+#[test]
 fn development_authentication_actions_are_formally_executable() {
     let mut wizard = WizardFormalState::new().unwrap();
     wizard.apply(WizardEvent::OpenWizard).unwrap();
