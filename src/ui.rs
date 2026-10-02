@@ -1053,7 +1053,7 @@ impl WorkspaceState {
                     UiAction::Control(crate::actions::UiAction::CancelDevelopment)
                 }
                 KeyCode::Char('r') => {
-                    self.development_handoff.begin();
+                    self.development_handoff.begin_retry();
                     UiAction::Control(crate::actions::UiAction::RetryDevelopment)
                 }
                 KeyCode::Char('?') | KeyCode::Char('h') => {

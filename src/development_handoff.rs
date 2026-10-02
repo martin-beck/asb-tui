@@ -78,9 +78,25 @@ impl Default for HandoffProjection {
 }
 
 impl HandoffProjection {
+    pub fn operation(&self) -> &'static str {
+        if self.code == "development_retry"
+            || matches!(self.phase, Phase::Installed | Phase::RolledBack)
+        {
+            "upgrade"
+        } else {
+            "install"
+        }
+    }
+
     pub fn begin(&mut self) {
         self.phase = Phase::Cloning;
         self.code = "development_materializing".into();
+        self.previous_install_preserved = true;
+    }
+
+    pub fn begin_retry(&mut self) {
+        self.phase = Phase::Cloning;
+        self.code = "development_retry".into();
         self.previous_install_preserved = true;
     }
 
@@ -186,5 +202,17 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("rolled back"))
         );
+    }
+
+    #[test]
+    fn rollback_retry_uses_upgrade_without_losing_previous_install() {
+        let mut handoff = HandoffProjection {
+            phase: Phase::RolledBack,
+            ..HandoffProjection::default()
+        };
+        assert_eq!(handoff.operation(), "upgrade");
+        handoff.begin_retry();
+        assert_eq!(handoff.operation(), "upgrade");
+        assert!(handoff.previous_install_preserved);
     }
 }

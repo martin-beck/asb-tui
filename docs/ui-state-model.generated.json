@@ -29,6 +29,7 @@
     "provider_registry_model_count",
     "live_setup_catalog",
     "development_catalog_fallback",
+    "development_handoff",
     "wizard_mode",
     "wizard_adapter",
     "configuration",
@@ -68,6 +69,26 @@
       "action": "open_landing",
       "element": "navigation",
       "key": "h"
+    },
+    {
+      "action": "open_development_handoff",
+      "element": "landing.primary",
+      "key": "d"
+    },
+    {
+      "action": "materialize_development",
+      "element": "landing.primary",
+      "key": "Enter"
+    },
+    {
+      "action": "cancel_development",
+      "element": "landing.primary",
+      "key": "x"
+    },
+    {
+      "action": "retry_development",
+      "element": "landing.primary",
+      "key": "r"
     },
     {
       "action": "open_measurement_selection",
@@ -1034,6 +1055,42 @@
       "effects": [
         "return_route_saved",
         "route_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "open_development_handoff",
+      "from": "landing",
+      "to": "landing",
+      "effects": [
+        "development_handoff_opened",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "materialize_development",
+      "from": "landing",
+      "to": "landing",
+      "effects": [
+        "development_handoff_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "cancel_development",
+      "from": "landing",
+      "to": "landing",
+      "effects": [
+        "development_handoff_changed",
+        "focus_reset"
+      ]
+    },
+    {
+      "event": "retry_development",
+      "from": "landing",
+      "to": "landing",
+      "effects": [
+        "development_handoff_changed",
         "focus_reset"
       ]
     },
