@@ -172,3 +172,54 @@ fn connected_catalog_projects_both_adapter_routes() {
         );
     }
 }
+
+#[test]
+fn matrix_covers_every_development_tuple_and_opendesk_defaults_offline() {
+    let mut matrix = CompatibilityMatrix::development();
+    let tuples = matrix
+        .evaluate()
+        .into_iter()
+        .map(|case| {
+            (
+                case.adapter_id,
+                case.provider_id,
+                case.model_id,
+                case.supported,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(tuples.len(), 6);
+    assert!(tuples.iter().all(|(_, _, _, supported)| *supported));
+    for expected in [
+        ("opencode", "openai", "gpt-4o"),
+        ("opencode", "openai", "fixture-model"),
+        ("opencode", "openrouter", "openai/gpt-4o"),
+        ("opendesk", "openai", "gpt-4o"),
+        ("opendesk", "openai", "fixture-model"),
+        ("opendesk", "local", "fixture-model"),
+    ] {
+        assert!(tuples.iter().any(|(adapter, provider, model, _)| {
+            (adapter.as_str(), provider.as_str(), model.as_str()) == expected
+        }));
+    }
+
+    let default = AdapterSelection {
+        adapter_id: "opendesk".into(),
+        provider_id: "local".into(),
+        model_id: "fixture-model".into(),
+        auth: AuthMethod::None,
+    };
+    matrix.set_default("agent-b", default.clone()).unwrap();
+    assert_eq!(matrix.resolve("agent-b"), Some(&default));
+    assert!(matrix.validate_offline(default).is_ok());
+    matrix.restart();
+    assert_eq!(
+        matrix.resolve("agent-b"),
+        Some(&AdapterSelection {
+            adapter_id: "opendesk".into(),
+            provider_id: "local".into(),
+            model_id: "fixture-model".into(),
+            auth: AuthMethod::None,
+        })
+    );
+}
