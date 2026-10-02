@@ -995,4 +995,49 @@ mod tests {
         defaults.entries[0].credential_reference_sha256 = Some("f".repeat(64));
         assert!(defaults.validate().is_ok());
     }
+
+    #[test]
+    fn provider_diagnostics_and_error_projections_cover_empty_states() {
+        let empty = SharedProviderDefaults::default();
+        assert_eq!(empty.summary(), "0 provider defaults");
+        assert!(
+            empty
+                .diagnostic()
+                .to_string()
+                .contains("0 provider default(s)")
+        );
+        let mut record = ProviderDefaultRecord {
+            scope: AgentScope::All,
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: Some("f".repeat(64)),
+        };
+        assert!(record.validate().is_err());
+        record.auth_method = ProviderAuthMethod::CredentialReference;
+        record.credential_reference_sha256 = Some("bad".into());
+        assert!(record.validate().is_err());
+        for error in [
+            ProviderRefreshError::Invalid("bad".into()),
+            ProviderRefreshError::Unavailable("offline".into()),
+            ProviderRefreshError::Cancelled,
+        ] {
+            assert!(!error.to_string().is_empty());
+        }
+        let empty_registry = ConnectedProviderRegistry::new(None, None).unwrap();
+        assert!(empty_registry.available_models().is_empty());
+        assert_eq!(empty_registry.diagnostic().status, "not_configured");
+        let registry = ConnectedProviderRegistry::new(
+            None,
+            Some(ProviderProfile {
+                provider_id: "openrouter".into(),
+                display_name: "OpenRouter".into(),
+                auth_method: ProviderAuthMethod::None,
+                credential_reference_sha256: None,
+            }),
+        )
+        .unwrap();
+        assert!(registry.available_models().is_empty());
+        assert_eq!(registry.diagnostic().status, "unavailable");
+    }
 }
