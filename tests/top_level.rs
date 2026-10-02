@@ -146,9 +146,11 @@ fn selected_channel_survives_restart_without_fallback() {
 
 #[test]
 fn tui_status_uses_the_development_router_and_keeps_request_closed() {
+    let state = isolated_channel_state("router");
     let request = br#"{"router_version":1,"profile":"development","channel":"dev","current_main":{"asb_source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asb_source_tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tui_source_commit":"cccccccccccccccccccccccccccccccccccccccc","tui_source_tree":"dddddddddddddddddddddddddddddddddddddddd"},"request":{"operation":"status","schema_version":1,"install_root":"/tmp/asb-tui-no-such-root"}}"#;
     let output = binary()
         .args(["tui", "status", "--development", "--format", "json"])
+        .env("ASB_TUI_CHANNEL_STATE", &state)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -163,10 +165,12 @@ fn tui_status_uses_the_development_router_and_keeps_request_closed() {
     assert_eq!(response["code"], "install_root_unavailable");
     assert_eq!(response["classification"], "source_only_unverified");
     assert_eq!(response["channel"], "dev");
+    let _ = fs::remove_file(state);
 }
 
 #[test]
 fn unavailable_channels_are_reported_without_falling_back_to_stable_or_dev() {
+    let state = isolated_channel_state("unavailable");
     for operation in ["install", "status", "launch", "upgrade", "remove"] {
         for (channel, code) in [
             ("stable", "stable_channel_unavailable"),
@@ -175,6 +179,7 @@ fn unavailable_channels_are_reported_without_falling_back_to_stable_or_dev() {
         ] {
             let output = binary()
                 .args(["tui", operation, "--channel", channel, "--format", "json"])
+                .env("ASB_TUI_CHANNEL_STATE", &state)
                 .output()
                 .expect("run channel selector");
             assert_eq!(output.status.code(), Some(3));
@@ -185,6 +190,7 @@ fn unavailable_channels_are_reported_without_falling_back_to_stable_or_dev() {
             assert!(output.stderr.is_empty());
         }
     }
+    let _ = fs::remove_file(state);
 }
 
 #[test]
@@ -224,10 +230,12 @@ fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
             .unwrap()
             .as_nanos()
     ));
+    let state = isolated_channel_state("materialize");
     let run = |operation: &str| {
         binary()
             .args(["tui", operation, "--channel", "dev", "--format", "json"])
             .env("ASB_TUI_DEV_INSTALL_ROOT", &root)
+            .env("ASB_TUI_CHANNEL_STATE", &state)
             .env("ASB_TUI_DEV_REPOSITORY", &source)
             .env("ASB_TUI_DEV_REF", "fixture")
             .env("ASB_TUI_DEV_GIT", "/usr/bin/git")
@@ -254,4 +262,5 @@ fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
     assert_eq!(run("status").status.code(), Some(3));
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(source).unwrap();
+    fs::remove_file(state).unwrap();
 }
