@@ -3116,6 +3116,180 @@ mod tests {
     }
 
     #[test]
+    fn renders_routes_across_all_layout_tiers_and_overlays() {
+        let mut state = WorkspaceState::default();
+        let policies = [
+            policy(),
+            RenderPolicy {
+                tier: CapabilityTier::BasicColor,
+                unicode: true,
+                ..policy()
+            },
+            RenderPolicy {
+                tier: CapabilityTier::Plain,
+                unicode: false,
+                ..policy()
+            },
+        ];
+        for (width, height) in [(120, 40), (80, 24), (30, 8)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for screen in [
+                Screen::Landing,
+                Screen::Measures,
+                Screen::Configuration,
+                Screen::Reports,
+                Screen::Help,
+            ] {
+                state.screen = screen;
+                for render_policy in policies {
+                    terminal
+                        .draw(|frame| render(frame, &state, render_policy))
+                        .unwrap();
+                }
+                state.help = true;
+                terminal
+                    .draw(|frame| render(frame, &state, policy()))
+                    .unwrap();
+                state.help = false;
+            }
+        }
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        for (width, height, tier) in [
+            (120, 40, CapabilityTier::TrueColor),
+            (60, 18, CapabilityTier::BasicColor),
+            (24, 6, CapabilityTier::Plain),
+        ] {
+            terminal.backend_mut().resize(width, height);
+            state.apply_resize(width, height);
+            for screen in [
+                Screen::Landing,
+                Screen::DevelopmentHandoff,
+                Screen::Measures,
+                Screen::Configuration,
+                Screen::RunControl,
+                Screen::Reports,
+                Screen::Help,
+            ] {
+                state.screen = screen;
+                terminal
+                    .draw(|frame| {
+                        let mut render_policy = policy();
+                        render_policy.tier = tier;
+                        render(frame, &state, render_policy)
+                    })
+                    .unwrap();
+            }
+        }
+        state.screen = Screen::Wizard;
+        state.help = false;
+        terminal.backend_mut().resize(120, 40);
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        state.help = true;
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        state.help = false;
+        state.screen = Screen::Landing;
+        state.help = true;
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+    }
+
+    #[test]
+    fn development_handoff_navigation_and_projections_render_all_outcomes() {
+        let mut state = WorkspaceState::default();
+        assert_eq!(state.handle_key(key(KeyCode::Char('d'))), UiAction::None);
+        assert_eq!(state.screen, Screen::DevelopmentHandoff);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            UiAction::Control(crate::actions::UiAction::MaterializeDevelopment)
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        for phase in [
+            crate::development_handoff::Phase::Cloning,
+            crate::development_handoff::Phase::Building,
+            crate::development_handoff::Phase::Installing,
+            crate::development_handoff::Phase::Installed,
+            crate::development_handoff::Phase::RolledBack,
+            crate::development_handoff::Phase::Failed,
+            crate::development_handoff::Phase::Incompatible,
+        ] {
+            state.development_handoff.phase = phase;
+            state.development_handoff.source_commit = Some("a".repeat(40));
+            state.development_handoff.source_tree = Some("b".repeat(40));
+            state.development_handoff.executable_sha256 = Some("c".repeat(64));
+            terminal
+                .draw(|frame| render(frame, &state, policy()))
+                .unwrap();
+        }
+        state.development_handoff.phase = crate::development_handoff::Phase::Ready;
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char(' '))),
+            UiAction::Control(crate::actions::UiAction::MaterializeDevelopment)
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('x'))),
+            UiAction::Control(crate::actions::UiAction::CancelDevelopment)
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('r'))),
+            UiAction::Control(crate::actions::UiAction::RetryDevelopment)
+        );
+        assert_eq!(state.handle_key(key(KeyCode::Esc)), UiAction::None);
+        assert_eq!(state.screen, Screen::Landing);
+    }
+
+    #[test]
+    fn keyboard_matrix_exercises_each_workspace_route_without_panicking() {
+        let keys = [
+            KeyCode::Char('1'),
+            KeyCode::Char('2'),
+            KeyCode::Char('3'),
+            KeyCode::Char('4'),
+            KeyCode::Char('d'),
+            KeyCode::Char('f'),
+            KeyCode::Char('g'),
+            KeyCode::Char('p'),
+            KeyCode::Char('r'),
+            KeyCode::Char('s'),
+            KeyCode::Char('w'),
+            KeyCode::Char('/'),
+            KeyCode::Char('?'),
+            KeyCode::Char(' '),
+            KeyCode::Char('a'),
+            KeyCode::Char('b'),
+            KeyCode::Char('e'),
+            KeyCode::Char('o'),
+            KeyCode::Char('v'),
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Backspace,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+        ];
+        let mut state = WorkspaceState::default();
+        for screen in [
+            Screen::Landing,
+            Screen::DevelopmentHandoff,
+            Screen::Measures,
+            Screen::Configuration,
+            Screen::RunControl,
+            Screen::Reports,
+            Screen::Help,
+        ] {
+            state.screen = screen;
+            for code in keys {
+                let _ = state.handle_key(key(code));
+            }
+        }
+    }
+
+    #[test]
     fn key_handling_covers_help_navigation_and_search_edges() {
         let mut state = WorkspaceState::default();
         assert_eq!(state.handle_key(key(KeyCode::Char('h'))), UiAction::None);

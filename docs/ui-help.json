@@ -4,6 +4,7 @@
   "description": "User-facing help for every registered action and screen-level focus target.",
   "elements": [
     {"id":"screen.landing","route":"landing","kind":"screen","label":"Landing","help":{"summary":"Choose a benchmark task or review prior results.","usage":"Use the navigation keys to open a screen, then press ? for the actions available there."}},
+    {"id":"screen.development_handoff","route":"landing","kind":"screen","label":"Development channel handoff","help":{"summary":"Materialize or recover the local development channel.","usage":"Review provenance and warnings before starting; cancel preserves the previous install and retry remains available after rollback."}},
     {"id":"wizard.agent","route":"wizard","kind":"widget","label":"Agent","help":{"summary":"Choose which supported agent will execute the benchmark.","usage":"Select an available agent before continuing; unsupported agents remain unavailable until installed and verified."}},
     {"id":"wizard.provider","route":"wizard","kind":"widget","label":"Provider","help":{"summary":"Choose the provider that supplies the selected agent model.","usage":"Review the provider capabilities and choose one compatible with the selected agent before moving on."}},
     {"id":"wizard.model","route":"wizard","kind":"widget","label":"Model","help":{"summary":"Choose the model exposed by the selected provider.","usage":"Select a model reported by the provider and check its availability before continuing with setup."}},

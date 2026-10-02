@@ -215,4 +215,35 @@ mod tests {
         assert_eq!(handoff.operation(), "upgrade");
         assert!(handoff.previous_install_preserved);
     }
+
+    #[test]
+    fn response_projection_covers_success_failure_and_provenance_lines() {
+        let mut handoff = HandoffProjection::default();
+        let response = Response {
+            schema_version: 1,
+            classification: "development_only",
+            development_only: true,
+            channel: "dev",
+            ok: true,
+            code: "development_launch_ready",
+            installed: true,
+            verified: true,
+            source_commit: Some("a".repeat(40)),
+            source_tree: Some("b".repeat(40)),
+            executable_sha256: Some("c".repeat(64)),
+        };
+        handoff.apply_response(&response);
+        assert_eq!(handoff.phase, Phase::Installed);
+        assert_eq!(handoff.operation(), "upgrade");
+        assert_eq!(handoff.human_lines().len(), 8);
+        let failed = Response {
+            ok: false,
+            code: "development_other_failure",
+            ..response
+        };
+        handoff.apply_response(&failed);
+        assert_eq!(handoff.phase, Phase::Failed);
+        assert!(handoff.previous_install_preserved);
+        assert_eq!(handoff.operation(), "install");
+    }
 }

@@ -743,3 +743,320 @@ fn is_safe_id(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_catalog::{AgentAvailability, AgentCatalogEntry, AgentTarget};
+
+    fn agents() -> AgentCatalog {
+        AgentCatalog {
+            runner_instance_id: "runner".into(),
+            generation: 1,
+            catalog_sha256: "a".repeat(64),
+            refreshed: true,
+            target: AgentTarget {
+                operating_system: "linux".into(),
+                architecture: "x86_64".into(),
+                libc: "glibc".into(),
+                libc_version: "2".into(),
+            },
+            agents: vec![AgentCatalogEntry {
+                agent_id: "agent-1".into(),
+                target: AgentTarget {
+                    operating_system: "linux".into(),
+                    architecture: "x86_64".into(),
+                    libc: "glibc".into(),
+                    libc_version: "2".into(),
+                },
+                package: None,
+                provenance: None,
+                capabilities: vec![],
+                availability: AgentAvailability::Available,
+            }],
+        }
+    }
+
+    fn catalog() -> ProviderCatalog {
+        let mut catalog = development_openrouter_catalog();
+        catalog.providers[0].models[0].model_id = "gpt-4o".into();
+        catalog
+    }
+
+    fn draft(scope: AgentScope) -> ProviderDefaultDraft {
+        ProviderDefaultDraft {
+            scope,
+            provider_id: "openrouter".into(),
+            model_id: "gpt-4o".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: None,
+        }
+    }
+
+    #[test]
+    fn scoped_defaults_apply_replace_rollback_and_diagnose() {
+        let mut defaults = SharedProviderDefaults::default();
+        let selection = defaults
+            .apply(draft(AgentScope::All), &agents(), &catalog())
+            .unwrap();
+        assert_eq!(selection.agent_ids, vec!["agent-1"]);
+        assert_eq!(defaults.summary(), "1 provider default");
+        assert_eq!(
+            defaults.for_agent("agent-1").unwrap().provider_id,
+            "openrouter"
+        );
+        let before = defaults.clone();
+        defaults
+            .apply(
+                draft(AgentScope::Selected(vec!["agent-1".into()])),
+                &agents(),
+                &catalog(),
+            )
+            .unwrap();
+        assert_eq!(defaults.entries.len(), 2);
+        defaults.rollback(before.clone()).unwrap();
+        assert_eq!(defaults, before);
+        let diagnostic = defaults.diagnostic();
+        assert_eq!(diagnostic.scopes, vec!["all"]);
+        assert!(!diagnostic.to_json().unwrap().contains("provider default"));
+        assert!(diagnostic.to_string().contains("schema 1"));
+    }
+
+    #[test]
+    fn provider_validation_rejects_bad_scope_catalog_and_credentials() {
+        assert!(AgentScope::selected(Vec::<String>::new()).is_err());
+        assert!(AgentScope::selected(["bad/id"]).is_err());
+        assert!(
+            AgentScope::Selected(vec!["missing".into()])
+                .resolve(&agents())
+                .is_err()
+        );
+        assert!(
+            AgentScope::All
+                .resolve(&AgentCatalog {
+                    agents: vec![],
+                    ..agents()
+                })
+                .is_err()
+        );
+        let mut invalid = draft(AgentScope::All);
+        invalid.provider_id = "bad/id".into();
+        assert!(invalid.into_selection(&agents(), &catalog()).is_err());
+        let mut credentials = draft(AgentScope::All);
+        credentials.auth_method = ProviderAuthMethod::CredentialReference;
+        assert!(
+            credentials
+                .clone()
+                .into_selection(&agents(), &catalog())
+                .is_err()
+        );
+        credentials.credential_reference_sha256 = Some("z".repeat(64));
+        assert!(
+            ProviderDefaultRecord::from_draft(&credentials)
+                .validate()
+                .is_err()
+        );
+        assert!(accept_generation(None, Revision(0)).is_err());
+        assert!(accept_generation(Some(Revision(4)), Revision(3)).is_err());
+        assert!(accept_generation(Some(Revision(4)), Revision(4)).is_ok());
+    }
+
+    #[test]
+    fn options_profiles_registry_refresh_and_diagnostics_are_bounded() {
+        let (providers, models) = wizard_options(&catalog()).unwrap();
+        assert!(providers[0].available && models.iter().all(|model| model.available));
+        let profile = ProviderProfile {
+            provider_id: "openrouter".into(),
+            display_name: "OpenRouter".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: None,
+        };
+        let mut registry = ConnectedProviderRegistry::new(None, None).unwrap();
+        assert!(matches!(
+            registry.begin_edit(),
+            Err(ProviderRefreshError::Cancelled)
+        ));
+        registry.begin_add(profile).unwrap();
+        registry.refresh(|_| Ok(catalog())).unwrap();
+        assert_eq!(registry.available_models().len(), 2);
+        assert_eq!(registry.diagnostic().status, "connected");
+        assert!(
+            registry
+                .diagnostic()
+                .to_json()
+                .unwrap()
+                .contains("openrouter")
+        );
+        registry.cancel();
+        assert!(registry.draft().is_none());
+        let invalid = ProviderProfile {
+            provider_id: "bad/id".into(),
+            display_name: "".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: None,
+        };
+        assert!(registry.begin_add(invalid).is_err());
+    }
+
+    #[test]
+    fn defaults_store_round_trip_and_fail_closed_filesystem_checks() {
+        let root =
+            std::env::temp_dir().join(format!("asb-provider-defaults-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("defaults.json");
+        std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        let store = ProviderDefaultsStore::new(&path);
+        let defaults = SharedProviderDefaults {
+            schema_version: 1,
+            entries: vec![ProviderDefaultRecord {
+                scope: AgentScope::All,
+                provider_id: "openrouter".into(),
+                model_id: "gpt-4o".into(),
+                auth_method: ProviderAuthMethod::None,
+                credential_reference_sha256: None,
+            }],
+        };
+        assert!(store.load_or_default().unwrap().entries.is_empty());
+        store.save(&defaults).unwrap();
+        assert_eq!(store.load().unwrap(), defaults);
+        assert_eq!(store.path(), path.as_path());
+        assert!(ProviderDefaultsStore::new(&root).load().is_err());
+        let link = root.join("link.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(matches!(
+            ProviderDefaultsStore::new(&link).load(),
+            Err(ProviderDefaultsError::SymlinkRefused)
+        ));
+        std::fs::remove_file(link).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unavailable_options_and_registry_refresh_failures_are_explicit() {
+        let mut unavailable_catalog = catalog();
+        unavailable_catalog.providers[0].availability =
+            ProviderAvailability::Unavailable("offline".into());
+        unavailable_catalog.providers[0].models[0].availability =
+            ProviderAvailability::Unavailable("offline".into());
+        let (providers, models) = wizard_options(&unavailable_catalog).unwrap();
+        assert!(!providers[0].available && !models[0].available);
+        let mut registry = ConnectedProviderRegistry::new(None, None).unwrap();
+        let profile = ProviderProfile {
+            provider_id: "openrouter".into(),
+            display_name: "OpenRouter".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: None,
+        };
+        registry.begin_add(profile).unwrap();
+        assert!(matches!(
+            registry.refresh(|_| Err("offline".into())),
+            Err(ProviderRefreshError::Unavailable(_))
+        ));
+        assert!(matches!(
+            registry.refresh(|_| Ok(ProviderCatalog {
+                generation: Revision(0),
+                ..catalog()
+            })),
+            Err(ProviderRefreshError::Unavailable(_))
+        ));
+        assert!(
+            ProviderProfile {
+                provider_id: "openrouter".into(),
+                display_name: " ".into(),
+                auth_method: ProviderAuthMethod::None,
+                credential_reference_sha256: None,
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn defaults_validation_rejects_schema_and_malformed_records() {
+        let mut defaults = SharedProviderDefaults {
+            schema_version: 2,
+            entries: Vec::new(),
+        };
+        assert!(defaults.validate().is_err());
+        defaults.schema_version = 1;
+        defaults.entries.push(ProviderDefaultRecord {
+            scope: AgentScope::All,
+            provider_id: "bad/id".into(),
+            model_id: "model".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: None,
+        });
+        assert!(defaults.validate().is_err());
+        defaults.entries[0].provider_id = "provider".into();
+        defaults.entries[0].auth_method = ProviderAuthMethod::CredentialReference;
+        assert!(defaults.validate().is_err());
+        defaults.entries[0].credential_reference_sha256 = Some("f".repeat(64));
+        assert!(defaults.validate().is_ok());
+    }
+
+    #[test]
+    fn provider_diagnostics_and_error_projections_cover_empty_states() {
+        let empty = SharedProviderDefaults::default();
+        assert_eq!(empty.summary(), "0 provider defaults");
+        assert!(
+            empty
+                .diagnostic()
+                .to_string()
+                .contains("0 provider default(s)")
+        );
+        let mut record = ProviderDefaultRecord {
+            scope: AgentScope::All,
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: Some("f".repeat(64)),
+        };
+        assert!(record.validate().is_err());
+        record.auth_method = ProviderAuthMethod::CredentialReference;
+        record.credential_reference_sha256 = Some("bad".into());
+        assert!(record.validate().is_err());
+        for error in [
+            ProviderRefreshError::Invalid("bad".into()),
+            ProviderRefreshError::Unavailable("offline".into()),
+            ProviderRefreshError::Cancelled,
+        ] {
+            assert!(!error.to_string().is_empty());
+        }
+        let empty_registry = ConnectedProviderRegistry::new(None, None).unwrap();
+        assert!(empty_registry.available_models().is_empty());
+        assert_eq!(empty_registry.diagnostic().status, "not_configured");
+        let registry = ConnectedProviderRegistry::new(
+            None,
+            Some(ProviderProfile {
+                provider_id: "openrouter".into(),
+                display_name: "OpenRouter".into(),
+                auth_method: ProviderAuthMethod::None,
+                credential_reference_sha256: None,
+            }),
+        )
+        .unwrap();
+        assert!(registry.available_models().is_empty());
+        assert_eq!(registry.diagnostic().status, "unavailable");
+        assert!(
+            ProviderDefaultsStore::new("defaults.json")
+                .load_or_default()
+                .is_err()
+        );
+        assert!(
+            ProviderDefaultsStore::new("/no/such/parent/defaults.json")
+                .save(&SharedProviderDefaults::default())
+                .is_err()
+        );
+        let file_parent =
+            std::env::temp_dir().join(format!("asb-provider-parent-{}", std::process::id()));
+        std::fs::write(&file_parent, b"file").unwrap();
+        assert!(
+            ProviderDefaultsStore::new(file_parent.join("defaults.json"))
+                .save(&SharedProviderDefaults::default())
+                .is_err()
+        );
+        std::fs::remove_file(file_parent).unwrap();
+    }
+}
