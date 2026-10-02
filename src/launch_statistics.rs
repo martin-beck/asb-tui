@@ -601,6 +601,7 @@ mod tests {
             recording_campaign: None,
             recording_estimate: None,
             recording_campaign_lifecycle: None,
+            fanout: None,
             runs: vec![],
             analysis: None,
         }

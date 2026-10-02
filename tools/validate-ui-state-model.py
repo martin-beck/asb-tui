@@ -24,12 +24,12 @@ UI_OWNERS = {
     "src/landing.rs", "src/live_projection.rs", "src/renderer.rs",
     "src/reports.rs", "src/runtime.rs", "src/selection.rs", "src/shell.rs",
     "src/startup.rs", "src/terminal.rs", "src/ui.rs", "src/visual.rs",
-    "src/wizard.rs", "src/wizard_catalog.rs", "src/development_auth.rs",
+    "src/wizard.rs", "src/wizard_catalog.rs", "src/development_auth.rs", "src/fanout_dispatch.rs",
 }
 MODEL_FILES = {"docs/ui-state-model.json", "docs/ui-state-model.generated.json", "tools/generate-ui-state-model.py", "tools/validate-ui-state-model.py", "tools/test-ui-state-model.py"}
 INVENTORY = ROOT / "docs" / "ui-module-inventory.json"
 INVENTORY_FILE = "docs/ui-module-inventory.json"
-INVENTORY_KINDS = {"state", "interaction", "projection", "rendering", "terminal", "startup"}
+INVENTORY_KINDS = {"state", "interaction", "projection", "rendering", "terminal", "startup", "dispatch"}
 PATH_RE = re.compile(r"^src/[a-z0-9_]+\.rs$")
 
 

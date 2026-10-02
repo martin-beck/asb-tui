@@ -612,6 +612,41 @@ impl AuthenticatedBrokerSession {
         Ok(admission)
     }
 
+    /// Cancel the exact members returned by a prior fan-out admission.
+    /// Member identities are never reconstructed from UI state; the runner
+    /// validates each run/attempt pair against its durable binding.
+    pub fn cancel_fanout(
+        &mut self,
+        projection: &mut ControlProjection,
+        idempotency_key: String,
+        members: Vec<crate::control_codec::FanoutMember>,
+    ) -> Result<(), TransportError> {
+        self.require_version(crate::control_codec::V1_14)?;
+        let member_key = idempotency_key.clone();
+        let request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: RequestId(9_000_000_302),
+            timeout_ms: self.negotiated.limits.max_timeout_ms,
+            call: ControlCall::FanoutCancel(control_codec::FanoutCancelParams {
+                idempotency_key,
+                members: members
+                    .into_iter()
+                    .map(|member| {
+                        let run_id = member.run_id;
+                        let attempt_id = member.attempt_id;
+                        let idempotency_key = format!("{member_key}-{}", run_id.0);
+                        control_codec::CancelParams {
+                            run_id,
+                            attempt_id,
+                            idempotency_key,
+                        }
+                    })
+                    .collect(),
+            }),
+        };
+        self.apply_recording_response(projection, &request)
+    }
+
     /// Apply one wizard selection through the authenticated runner. The
     /// expected generation is read from the last authoritative projection,
     /// making stale concurrent edits fail closed at the backend boundary.

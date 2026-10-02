@@ -384,7 +384,7 @@
     {
       "action": "cancel_fanout",
       "element": "run.cancel",
-      "key": "X"
+      "key": "Ctrl-Z"
     }
   ],
   "routes": [

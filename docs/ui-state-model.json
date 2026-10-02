@@ -74,7 +74,7 @@
     ,{"action":"reopen_recording","element":"run.status","key":"U"}
     ,{"action":"remove_recording_cassette","element":"run.status","key":"D"}
     ,{"action":"admit_fanout","element":"run.start","key":"A"}
-    ,{"action":"cancel_fanout","element":"run.cancel","key":"X"}
+    ,{"action":"cancel_fanout","element":"run.cancel","key":"Ctrl-Z"}
   ],
   "routes": [
     {"id":"landing","elements":["landing.primary","navigation","status.connection"]},

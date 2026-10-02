@@ -71,6 +71,9 @@ pub struct LiveSnapshot {
     pub recording_campaign: Option<RecordingCampaignPlan>,
     pub recording_estimate: Option<RecordingCampaignEstimate>,
     pub recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
+    /// Last authenticated fan-out admission.  Absence means no admission has
+    /// been accepted by the runner; it is never inferred from local selection.
+    pub fanout: Option<FanoutAdmission>,
     pub runs: Vec<RunSummary>,
     /// Digest-bound result-analysis summary; the runner remains authoritative
     /// for the underlying measures and artifacts.
@@ -583,6 +586,7 @@ impl ControlProjection {
             recording_campaign: self.recording_campaign.clone(),
             recording_estimate: self.recording_estimate.clone(),
             recording_campaign_lifecycle: self.recording_campaign_lifecycle.clone(),
+            fanout: self.fanout.clone(),
             runs,
             analysis: self.analysis.clone(),
         }

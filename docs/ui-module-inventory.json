@@ -2,6 +2,7 @@
   "schema_version": 1,
   "ui_modules": [
     {"path":"src/actions.rs","kind":"interaction","responsibility":"Closed action registry including benchmark selection, cassette lifecycle repair, bounded retry, and digest-bound live/offline comparison commands"},
+    {"path":"src/fanout_dispatch.rs","kind":"dispatch","responsibility":"Typed selected-agent fan-out admission and exact-member cancellation dispatch with renderer-neutral pending state"},
     {"path":"src/adapter_catalog.rs","kind":"state","responsibility":"Stable coding-agent adapter catalog, provider/model/auth tuple compatibility, development-only opencode/opendesk fixtures, and transactional cancel/retry selection preservation"},
     {"path":"src/app.rs","kind":"state"},
     {"path":"src/configuration.rs","kind":"state","responsibility":"Bounded configuration drafts, local persistence, and fail-closed startup state"},
