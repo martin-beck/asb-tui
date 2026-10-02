@@ -41,6 +41,18 @@ pub struct CompatibilityOptions {
     pub auth_methods: Vec<AdapterOption>,
 }
 
+/// One deterministic result in the adapter/provider/model acceptance matrix.
+/// The report intentionally contains identifiers and typed status only; it
+/// never carries credentials or provider response bodies.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixCase {
+    pub adapter_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub supported: bool,
+    pub reason: Option<String>,
+}
+
 impl AdapterRecord {
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
@@ -159,6 +171,33 @@ impl CompatibilityMatrix {
     pub fn validate_offline(&self, selection: AdapterSelection) -> Result<(), SelectionError> {
         SelectionSession::new(self.catalog.clone()).validate(selection)
     }
+
+    /// Evaluate every provider/model tuple for every adapter in the catalog.
+    /// Ordering is stable (adapter, provider, model) because all catalog
+    /// collections are ordered. Unavailable providers remain in the report so
+    /// the TUI can explain a negative tuple without inventing an identifier.
+    pub fn evaluate(&self) -> Vec<MatrixCase> {
+        self.catalog
+            .records()
+            .flat_map(|adapter| {
+                adapter
+                    .providers
+                    .iter()
+                    .flat_map(move |(provider, models)| {
+                        models.iter().map(move |model| {
+                            let reason = self.unavailable.get(provider).cloned();
+                            MatrixCase {
+                                adapter_id: adapter.id.clone(),
+                                provider_id: provider.clone(),
+                                model_id: model.clone(),
+                                supported: reason.is_none(),
+                                reason,
+                            }
+                        })
+                    })
+            })
+            .collect()
+    }
 }
 
 impl AdapterCatalog {
@@ -228,7 +267,17 @@ impl AdapterCatalog {
                 });
             }
         }
-        Self::new([record])
+        // OpenCode and OpenDesk consume the same authoritative provider/model
+        // catalog. Adapter-specific capability filtering happens at selection
+        // time; dropping OpenDesk here made connected catalogs impossible to
+        // qualify for that route.
+        let opendesk = AdapterRecord {
+            id: "opendesk".into(),
+            label: "OpenDesk".into(),
+            providers: record.providers.clone(),
+            auth_methods: record.auth_methods.clone(),
+        };
+        Self::new([record, opendesk])
     }
 }
 
