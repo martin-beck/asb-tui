@@ -460,6 +460,7 @@ fn authenticated_projection_drives_repeatable_setup_without_secret_defaults() {
         recording_campaign: None,
         recording_estimate: None,
         recording_campaign_lifecycle: None,
+        fanout: None,
         runs: Vec::new(),
         analysis: None,
     });

@@ -36,6 +36,10 @@ pub const V1_13: ControlVersion = ControlVersion {
     major: 1,
     minor: 13,
 };
+pub const V1_14: ControlVersion = ControlVersion {
+    major: 1,
+    minor: 14,
+};
 /// Minimum negotiated version that exposes the authenticated agent catalog.
 pub const CONTROL_AGENT_CATALOG_V1: ControlVersion = V1_4;
 /// Minimum negotiated version that exposes verified local-agent lifecycle calls.
@@ -177,6 +181,8 @@ pub enum ControlCall {
         run_id: RunId,
         digest: String,
     },
+    Fanout(FanoutParams),
+    FanoutCancel(FanoutCancelParams),
     ProviderCatalog(ProviderCatalogRequest),
     ConfigurationStatus(ConfigurationStatusRequest),
     ConfigurationApply(ConfigurationApplyParams),
@@ -248,6 +254,8 @@ impl ControlCall {
             Self::RecordingCampaignRetry(_) => "recording_campaign_retry",
             Self::RecordingCassetteCatalog(_) => "recording_cassette_catalog",
             Self::RecordingReplayDispatch(_) => "recording_replay_dispatch",
+            Self::Fanout(_) => "fanout",
+            Self::FanoutCancel(_) => "fanout_cancel",
         }
     }
 
@@ -273,6 +281,7 @@ impl ControlCall {
             | Self::RecordingCampaignReopen(_)
             | Self::RecordingCampaignRemove(_)
             | Self::RecordingCampaignRetry(_) => Some(V1_13),
+            Self::Fanout(_) | Self::FanoutCancel(_) => Some(V1_14),
             Self::AgentCatalog(_) => Some(CONTROL_AGENT_CATALOG_V1),
             Self::AgentInstall(_)
             | Self::AgentStatus(_)
@@ -328,6 +337,31 @@ pub struct AuthHelperInvokeParams {
     pub provider: String,
     pub profile: Value,
     pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FanoutParams {
+    pub idempotency_key: String,
+    pub requests: Vec<Value>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FanoutCancelParams {
+    pub idempotency_key: String,
+    pub members: Vec<CancelParams>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FanoutMember {
+    pub run_id: RunId,
+    pub attempt_id: AttemptId,
+}
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FanoutAdmission {
+    pub idempotency_key: String,
+    pub members: Vec<FanoutMember>,
 }
 
 /// Public enrollment state. The lifecycle label is closed by the ASB
@@ -1190,6 +1224,7 @@ pub enum ControlResult {
     RecordingCampaignLifecycle(RecordingCampaignLifecycle),
     RecordingCassetteCatalog(RecordingCassetteCatalog),
     RecordingReplayDispatch(RecordingReplayDispatch),
+    Fanout(FanoutAdmission),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1378,6 +1413,7 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
                             | V1_10
                             | V1_12
                             | V1_13
+                            | V1_14
                     )
                 })
             {
@@ -1423,6 +1459,25 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
         ControlCall::ArtifactMetadata { run_id, digest } => {
             run_id.validate()?;
             validate_digest(digest)?;
+        }
+        ControlCall::Fanout(v) => {
+            validate_id(&v.idempotency_key)?;
+            if v.requests.is_empty() || v.requests.len() > 64 {
+                return Err(CodecError::InvalidValue("fanout.requests"));
+            }
+            for request in &v.requests {
+                validate_json(request)?;
+            }
+        }
+        ControlCall::FanoutCancel(v) => {
+            validate_id(&v.idempotency_key)?;
+            if v.members.is_empty() || v.members.len() > 64 {
+                return Err(CodecError::InvalidValue("fanout.members"));
+            }
+            for member in &v.members {
+                member.run_id.validate()?;
+                member.attempt_id.validate()?;
+            }
         }
         ControlCall::Capabilities => {}
         ControlCall::MeasurementCatalog => {}
@@ -1655,6 +1710,16 @@ fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), 
             validate_digest(&v.analysis_sha256)?;
         }
         ControlResult::ArtifactMetadata(v) => validate_digest(&v.sha256)?,
+        ControlResult::Fanout(v) => {
+            validate_id(&v.idempotency_key)?;
+            if v.members.is_empty() || v.members.len() > limits.max_in_flight as usize {
+                return Err(CodecError::InvalidValue("fanout.members"));
+            }
+            for member in &v.members {
+                member.run_id.validate()?;
+                member.attempt_id.validate()?;
+            }
+        }
         ControlResult::ProviderCatalog(v) => validate_provider_catalog(v)?,
         ControlResult::Configuration(v) => validate_configuration(v)?,
         ControlResult::RecordingCampaign(v) => validate_campaign_plan(v)?,
@@ -2002,6 +2067,8 @@ impl ControlResult {
                 | (ControlCall::Launch(_), Self::Launch(_))
                 | (ControlCall::Status { .. }, Self::Status(_))
                 | (ControlCall::Cancel(_), Self::Acknowledged(_))
+                | (ControlCall::Fanout(_), Self::Fanout(_))
+                | (ControlCall::FanoutCancel(_), Self::Acknowledged(_))
                 | (ControlCall::History(_), Self::History(_))
                 | (ControlCall::Repeat(_), Self::Plan(_))
                 | (ControlCall::Analyze { .. }, Self::Analysis(_))

@@ -28,6 +28,7 @@ pub mod development_journey;
 pub mod development_lifecycle;
 pub mod development_onboarding;
 pub mod development_router;
+pub mod fanout_dispatch;
 pub mod formal_state;
 pub mod frontend_handoff;
 pub mod help;

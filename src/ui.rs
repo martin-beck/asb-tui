@@ -2492,6 +2492,7 @@ mod tests {
             recording_campaign: None,
             recording_estimate: None,
             recording_campaign_lifecycle: None,
+            fanout: None,
             runs: Vec::new(),
             analysis: None,
         };
@@ -2555,6 +2556,7 @@ mod tests {
             recording_campaign: None,
             recording_estimate: None,
             recording_campaign_lifecycle: None,
+            fanout: None,
             runs: Vec::new(),
             analysis: None,
         };
@@ -2644,6 +2646,7 @@ mod tests {
             recording_campaign: None,
             recording_estimate: None,
             recording_campaign_lifecycle: None,
+            fanout: None,
             runs: Vec::new(),
             analysis: None,
         };
@@ -2789,6 +2792,7 @@ mod tests {
             recording_campaign: None,
             recording_estimate: None,
             recording_campaign_lifecycle: None,
+            fanout: None,
             runs: Vec::new(),
             analysis: None,
         });
@@ -2975,6 +2979,7 @@ mod tests {
             recording_campaign: None,
             recording_estimate: None,
             recording_campaign_lifecycle: None,
+            fanout: None,
             runs: vec![RunSummary {
                 run_id: RunId("run-7".into()),
                 attempt_id: AttemptId("attempt-7".into()),

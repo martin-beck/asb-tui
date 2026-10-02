@@ -9,9 +9,9 @@
 
 use crate::control_codec::{
     AnalysisSummary, AuthStatusResponse, ConfigurationSnapshot, ControlCall, ControlLimits,
-    ControlRequest, ControlResponse, ControlResult, ControlSuccess, MeasurementCatalog, Negotiated,
-    ProviderCatalog, RecordingCampaignEstimate, RecordingCampaignLifecycle, RecordingCampaignPlan,
-    Revision, RunSummary,
+    ControlRequest, ControlResponse, ControlResult, ControlSuccess, FanoutAdmission,
+    MeasurementCatalog, Negotiated, ProviderCatalog, RecordingCampaignEstimate,
+    RecordingCampaignLifecycle, RecordingCampaignPlan, Revision, RunSummary,
 };
 use std::{collections::BTreeMap, fmt};
 
@@ -71,6 +71,9 @@ pub struct LiveSnapshot {
     pub recording_campaign: Option<RecordingCampaignPlan>,
     pub recording_estimate: Option<RecordingCampaignEstimate>,
     pub recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
+    /// Last authenticated fan-out admission.  Absence means no admission has
+    /// been accepted by the runner; it is never inferred from local selection.
+    pub fanout: Option<FanoutAdmission>,
     pub runs: Vec<RunSummary>,
     /// Digest-bound result-analysis summary; the runner remains authoritative
     /// for the underlying measures and artifacts.
@@ -120,6 +123,7 @@ pub struct ControlProjection {
     recording_campaign: Option<RecordingCampaignPlan>,
     recording_estimate: Option<RecordingCampaignEstimate>,
     recording_campaign_lifecycle: Option<RecordingCampaignLifecycle>,
+    fanout: Option<FanoutAdmission>,
     runs: BTreeMap<String, RunSummary>,
     analysis: Option<AnalysisSummary>,
 }
@@ -343,6 +347,17 @@ impl ControlProjection {
                 }
                 self.configuration = Some(value.clone());
             }
+            (ControlCall::Fanout(_), ControlResult::Fanout(value)) => {
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_none_or(|session| session.version < crate::control_codec::V1_14)
+                {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.fanout = Some(value.clone());
+            }
+            (ControlCall::FanoutCancel(_), ControlResult::Acknowledged(_)) => {}
             (
                 ControlCall::AuthHelperInvoke(_) | ControlCall::AuthStatus(_),
                 ControlResult::AuthStatus(value),
@@ -571,6 +586,7 @@ impl ControlProjection {
             recording_campaign: self.recording_campaign.clone(),
             recording_estimate: self.recording_estimate.clone(),
             recording_campaign_lifecycle: self.recording_campaign_lifecycle.clone(),
+            fanout: self.fanout.clone(),
             runs,
             analysis: self.analysis.clone(),
         }

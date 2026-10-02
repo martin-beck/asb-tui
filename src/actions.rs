@@ -34,6 +34,8 @@ pub enum UiAction {
     ToggleBenchmark,
     StartRun,
     CancelRun,
+    AdmitFanout,
+    CancelFanout,
     RefreshRuns,
     CompareRuns,
     RefreshProviderCatalog,
@@ -64,7 +66,7 @@ pub enum UiAction {
 
 impl UiAction {
     /// Every action, in stable display order.
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 47] = [
         Self::Quit,
         Self::GoBack,
         Self::OpenLanding,
@@ -84,6 +86,8 @@ impl UiAction {
         Self::ToggleBenchmark,
         Self::StartRun,
         Self::CancelRun,
+        Self::AdmitFanout,
+        Self::CancelFanout,
         Self::RefreshRuns,
         Self::CompareRuns,
         Self::RefreshProviderCatalog,
@@ -135,6 +139,8 @@ impl UiAction {
             Self::ToggleBenchmark => "toggle_benchmark",
             Self::StartRun => "start_run",
             Self::CancelRun => "cancel_run",
+            Self::AdmitFanout => "admit_fanout",
+            Self::CancelFanout => "cancel_fanout",
             Self::RefreshRuns => "refresh_runs",
             Self::CompareRuns => "compare_runs",
             Self::RefreshProviderCatalog => "refresh_provider_catalog",
@@ -190,6 +196,8 @@ impl KeyChord {
             Self::Char('s') => "s",
             Self::Char('q') => "q",
             Self::Char('R') => "R",
+            Self::Char('A') => "A",
+            Self::Char('X') => "X",
             Self::Char('a') => "a",
             Self::Char(' ') => "Space",
             Self::Char(_) => "key",
@@ -297,7 +305,10 @@ const fn action_context_route(action: UiAction) -> Route {
         | UiAction::SelectBenchmarkPool
         | UiAction::ToggleBenchmarkGroup
         | UiAction::ToggleBenchmark => Route::MeasurementSelection,
-        UiAction::StartRun | UiAction::CancelRun => Route::RunControl,
+        UiAction::StartRun
+        | UiAction::CancelRun
+        | UiAction::AdmitFanout
+        | UiAction::CancelFanout => Route::RunControl,
         UiAction::EstimateRecording
         | UiAction::PlanRecording
         | UiAction::ConfirmRecordingCapture
@@ -462,6 +473,20 @@ fn descriptor(
             KeyChord::Ctrl('c'),
             "Cancel run",
             "Request cancellation of the active run",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::AdmitFanout => (
+            KeyChord::Char('A'),
+            "Admit fan-out",
+            "Admit the selected agents as one bounded fan-out",
+            ActionContext::Route(Route::RunControl),
+            None,
+        ),
+        UiAction::CancelFanout => (
+            KeyChord::Ctrl('z'),
+            "Cancel fan-out",
+            "Cancel every admitted fan-out member by exact identity",
             ActionContext::Route(Route::RunControl),
             None,
         ),
@@ -713,9 +738,15 @@ fn action_backend_status(
         };
     };
     match action {
-        UiAction::StartRun if !caps.launch => Some(ActionDisabledReason::Launch),
-        UiAction::CancelRun if !caps.cancel => Some(ActionDisabledReason::Cancel),
-        UiAction::CancelRun if !caps.events => Some(ActionDisabledReason::Events),
+        UiAction::StartRun | UiAction::AdmitFanout if !caps.launch => {
+            Some(ActionDisabledReason::Launch)
+        }
+        UiAction::CancelRun | UiAction::CancelFanout if !caps.cancel => {
+            Some(ActionDisabledReason::Cancel)
+        }
+        UiAction::CancelRun | UiAction::CancelFanout if !caps.events => {
+            Some(ActionDisabledReason::Events)
+        }
         UiAction::RefreshRuns | UiAction::CompareRuns if !caps.history => {
             Some(ActionDisabledReason::History)
         }
@@ -782,7 +813,7 @@ mod tests {
                 .any(|d| d.action == UiAction::ToggleMeasure)
         );
         assert!(!descriptors.iter().any(|d| d.action == UiAction::StartRun));
-        assert_eq!(UiAction::ALL.len(), 45);
+        assert_eq!(UiAction::ALL.len(), 47);
         for action in UiAction::ALL {
             assert!(
                 ActionRegistry::search(action.id())
