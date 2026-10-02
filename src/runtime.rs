@@ -31,6 +31,11 @@ use signal_hook::{
 };
 use std::{
     fmt, io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver},
+    },
     time::{Duration, Instant},
 };
 
@@ -611,8 +616,18 @@ fn run_interactive_loop(
     let mut terminal = Terminal::new(backend)?;
     let mut recording_state: Option<crate::recording_dispatch::RecordingDispatchState> = None;
     let mut active_adapter_id: Option<String> = None;
+    let mut development_worker: Option<(
+        Arc<AtomicBool>,
+        Receiver<crate::development_lifecycle::Response>,
+    )> = None;
     let mut next_live_refresh = Instant::now();
     while !state.should_quit() {
+        if let Some((_, receiver)) = development_worker.as_ref()
+            && let Ok(response) = receiver.try_recv()
+        {
+            workspace.development_handoff.apply_response(&response);
+            development_worker = None;
+        }
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
         if let (Some(control), Some(projection)) =
             (control.as_deref_mut(), projection.as_deref_mut())
@@ -655,6 +670,44 @@ fn run_interactive_loop(
                     let ui_action = workspace.handle_key(key);
                     if matches!(ui_action, ui::UiAction::Quit) {
                         state.apply(Action::Quit)?;
+                    }
+                    if let ui::UiAction::Control(control_action) = ui_action
+                        && matches!(
+                            control_action,
+                            crate::actions::UiAction::MaterializeDevelopment
+                                | crate::actions::UiAction::RetryDevelopment
+                        )
+                    {
+                        if development_mode {
+                            let operation = workspace.development_handoff.operation();
+                            let cancelled = Arc::new(AtomicBool::new(false));
+                            let worker_cancelled = Arc::clone(&cancelled);
+                            let (sender, receiver) = mpsc::channel();
+                            std::thread::spawn(move || {
+                                let response = crate::development_lifecycle::execute_with_cancel(
+                                    operation,
+                                    &worker_cancelled,
+                                );
+                                let _ = sender.send(response);
+                            });
+                            development_worker = Some((cancelled, receiver));
+                        } else {
+                            workspace.development_handoff.phase =
+                                crate::development_handoff::Phase::Failed;
+                            workspace.development_handoff.code =
+                                "development_profile_required".into();
+                        }
+                        continue;
+                    }
+                    if matches!(
+                        ui_action,
+                        ui::UiAction::Control(crate::actions::UiAction::CancelDevelopment)
+                    ) {
+                        if let Some((cancelled, _)) = development_worker.as_ref() {
+                            cancelled.store(true, Ordering::Relaxed);
+                        }
+                        workspace.development_handoff.cancel();
+                        continue;
                     }
                     if let ui::UiAction::Control(control_action) = ui_action
                         && let (Some(control), Some(projection)) =
@@ -856,6 +909,10 @@ fn run_interactive_loop(
             }
         }
         handle_signals(&mut signals, &mut session, &mut terminal, policy)?;
+    }
+    if let Some((cancelled, receiver)) = development_worker.take() {
+        cancelled.store(true, Ordering::Relaxed);
+        let _ = receiver.recv_timeout(Duration::from_secs(5));
     }
     drop(terminal);
     session.restore()

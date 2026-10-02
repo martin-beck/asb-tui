@@ -73,6 +73,38 @@ fn development_catalog_fallback_is_declared_in_the_formal_model() {
 }
 
 #[test]
+fn development_handoff_actions_are_formally_executable_and_bounded() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    assert!(
+        model["state_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "development_handoff")
+    );
+    let bindings = model["bindings"].as_array().unwrap();
+    for action in [
+        "open_development_handoff",
+        "materialize_development",
+        "cancel_development",
+        "retry_development",
+    ] {
+        assert!(bindings.iter().any(|binding| binding["action"] == action));
+    }
+    let mut state = FormalUiState::new(100, 30).unwrap();
+    state
+        .apply(FormalEvent::OpenDevelopmentHandoff, None)
+        .unwrap();
+    state
+        .apply(FormalEvent::MaterializeDevelopment, None)
+        .unwrap();
+    state.apply(FormalEvent::CancelDevelopment, None).unwrap();
+    state.apply(FormalEvent::RetryDevelopment, None).unwrap();
+    assert_eq!(state.route(), Route::Landing);
+}
+
+#[test]
 fn stale_live_catalog_publications_are_declared_in_the_formal_model() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();

@@ -62,11 +62,15 @@ pub enum UiAction {
     WizardDevelopmentRestart,
     OpenPreflight,
     ApplyPreflight,
+    OpenDevelopmentHandoff,
+    MaterializeDevelopment,
+    CancelDevelopment,
+    RetryDevelopment,
 }
 
 impl UiAction {
     /// Every action, in stable display order.
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 51] = [
         Self::Quit,
         Self::GoBack,
         Self::OpenLanding,
@@ -114,6 +118,10 @@ impl UiAction {
         Self::WizardDevelopmentRestart,
         Self::OpenPreflight,
         Self::ApplyPreflight,
+        Self::OpenDevelopmentHandoff,
+        Self::MaterializeDevelopment,
+        Self::CancelDevelopment,
+        Self::RetryDevelopment,
     ];
 
     /// Stable machine-readable action identifier for recordings and help
@@ -167,6 +175,10 @@ impl UiAction {
             Self::WizardDevelopmentRestart => "wizard_development_restart",
             Self::OpenPreflight => "open_preflight",
             Self::ApplyPreflight => "apply_preflight",
+            Self::OpenDevelopmentHandoff => "open_development_handoff",
+            Self::MaterializeDevelopment => "materialize_development",
+            Self::CancelDevelopment => "cancel_development",
+            Self::RetryDevelopment => "retry_development",
         }
     }
 }
@@ -672,6 +684,34 @@ fn descriptor(
             ActionContext::Route(Route::Configuration),
             None,
         ),
+        UiAction::OpenDevelopmentHandoff => (
+            KeyChord::Char('d'),
+            "Open development handoff",
+            "Clone, build, and install the selected development channel",
+            ActionContext::Route(Route::Landing),
+            None,
+        ),
+        UiAction::MaterializeDevelopment => (
+            KeyChord::Char('I'),
+            "Materialize development channel",
+            "Build a temporary candidate and activate it atomically",
+            ActionContext::Route(Route::Landing),
+            None,
+        ),
+        UiAction::CancelDevelopment => (
+            KeyChord::Char('X'),
+            "Cancel development handoff",
+            "Stop the handoff and preserve the previous installation",
+            ActionContext::Route(Route::Landing),
+            None,
+        ),
+        UiAction::RetryDevelopment => (
+            KeyChord::Char('Y'),
+            "Retry development handoff",
+            "Retry after cleanup or a recoverable activation failure",
+            ActionContext::Route(Route::Landing),
+            None,
+        ),
     };
     let relevant = match context {
         ActionContext::Global => true,
@@ -730,6 +770,10 @@ fn action_backend_status(
             | UiAction::WizardDevelopmentRestart
             | UiAction::OpenPreflight
             | UiAction::ApplyPreflight
+            | UiAction::OpenDevelopmentHandoff
+            | UiAction::MaterializeDevelopment
+            | UiAction::CancelDevelopment
+            | UiAction::RetryDevelopment
             | UiAction::FocusBenchmarkSearch
             | UiAction::SelectBenchmarkPool
             | UiAction::ToggleBenchmarkGroup
@@ -813,7 +857,7 @@ mod tests {
                 .any(|d| d.action == UiAction::ToggleMeasure)
         );
         assert!(!descriptors.iter().any(|d| d.action == UiAction::StartRun));
-        assert_eq!(UiAction::ALL.len(), 47);
+        assert_eq!(UiAction::ALL.len(), 51);
         for action in UiAction::ALL {
             assert!(
                 ActionRegistry::search(action.id())

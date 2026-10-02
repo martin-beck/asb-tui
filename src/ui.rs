@@ -34,6 +34,7 @@ use std::path::PathBuf;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
     Landing,
+    DevelopmentHandoff,
     Wizard,
     Measures,
     Configuration,
@@ -66,6 +67,7 @@ pub enum ConfigurationSaveState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceState {
     pub screen: Screen,
+    pub development_handoff: crate::development_handoff::HandoffProjection,
     pub help: bool,
     pub search: String,
     pub measure_cursor: usize,
@@ -128,6 +130,7 @@ impl Default for WorkspaceState {
         let benchmark_selection = default_benchmark_selection();
         Self {
             screen: Screen::Landing,
+            development_handoff: Default::default(),
             // Live setup is stable by default; development fixtures are
             // installed only by ensure_development_catalog after an explicit
             // development readiness decision.
@@ -1032,6 +1035,34 @@ impl WorkspaceState {
                 _ => UiAction::None,
             };
         }
+        if self.screen == Screen::DevelopmentHandoff {
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('1') => {
+                    self.screen = Screen::Landing;
+                    UiAction::None
+                }
+                KeyCode::Char(' ') | KeyCode::Enter
+                    if self.development_handoff.phase
+                        == crate::development_handoff::Phase::Ready =>
+                {
+                    self.development_handoff.begin();
+                    UiAction::Control(crate::actions::UiAction::MaterializeDevelopment)
+                }
+                KeyCode::Char('x') => {
+                    self.development_handoff.cancel();
+                    UiAction::Control(crate::actions::UiAction::CancelDevelopment)
+                }
+                KeyCode::Char('r') => {
+                    self.development_handoff.begin_retry();
+                    UiAction::Control(crate::actions::UiAction::RetryDevelopment)
+                }
+                KeyCode::Char('?') | KeyCode::Char('h') => {
+                    self.help = true;
+                    UiAction::None
+                }
+                _ => UiAction::None,
+            };
+        }
         if self.screen == Screen::Configuration
             && key.code == KeyCode::Char('s')
             && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1104,6 +1135,10 @@ impl WorkspaceState {
             return UiAction::Control(crate::actions::UiAction::RemoveRecordingCassette);
         }
         match key.code {
+            KeyCode::Char('d') if self.screen == Screen::Landing => {
+                self.screen = Screen::DevelopmentHandoff;
+                UiAction::None
+            }
             KeyCode::Char('f') if self.screen == Screen::Configuration => {
                 UiAction::Control(crate::actions::UiAction::RefreshProviderCatalog)
             }
@@ -1737,6 +1772,7 @@ fn default_benchmark_selection() -> BenchmarkSelection {
 fn next_screen(screen: Screen) -> Screen {
     match screen {
         Screen::Landing => Screen::Measures,
+        Screen::DevelopmentHandoff => Screen::Landing,
         Screen::Wizard => Screen::Measures,
         Screen::Measures => Screen::Configuration,
         Screen::Configuration => Screen::RunControl,
@@ -1747,6 +1783,7 @@ fn next_screen(screen: Screen) -> Screen {
 fn previous_screen(screen: Screen) -> Screen {
     match screen {
         Screen::Landing => Screen::Reports,
+        Screen::DevelopmentHandoff => Screen::Landing,
         Screen::Wizard => Screen::Landing,
         Screen::Measures => Screen::Landing,
         Screen::Configuration => Screen::Measures,
@@ -1765,6 +1802,10 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
         }
         return;
     }
+    if state.screen == Screen::DevelopmentHandoff {
+        render_development_handoff(frame, area, state, policy);
+        return;
+    }
     if area.width < 38 || area.height < 8 {
         render_compact(frame, area, policy);
         return;
@@ -1780,6 +1821,7 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
     let titles = ["1 Home", "2 Measures", "3 Configure", "s Run", "4 Reports"];
     let selected = match state.screen {
         Screen::Landing => 0,
+        Screen::DevelopmentHandoff => 0,
         Screen::Wizard => 2,
         Screen::Measures => 1,
         Screen::Configuration => 2,
@@ -1800,6 +1842,7 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
     );
     match state.screen {
         Screen::Landing => landing(frame, chunks[1], state, policy),
+        Screen::DevelopmentHandoff => unreachable!(),
         Screen::Wizard => unreachable!("wizard is rendered before workspace layout"),
         Screen::Measures => measures(frame, chunks[1], state, policy),
         Screen::Configuration => configuration(frame, chunks[1], state, policy),
@@ -1854,10 +1897,36 @@ fn landing(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: Re
         inner[1],
     );
     frame.render_widget(
-        Paragraph::new("Press 2 to choose measures  |  3 to configure  |  4 to inspect reports")
-            .alignment(Alignment::Center)
-            .style(muted(policy)),
+        Paragraph::new(
+            "Press d for development handoff  |  2 measures  |  3 configure  |  4 reports",
+        )
+        .alignment(Alignment::Center)
+        .style(muted(policy)),
         inner[2],
+    );
+}
+
+fn render_development_handoff(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &WorkspaceState,
+    policy: RenderPolicy,
+) {
+    let lines = state
+        .development_handoff
+        .human_lines()
+        .into_iter()
+        .map(Line::from)
+        .chain([
+            Line::from(""),
+            Line::from("Enter/Space start | x cancel | r retry | Esc back"),
+        ])
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .block(panel(" Development channel handoff ", policy)),
+        area,
     );
 }
 
@@ -2177,6 +2246,7 @@ fn footer(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: Ren
     };
     let context = match state.screen {
         Screen::Landing => "w setup   2 measures   3 configure   4 reports",
+        Screen::DevelopmentHandoff => "Enter start   x cancel   r retry   Esc back",
         Screen::Wizard => "Enter next   Esc back   q cancel",
         Screen::Measures => "Up/Down move   Space item   g group   type search",
         Screen::Configuration => "Up/Down move   Enter edit   Ctrl-S save",

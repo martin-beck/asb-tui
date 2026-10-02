@@ -20,11 +20,9 @@ use std::{
     time::Duration,
 };
 
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
-use std::sync::{
-    Mutex, OnceLock,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::{Mutex, OnceLock, atomic::AtomicUsize};
 
 const CHANNEL: &str = "dev";
 const DEFAULT_REPOSITORY: &str = "https://github.com/martin-beck/asb-tui.git";
@@ -340,7 +338,11 @@ fn bounded_size(root: &Path, limit: u64) -> Result<u64, &'static str> {
 }
 
 #[cfg(not(test))]
-fn run_bounded(mut command: Command, workspace: &Path) -> Result<Vec<u8>, &'static str> {
+fn run_bounded(
+    mut command: Command,
+    workspace: &Path,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Vec<u8>, &'static str> {
     command.stdout(Stdio::piped()).stderr(Stdio::null());
     let mut child = command
         .spawn()
@@ -365,6 +367,13 @@ fn run_bounded(mut command: Command, workspace: &Path) -> Result<Vec<u8>, &'stat
     });
     let started = std::time::Instant::now();
     loop {
+        if cancelled.is_some_and(|value| value.load(Ordering::Relaxed)) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err("development_cancelled");
+        }
         match bounded_size(workspace, MAX_WORKSPACE_BYTES) {
             Ok(size) if size <= MAX_WORKSPACE_BYTES => {}
             Ok(_) => {
@@ -410,7 +419,11 @@ fn run_bounded(mut command: Command, workspace: &Path) -> Result<Vec<u8>, &'stat
 }
 
 #[cfg(not(test))]
-fn source_identity(source: &Path, name: &str) -> Result<String, &'static str> {
+fn source_identity(
+    source: &Path,
+    name: &str,
+    cancelled: Option<&AtomicBool>,
+) -> Result<String, &'static str> {
     let tools = trusted_toolchain()?;
     let output = run_bounded(
         {
@@ -428,6 +441,7 @@ fn source_identity(source: &Path, name: &str) -> Result<String, &'static str> {
             command
         },
         source,
+        cancelled,
     )?;
     let value = String::from_utf8(output).map_err(|_| "development_provenance_invalid")?;
     let value = value.trim();
@@ -439,7 +453,10 @@ fn source_identity(source: &Path, name: &str) -> Result<String, &'static str> {
 }
 
 #[cfg(not(test))]
-fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
+fn build_candidate(
+    workspace: &Path,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(Vec<u8>, State), &'static str> {
     let source = workspace.join("source");
     let target = workspace.join("target");
     let cargo_home = workspace.join("cargo-home");
@@ -469,9 +486,9 @@ fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_TERMINAL_PROMPT", "0")
         .arg(&source);
-    run_bounded(clone, workspace)?;
-    let commit = source_identity(&source, "HEAD")?;
-    let tree = source_identity(&source, "HEAD^{tree}")?;
+    run_bounded(clone, workspace, cancelled)?;
+    let commit = source_identity(&source, "HEAD", cancelled)?;
+    let tree = source_identity(&source, "HEAD^{tree}", cancelled)?;
     let mut build = Command::new(&tools.setsid);
     build
         .args(["--wait"])
@@ -513,7 +530,7 @@ fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
     if let Some(rustup_home) = rustup_home {
         build.env("RUSTUP_HOME", rustup_home);
     }
-    run_bounded(build, workspace)?;
+    run_bounded(build, workspace, cancelled)?;
     let executable = target.join("release/asb-tui");
     let metadata = fs::metadata(&executable).map_err(|_| "development_build_missing")?;
     if !metadata.is_file() {
@@ -533,7 +550,13 @@ fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
 }
 
 #[cfg(test)]
-fn build_candidate(_workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
+fn build_candidate(
+    _workspace: &Path,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(Vec<u8>, State), &'static str> {
+    if cancelled.is_some_and(|value| value.load(Ordering::Relaxed)) {
+        return Err("development_cancelled");
+    }
     let bytes = b"test-development-build".to_vec();
     Ok((
         bytes.clone(),
@@ -549,7 +572,11 @@ fn build_candidate(_workspace: &Path) -> Result<(Vec<u8>, State), &'static str> 
     ))
 }
 
-fn materialize(root: &Path, replacing: bool) -> Result<Response, &'static str> {
+fn materialize(
+    root: &Path,
+    replacing: bool,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Response, &'static str> {
     private_root(root)?;
     if !replacing && read_state(root)?.is_some() {
         return Err("development_already_installed");
@@ -567,7 +594,10 @@ fn materialize(root: &Path, replacing: bool) -> Result<Response, &'static str> {
     fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700))
         .map_err(|_| "development_workspace_create_failed")?;
     let result = (|| {
-        let (bytes, state) = build_candidate(&workspace)?;
+        let (bytes, state) = build_candidate(&workspace, cancelled)?;
+        if cancelled.is_some_and(|value| value.load(Ordering::Relaxed)) {
+            return Err("development_cancelled");
+        }
         let staged = stage.join("asb-tui");
         fs::write(&staged, &bytes).map_err(|_| "development_stage_failed")?;
         fs::set_permissions(&staged, fs::Permissions::from_mode(0o700))
@@ -632,17 +662,20 @@ fn materialize(root: &Path, replacing: bool) -> Result<Response, &'static str> {
     Ok(status(root))
 }
 
-pub fn execute(operation: &str) -> Response {
+pub fn execute_with_cancel(operation: &str, cancelled: &AtomicBool) -> Response {
     let Ok(root) = root() else {
         return response("development_root_invalid", false);
     };
     match operation {
-        "install" => materialize(&root, false).unwrap_or_else(|code| response(code, false)),
+        "install" => {
+            materialize(&root, false, Some(cancelled)).unwrap_or_else(|code| response(code, false))
+        }
         "upgrade" => {
             if read_state(&root).ok().flatten().is_none() {
                 response("development_not_installed", false)
             } else {
-                materialize(&root, true).unwrap_or_else(|code| response(code, false))
+                materialize(&root, true, Some(cancelled))
+                    .unwrap_or_else(|code| response(code, false))
             }
         }
         "status" => status(&root),
@@ -695,6 +728,10 @@ pub fn execute(operation: &str) -> Response {
     }
 }
 
+pub fn execute(operation: &str) -> Response {
+    execute_with_cancel(operation, &AtomicBool::new(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,11 +766,11 @@ mod tests {
     fn second_activation_rename_restores_previous_pair() {
         let _guard = activation_test_guard();
         let root = temp_root("rollback");
-        assert!(materialize(&root, false).unwrap().verified);
+        assert!(materialize(&root, false, None).unwrap().verified);
         let before = status(&root);
         FAIL_RENAME_AT.store(2, Ordering::SeqCst);
         assert_eq!(
-            materialize(&root, true),
+            materialize(&root, true, None),
             Err("development_activation_failed")
         );
         FAIL_RENAME_AT.store(0, Ordering::SeqCst);
@@ -753,17 +790,17 @@ mod tests {
         let root = temp_root("operations");
         assert_eq!(status(&root).code, "development_not_installed");
         assert_eq!(
-            materialize(&root, false).unwrap().code,
+            materialize(&root, false, None).unwrap().code,
             "development_installed"
         );
         assert_eq!(
-            materialize(&root, false),
+            materialize(&root, false, None),
             Err("development_already_installed")
         );
         let installed = status(&root);
         assert!(installed.installed && installed.verified);
         assert_eq!(
-            materialize(&root, true).unwrap().code,
+            materialize(&root, true, None).unwrap().code,
             "development_installed"
         );
         assert_eq!(status(&root).code, "development_installed");
@@ -771,6 +808,20 @@ mod tests {
         assert_eq!(status(&root).code, "development_installation_invalid");
         fs::rename(root.join("asb-tui.staged"), root.join("asb-tui")).unwrap();
         assert_eq!(status(&root).code, "development_installed");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pre_cancelled_materialization_never_creates_an_install() {
+        let _guard = activation_test_guard();
+        let root = temp_root("cancelled");
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            materialize(&root, false, Some(&cancelled)),
+            Err("development_cancelled")
+        );
+        assert!(!root.join("asb-tui").exists());
+        assert!(!root.join("provenance.json").exists());
         fs::remove_dir_all(root).unwrap();
     }
 

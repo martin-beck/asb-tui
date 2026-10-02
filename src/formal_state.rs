@@ -70,6 +70,10 @@ pub enum FormalEvent {
     OpenRecentRuns,
     OpenReports,
     OpenHelp,
+    OpenDevelopmentHandoff,
+    MaterializeDevelopment,
+    CancelDevelopment,
+    RetryDevelopment,
     GoBack,
     SaveConfiguration,
     OpenPreflight,
@@ -91,6 +95,10 @@ impl FormalEvent {
             Self::OpenRecentRuns => Some("open_recent_runs"),
             Self::OpenReports => Some("open_reports"),
             Self::OpenHelp => Some("open_help"),
+            Self::OpenDevelopmentHandoff => Some("open_development_handoff"),
+            Self::MaterializeDevelopment => Some("materialize_development"),
+            Self::CancelDevelopment => Some("cancel_development"),
+            Self::RetryDevelopment => Some("retry_development"),
             Self::GoBack => Some("go_back"),
             Self::SaveConfiguration => Some("save_configuration"),
             Self::OpenPreflight => Some("open_preflight"),
@@ -204,6 +212,15 @@ impl FormalUiState {
                     &["preflight_opened", "focus_reset"]
                 } else if event == FormalEvent::ApplyPreflight {
                     &["configuration_materialized", "focus_reset"]
+                } else if event == FormalEvent::OpenDevelopmentHandoff {
+                    &["development_handoff_opened", "focus_reset"]
+                } else if matches!(
+                    event,
+                    FormalEvent::MaterializeDevelopment
+                        | FormalEvent::CancelDevelopment
+                        | FormalEvent::RetryDevelopment
+                ) {
+                    &["development_handoff_changed", "focus_reset"]
                 } else if event == FormalEvent::GoBack {
                     &["route_restored", "focus_reset"]
                 } else if event == FormalEvent::OpenHelp {
@@ -326,6 +343,13 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["preflight_opened", "focus_reset"].as_slice()
         } else if transition.event == "apply_preflight" {
             ["configuration_materialized", "focus_reset"].as_slice()
+        } else if transition.event == "open_development_handoff" {
+            ["development_handoff_opened", "focus_reset"].as_slice()
+        } else if matches!(
+            transition.event.as_str(),
+            "materialize_development" | "cancel_development" | "retry_development"
+        ) {
+            ["development_handoff_changed", "focus_reset"].as_slice()
         } else if matches!(
             transition.event.as_str(),
             "edit_configuration" | "backspace_configuration"
