@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 """Run the AR-1676 channel matrix against a disposable TUI executable.
 
 Every command is attached to a fresh PTY and a private install/config root.
