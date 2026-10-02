@@ -36,7 +36,10 @@ pub const V1_13: ControlVersion = ControlVersion {
     major: 1,
     minor: 13,
 };
-pub const V1_14: ControlVersion = ControlVersion { major: 1, minor: 14 };
+pub const V1_14: ControlVersion = ControlVersion {
+    major: 1,
+    minor: 14,
+};
 /// Minimum negotiated version that exposes the authenticated agent catalog.
 pub const CONTROL_AGENT_CATALOG_V1: ControlVersion = V1_4;
 /// Minimum negotiated version that exposes verified local-agent lifecycle calls.
@@ -1459,13 +1462,22 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
         }
         ControlCall::Fanout(v) => {
             validate_id(&v.idempotency_key)?;
-            if v.requests.is_empty() || v.requests.len() > 64 { return Err(CodecError::InvalidValue("fanout.requests")); }
-            for request in &v.requests { validate_json(request)?; }
+            if v.requests.is_empty() || v.requests.len() > 64 {
+                return Err(CodecError::InvalidValue("fanout.requests"));
+            }
+            for request in &v.requests {
+                validate_json(request)?;
+            }
         }
         ControlCall::FanoutCancel(v) => {
             validate_id(&v.idempotency_key)?;
-            if v.members.is_empty() || v.members.len() > 64 { return Err(CodecError::InvalidValue("fanout.members")); }
-            for member in &v.members { member.run_id.validate()?; member.attempt_id.validate()?; }
+            if v.members.is_empty() || v.members.len() > 64 {
+                return Err(CodecError::InvalidValue("fanout.members"));
+            }
+            for member in &v.members {
+                member.run_id.validate()?;
+                member.attempt_id.validate()?;
+            }
         }
         ControlCall::Capabilities => {}
         ControlCall::MeasurementCatalog => {}
@@ -1700,8 +1712,13 @@ fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), 
         ControlResult::ArtifactMetadata(v) => validate_digest(&v.sha256)?,
         ControlResult::Fanout(v) => {
             validate_id(&v.idempotency_key)?;
-            if v.members.is_empty() || v.members.len() > limits.max_in_flight as usize { return Err(CodecError::InvalidValue("fanout.members")); }
-            for member in &v.members { member.run_id.validate()?; member.attempt_id.validate()?; }
+            if v.members.is_empty() || v.members.len() > limits.max_in_flight as usize {
+                return Err(CodecError::InvalidValue("fanout.members"));
+            }
+            for member in &v.members {
+                member.run_id.validate()?;
+                member.attempt_id.validate()?;
+            }
         }
         ControlResult::ProviderCatalog(v) => validate_provider_catalog(v)?,
         ControlResult::Configuration(v) => validate_configuration(v)?,

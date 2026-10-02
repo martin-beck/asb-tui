@@ -591,13 +591,24 @@ impl AuthenticatedBrokerSession {
             jsonrpc: control_codec::JSONRPC_VERSION.into(),
             id: RequestId(9_000_000_301),
             timeout_ms: self.negotiated.limits.max_timeout_ms,
-            call: ControlCall::Fanout(control_codec::FanoutParams { idempotency_key, requests }),
+            call: ControlCall::Fanout(control_codec::FanoutParams {
+                idempotency_key,
+                requests,
+            }),
         };
         let response = self.transport.round_trip(&request)?;
-        projection.apply(&request, &response, self.negotiated.limits).map_err(|_| TransportError::Projection)?;
-        let ControlResponse::Success(success) = response else { return Err(TransportError::RemoteFailure); };
-        let ControlSuccess::Operation(bound) = success.result else { return Err(TransportError::Projection); };
-        let ControlResult::Fanout(admission) = bound.result else { return Err(TransportError::Projection); };
+        projection
+            .apply(&request, &response, self.negotiated.limits)
+            .map_err(|_| TransportError::Projection)?;
+        let ControlResponse::Success(success) = response else {
+            return Err(TransportError::RemoteFailure);
+        };
+        let ControlSuccess::Operation(bound) = success.result else {
+            return Err(TransportError::Projection);
+        };
+        let ControlResult::Fanout(admission) = bound.result else {
+            return Err(TransportError::Projection);
+        };
         Ok(admission)
     }
 

@@ -9,9 +9,9 @@
 
 use crate::control_codec::{
     AnalysisSummary, AuthStatusResponse, ConfigurationSnapshot, ControlCall, ControlLimits,
-    ControlRequest, ControlResponse, ControlResult, ControlSuccess, MeasurementCatalog, Negotiated,
-    ProviderCatalog, RecordingCampaignEstimate, RecordingCampaignLifecycle, RecordingCampaignPlan,
-    Revision, RunSummary, FanoutAdmission,
+    ControlRequest, ControlResponse, ControlResult, ControlSuccess, FanoutAdmission,
+    MeasurementCatalog, Negotiated, ProviderCatalog, RecordingCampaignEstimate,
+    RecordingCampaignLifecycle, RecordingCampaignPlan, Revision, RunSummary,
 };
 use std::{collections::BTreeMap, fmt};
 
@@ -345,7 +345,11 @@ impl ControlProjection {
                 self.configuration = Some(value.clone());
             }
             (ControlCall::Fanout(_), ControlResult::Fanout(value)) => {
-                if self.negotiated.as_ref().is_none_or(|session| session.version < crate::control_codec::V1_14) {
+                if self
+                    .negotiated
+                    .as_ref()
+                    .is_none_or(|session| session.version < crate::control_codec::V1_14)
+                {
                     return Err(ProjectionError::UnexpectedResult);
                 }
                 self.fanout = Some(value.clone());
