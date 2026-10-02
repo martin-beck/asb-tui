@@ -208,10 +208,28 @@ def run_capture_replay_matrix(asb_binary: Path, asb_checkout: Path, env: dict[st
     )
     assert replay["ok"] and replay["network"] == "denied" and replay["source"] == "strict_replay", replay
     return {
-        "selected": {"workload_count": 1, "tuple_count": selected["tuple_count"], "cassette_sha256": sha256(selected_root / f"{workload_ids[0]}.json")},
+        "selected": {
+            "workload_count": 1,
+            "tuple_count": selected["tuple_count"],
+            "cassette_sha256": sha256(generated_cassette),
+            "replay": {
+                "cassette_sha256": generated_replay["cassette_sha256"],
+                "result_digest": generated_replay["result_digest"],
+                "network": generated_replay["network"],
+            },
+        },
         "all": {"workload_count": len(workload_ids), "tuple_count": all_workloads["tuple_count"]},
         "incomplete_matrix": {"complete_coverage": incomplete["complete_coverage"], "offline_ready": incomplete["offline_ready"]},
-        "strict_replay": {"cassette_sha256": strict_digest, "result_digest": replay["result_digest"], "network": replay["network"]},
+        "strict_replay": {
+            "cassette_sha256": generated_replay["cassette_sha256"],
+            "result_digest": generated_replay["result_digest"],
+            "network": generated_replay["network"],
+        },
+        "strict_replay_reference": {
+            "cassette_sha256": strict_digest,
+            "result_digest": replay["result_digest"],
+            "network": replay["network"],
+        },
     }
 
 

@@ -50,7 +50,7 @@ class QuickstartAcceptanceTests(unittest.TestCase):
 
     def test_receipt_matrix_contract_names_negative_and_strict_paths(self):
         source = Path(RUNNER.__file__).read_text(encoding="utf-8")
-        for field in ("selected", "all", "incomplete_matrix", "strict_replay", "cassette_sha256", "result_digest"):
+        for field in ("selected", "all", "incomplete_matrix", "strict_replay", "strict_replay_reference", "cassette_sha256", "result_digest"):
             self.assertIn(f'"{field}"', source)
 
 
