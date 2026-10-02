@@ -580,7 +580,7 @@ fn run_resize_probe(script: &str, change_size: bool) -> ResizeProbeResult {
             // Re-issuing the same dimensions does not generate another
             // SIGWINCH after a lost first notification. Alternate a bounded
             // nearby size so each retry is an actual terminal-size change.
-            let requested = if attempt % 2 == 0 {
+            let requested = if attempt.is_multiple_of(2) {
                 resized
             } else {
                 retry_size
