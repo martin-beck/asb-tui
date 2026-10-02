@@ -3,6 +3,7 @@
 
 use asb_tui::{
     Capabilities,
+    fanout_dispatch::{FanoutDispatchState, FanoutSelection, FanoutSelectionError},
     formal_state::{FormalEvent, FormalUiState},
     shell::Route,
     wizard::{FormalEvent as WizardEvent, WizardFormalState},
@@ -296,6 +297,30 @@ fn fanout_control_actions_are_declared_in_the_formal_model() {
             "missing formal binding for {action}"
         );
     }
+}
+
+#[test]
+fn fanout_selection_and_status_projection_are_formally_bounded() {
+    let selection = FanoutSelection {
+        agent_ids: vec!["agent-b".into(), "agent-a".into(), "agent-a".into()],
+        workload_ids: vec!["workload-b".into(), "workload-a".into()],
+    }
+    .canonicalize()
+    .unwrap();
+    assert_eq!(selection.agent_ids, ["agent-a", "agent-b"]);
+    assert_eq!(selection.workload_ids, ["workload-a", "workload-b"]);
+    assert_eq!(
+        FanoutDispatchState::default().report().status,
+        "unavailable"
+    );
+    assert_eq!(
+        FanoutSelection {
+            agent_ids: Vec::new(),
+            workload_ids: vec!["workload".into()],
+        }
+        .canonicalize(),
+        Err(FanoutSelectionError::Empty("agents"))
+    );
 }
 
 #[test]
