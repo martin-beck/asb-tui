@@ -3200,6 +3200,53 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_matrix_exercises_each_workspace_route_without_panicking() {
+        let keys = [
+            KeyCode::Char('1'),
+            KeyCode::Char('2'),
+            KeyCode::Char('3'),
+            KeyCode::Char('4'),
+            KeyCode::Char('d'),
+            KeyCode::Char('f'),
+            KeyCode::Char('g'),
+            KeyCode::Char('p'),
+            KeyCode::Char('r'),
+            KeyCode::Char('s'),
+            KeyCode::Char('w'),
+            KeyCode::Char('/'),
+            KeyCode::Char('?'),
+            KeyCode::Char(' '),
+            KeyCode::Char('a'),
+            KeyCode::Char('b'),
+            KeyCode::Char('e'),
+            KeyCode::Char('o'),
+            KeyCode::Char('v'),
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Backspace,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+        ];
+        let mut state = WorkspaceState::default();
+        for screen in [
+            Screen::Landing,
+            Screen::DevelopmentHandoff,
+            Screen::Measures,
+            Screen::Configuration,
+            Screen::RunControl,
+            Screen::Reports,
+            Screen::Help,
+        ] {
+            state.screen = screen;
+            for code in keys {
+                let _ = state.handle_key(key(code));
+            }
+        }
+    }
+
+    #[test]
     fn key_handling_covers_help_navigation_and_search_edges() {
         let mut state = WorkspaceState::default();
         assert_eq!(state.handle_key(key(KeyCode::Char('h'))), UiAction::None);
