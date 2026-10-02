@@ -972,4 +972,27 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn defaults_validation_rejects_schema_and_malformed_records() {
+        let mut defaults = SharedProviderDefaults {
+            schema_version: 2,
+            entries: Vec::new(),
+        };
+        assert!(defaults.validate().is_err());
+        defaults.schema_version = 1;
+        defaults.entries.push(ProviderDefaultRecord {
+            scope: AgentScope::All,
+            provider_id: "bad/id".into(),
+            model_id: "model".into(),
+            auth_method: ProviderAuthMethod::None,
+            credential_reference_sha256: None,
+        });
+        assert!(defaults.validate().is_err());
+        defaults.entries[0].provider_id = "provider".into();
+        defaults.entries[0].auth_method = ProviderAuthMethod::CredentialReference;
+        assert!(defaults.validate().is_err());
+        defaults.entries[0].credential_reference_sha256 = Some("f".repeat(64));
+        assert!(defaults.validate().is_ok());
+    }
 }
