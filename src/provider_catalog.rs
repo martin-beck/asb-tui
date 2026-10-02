@@ -897,4 +897,39 @@ mod tests {
         };
         assert!(registry.begin_add(invalid).is_err());
     }
+
+    #[test]
+    fn defaults_store_round_trip_and_fail_closed_filesystem_checks() {
+        let root =
+            std::env::temp_dir().join(format!("asb-provider-defaults-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("defaults.json");
+        std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        let store = ProviderDefaultsStore::new(&path);
+        let defaults = SharedProviderDefaults {
+            schema_version: 1,
+            entries: vec![ProviderDefaultRecord {
+                scope: AgentScope::All,
+                provider_id: "openrouter".into(),
+                model_id: "gpt-4o".into(),
+                auth_method: ProviderAuthMethod::None,
+                credential_reference_sha256: None,
+            }],
+        };
+        assert!(store.load_or_default().unwrap().entries.is_empty());
+        store.save(&defaults).unwrap();
+        assert_eq!(store.load().unwrap(), defaults);
+        assert_eq!(store.path(), path.as_path());
+        assert!(ProviderDefaultsStore::new(&root).load().is_err());
+        let link = root.join("link.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(matches!(
+            ProviderDefaultsStore::new(&link).load(),
+            Err(ProviderDefaultsError::SymlinkRefused)
+        ));
+        std::fs::remove_file(link).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
