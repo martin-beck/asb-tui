@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -58,6 +59,38 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+_SECRET_ENV_MARKERS = (
+    "API_KEY",
+    "APIKEY",
+    "ACCESS_TOKEN",
+    "AUTH_TOKEN",
+    "CREDENTIAL",
+    "PASSWORD",
+    "PRIVATE_KEY",
+    "SECRET",
+    "TOKEN",
+)
+
+
+def sanitized_environment() -> dict[str, str]:
+    """Keep runner diagnostics credential-free while preserving deny policy."""
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not any(marker in key.upper() for marker in _SECRET_ENV_MARKERS)
+    }
+    environment.update(
+        {
+            "ASB_TUI_NETWORK_POLICY": "deny",
+            "HTTP_PROXY": "http://127.0.0.1:1",
+            "HTTPS_PROXY": "http://127.0.0.1:1",
+            "ALL_PROXY": "http://127.0.0.1:1",
+            "NO_PROXY": "*",
+        }
+    )
+    return environment
+
+
 def asb_json(binary: Path, arguments: list[str], env: dict[str, str]) -> dict:
     result = subprocess.run(
         [str(binary), "--json", *arguments],
@@ -89,8 +122,28 @@ def select_workload_ids(catalog: dict) -> list[str]:
 
 def run_capture_replay_matrix(asb_binary: Path, asb_checkout: Path, env: dict[str, str], root: Path) -> dict:
     root.mkdir(parents=True, exist_ok=True)
-    fixture = asb_checkout / "crates/asb-replay/fixtures/v1/buffered.json"
+    # Use the same provider dialect accepted by the runtime-owned strict
+    # replay seam.  The generic synthetic fixture is schema-valid but is not a
+    # runnable strict-replay route, so recording it would falsely report
+    # offline readiness.
+    fixture = asb_checkout / "crates/asb-replay/fixtures/v1/gemini-generate-content.json"
     fixture_document = json.loads(fixture.read_text(encoding="utf-8"))
+    # The public Gemini fixture intentionally contains a redacted API-key
+    # header and a provider-specific selector set.  The development capture
+    # route must produce a fresh, sealable artifact without carrying that
+    # already-redacted credential marker into the runner-owned cassette.
+    contents = copy.deepcopy(fixture_document["contents"])
+    for interaction in contents["interactions"]:
+        interaction["request"]["headers"] = [
+            header
+            for header in interaction["request"]["headers"]
+            if header["name"] != "x-goog-api-key"
+        ]
+    selectors = contents["redaction"]["selectors"]
+    selectors["header_names"] = [
+        name for name in selectors["header_names"] if name != "x-goog-api-key"
+    ]
+    contents["redaction"]["selector_sha256"] = ""
     capture = {
         "schema_version": 1,
         "provider_profile_sha256": "a" * 64,
@@ -98,7 +151,7 @@ def run_capture_replay_matrix(asb_binary: Path, asb_checkout: Path, env: dict[st
         "network": "loopback_only",
         "estimated_cost_minor": 0,
         "confirmation": {"record": True, "network": True, "cost": False},
-        "contents": fixture_document["contents"],
+        "contents": contents,
     }
     capture_path = root / "capture.json"
     capture_path.write_text(json.dumps(capture), encoding="utf-8")
@@ -129,6 +182,13 @@ def run_capture_replay_matrix(asb_binary: Path, asb_checkout: Path, env: dict[st
 
     selected, selected_root = campaign("selected", workload_ids[:1])
     assert selected["complete_coverage"] and selected["offline_ready"], selected
+    generated_cassette = selected_root / f"{workload_ids[0]}.json"
+    generated_replay = asb_json(
+        asb_binary,
+        ["easy", "replay-offline", str(generated_cassette), "a" * 64, "codex", "--local-mock"],
+        env,
+    )
+    assert generated_replay["ok"] and generated_replay["network"] == "denied", generated_replay
     all_workloads, all_root = campaign("all", workload_ids)
     assert all_workloads.get("complete_coverage") and all_workloads.get("offline_ready"), all_workloads
 
@@ -171,7 +231,7 @@ def main() -> int:
     asb_binary = (args.asb_binary or (asb_checkout / "target/debug/asb")).resolve()
     if not asb_binary.is_file():
         raise SystemExit(f"ASB binary is missing: {asb_binary}")
-    env = os.environ.copy()
+    env = sanitized_environment()
     with tempfile.TemporaryDirectory(prefix="asb-tui-quickstart-") as disposable:
         env.update({
             "ASB_TUI_CHANNEL_STATE": f"{disposable}/channel.json",

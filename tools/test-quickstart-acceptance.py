@@ -5,6 +5,7 @@
 
 import importlib.util
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -17,6 +18,22 @@ SPEC.loader.exec_module(RUNNER)
 
 
 class QuickstartAcceptanceTests(unittest.TestCase):
+    def test_runner_sanitizes_credentials_and_preserves_network_denial(self):
+        with mock.patch.dict(
+            RUNNER.os.environ,
+            {
+                "OPENROUTER_API_KEY": "redacted-test-secret",
+                "GITHUB_TOKEN": "redacted-test-token",
+                "SAFE_RUNNER_FLAG": "retained",
+            },
+            clear=False,
+        ):
+            environment = RUNNER.sanitized_environment()
+        self.assertNotIn("OPENROUTER_API_KEY", environment)
+        self.assertNotIn("GITHUB_TOKEN", environment)
+        self.assertEqual(environment["SAFE_RUNNER_FLAG"], "retained")
+        self.assertEqual(environment["ASB_TUI_NETWORK_POLICY"], "deny")
+
     def test_selects_only_bounded_native_original_workloads(self):
         catalog = {
             "entries": [
