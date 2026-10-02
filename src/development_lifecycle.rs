@@ -211,25 +211,44 @@ fn trusted_executable(variable: &str, name: &str) -> Result<PathBuf, &'static st
                 .collect()
         });
     for candidate in candidates {
-        let is_symlink = fs::symlink_metadata(&candidate)
-            .map(|metadata| metadata.file_type().is_symlink())
-            .unwrap_or(false);
-        let Ok(canonical) = fs::canonicalize(&candidate) else {
-            continue;
-        };
-        let Ok(metadata) = fs::symlink_metadata(&canonical) else {
-            continue;
-        };
-        if metadata.is_file()
-            && (metadata.uid() == rustix::process::getuid().as_raw() || metadata.uid() == 0)
-            && metadata.mode() & 0o022 == 0
-        {
-            // Preserve a trusted shim's argv[0] (notably cargo -> rustup),
-            // while validating the resolved target's ownership and mode.
-            return Ok(if is_symlink { candidate } else { canonical });
+        if let Some(trusted) = trusted_candidate(&candidate) {
+            return Ok(trusted);
         }
     }
     Err("development_tool_unavailable")
+}
+
+#[cfg(not(test))]
+fn trusted_candidate(candidate: &Path) -> Option<PathBuf> {
+    let is_symlink = fs::symlink_metadata(candidate)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false);
+    let canonical = fs::canonicalize(candidate).ok()?;
+    let metadata = fs::symlink_metadata(&canonical).ok()?;
+    if metadata.is_file()
+        && (metadata.uid() == rustix::process::getuid().as_raw() || metadata.uid() == 0)
+        && metadata.mode() & 0o022 == 0
+    {
+        // Preserve a trusted shim's argv[0] (notably cargo -> rustup),
+        // while validating the resolved target's ownership and mode.
+        Some(if is_symlink {
+            candidate.to_owned()
+        } else {
+            canonical
+        })
+    } else {
+        None
+    }
+}
+
+#[cfg(not(test))]
+fn trusted_toolchain_sibling(cargo: &Path, name: &str) -> Result<PathBuf, &'static str> {
+    let resolved_cargo = fs::canonicalize(cargo).map_err(|_| "development_tool_unavailable")?;
+    let bin = resolved_cargo
+        .parent()
+        .filter(|path| path.file_name().and_then(|value| value.to_str()) == Some("bin"))
+        .ok_or("development_tool_unavailable")?;
+    trusted_candidate(&bin.join(name)).ok_or("development_tool_unavailable")
 }
 
 #[cfg(not(test))]
@@ -266,12 +285,16 @@ struct DevelopmentToolchain {
 #[cfg(not(test))]
 fn trusted_toolchain() -> Result<DevelopmentToolchain, &'static str> {
     let (setsid, git, cargo, path) = trusted_tools()?;
+    let rustc = match env::var_os("ASB_TUI_DEV_RUSTC") {
+        Some(_) => trusted_executable("ASB_TUI_DEV_RUSTC", "rustc")?,
+        None => trusted_toolchain_sibling(&cargo, "rustc")?,
+    };
     Ok(DevelopmentToolchain {
         setsid,
         git,
         cargo,
         path,
-        rustc: trusted_executable("ASB_TUI_DEV_RUSTC", "rustc")?,
+        rustc,
         cc: trusted_executable("ASB_TUI_DEV_CC", "cc")?,
         ar: trusted_executable("ASB_TUI_DEV_AR", "ar")?,
         ld: trusted_executable("ASB_TUI_DEV_LD", "ld")?,
