@@ -71,6 +71,27 @@ fn tui_lifecycle_commands_require_explicit_development_mode() {
 }
 
 #[test]
+fn tui_lifecycle_defaults_to_human_output_and_json_is_opt_in() {
+    for extra in [vec![], vec!["--json"]] {
+        let json = !extra.is_empty();
+        let mut args = vec!["tui", "status", "--development"];
+        args.extend(extra);
+        let output = binary().args(args).output().expect("run asb-tui");
+        assert_eq!(output.status.code(), Some(3));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !json {
+            assert!(stdout.contains("channel: dev"));
+            assert!(stdout.contains("code: "));
+            assert!(!stdout.trim_start().starts_with('{'));
+        } else {
+            let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(response["channel"], "dev");
+            assert!(stdout.trim_start().starts_with('{'));
+        }
+    }
+}
+
+#[test]
 fn tui_status_uses_the_development_router_and_keeps_request_closed() {
     let request = br#"{"router_version":1,"profile":"development","channel":"dev","current_main":{"asb_source_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","asb_source_tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tui_source_commit":"cccccccccccccccccccccccccccccccccccccccc","tui_source_tree":"dddddddddddddddddddddddddddddddddddddddd"},"request":{"operation":"status","schema_version":1,"install_root":"/tmp/asb-tui-no-such-root"}}"#;
     let output = binary()

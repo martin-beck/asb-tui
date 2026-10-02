@@ -111,6 +111,9 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
                 index += 1;
             }
             "--production" => return Err(ParseError::ProductionMarkerUnsupported),
+            "--json" if !format_json => {
+                format_json = true;
+            }
             "--format"
                 if !format_json && arguments.get(index + 1).map(String::as_str) == Some("json") =>
             {
@@ -121,7 +124,7 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
         }
         index += 1;
     }
-    if !format_json || !development {
+    if !development {
         return Err(if !development {
             ParseError::DevelopmentMarkerRequired
         } else {
@@ -182,7 +185,7 @@ pub fn execute_lifecycle(
 }
 
 pub fn usage() -> &'static str {
-    "usage: asb-tui tui | asb-tui tui <install|upgrade|status|launch|remove> --channel dev --format json | ... --development --format json"
+    "usage: asb-tui tui | asb-tui tui <install|upgrade|status|launch|remove> --channel dev [--json|--format json] | ... --development [--json|--format json]"
 }
 
 #[cfg(test)]
@@ -199,13 +202,23 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_requires_explicit_development_json_mode() {
+    fn lifecycle_defaults_to_human_and_accepts_explicit_json() {
         assert_eq!(
             parse(&args(&["status", "--format", "json"])),
             Err(ParseError::DevelopmentMarkerRequired)
         );
         assert_eq!(
-            parse(&args(&["status", "--development", "--format", "json"])),
+            parse(&args(&["status", "--development"])),
+            Ok(TuiCommand::Lifecycle {
+                operation: TuiOperation::Status,
+                development: true,
+                channel_dev: false,
+                channel: ReleaseChannel::Dev,
+                selection: ChannelSelection::fresh(),
+            })
+        );
+        assert_eq!(
+            parse(&args(&["status", "--development", "--json"])),
             Ok(TuiCommand::Lifecycle {
                 operation: TuiOperation::Status,
                 development: true,
