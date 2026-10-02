@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use asb_tui::{
-    adapter_catalog::{AdapterSelection, AuthMethod, CompatibilityMatrix},
+    adapter_catalog::{AdapterCatalog, AdapterSelection, AuthMethod, CompatibilityMatrix},
     control_codec::{
         ProviderAuthMethod, ProviderAvailability, ProviderCatalog, ProviderCatalogEntry,
         ProviderModel, Revision,
@@ -118,4 +118,57 @@ fn compatibility_matrix_supports_defaults_overrides_restart_and_offline_validati
     assert!(matrix.validate_offline(override_selection).is_ok());
     matrix.restart();
     assert_eq!(matrix.resolve("agent-a"), Some(&default));
+}
+
+#[test]
+fn matrix_evaluates_both_adapters_and_keeps_unavailable_reason_typed() {
+    let mut matrix = CompatibilityMatrix::development();
+    let all = matrix.evaluate();
+    assert!(all.iter().any(|case| {
+        case.adapter_id == "opencode"
+            && case.provider_id == "openrouter"
+            && case.model_id == "openai/gpt-4o"
+            && case.supported
+    }));
+    assert!(all.iter().any(|case| {
+        case.adapter_id == "opendesk"
+            && case.provider_id == "local"
+            && case.model_id == "fixture-model"
+            && case.supported
+    }));
+
+    matrix.mark_unavailable("openrouter", "development authentication unavailable");
+    let unavailable = matrix
+        .evaluate()
+        .into_iter()
+        .find(|case| case.adapter_id == "opencode" && case.provider_id == "openrouter")
+        .unwrap();
+    assert!(!unavailable.supported);
+    assert_eq!(
+        unavailable.reason.as_deref(),
+        Some("development authentication unavailable")
+    );
+}
+
+#[test]
+fn connected_catalog_projects_both_adapter_routes() {
+    let catalog = catalog("openrouter", "fixture-model");
+    let adapters = AdapterCatalog::from_provider_catalog(&catalog).unwrap();
+    for adapter in ["opencode", "opendesk"] {
+        let options = asb_tui::adapter_catalog::SelectionSession::new(adapters.clone())
+            .compatibility_options(adapter)
+            .unwrap();
+        assert!(
+            options
+                .providers
+                .iter()
+                .any(|option| option.id == "openrouter")
+        );
+        assert!(
+            options
+                .models
+                .iter()
+                .any(|option| option.id == "fixture-model")
+        );
+    }
 }
