@@ -569,8 +569,24 @@ fn run_resize_probe(script: &str, change_size: bool) -> ResizeProbeResult {
     if change_size {
         let resize_deadline = started + COMMAND_TIMEOUT / 2;
         let mut observed = false;
+        let retry_size = Winsize {
+            ws_row: 41,
+            ws_col: 121,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let mut attempt = 0_u8;
         while Instant::now() < resize_deadline {
-            if termios::tcsetwinsize(&master, resized).is_err() {
+            // Re-issuing the same dimensions does not generate another
+            // SIGWINCH after a lost first notification. Alternate a bounded
+            // nearby size so each retry is an actual terminal-size change.
+            let requested = if attempt.is_multiple_of(2) {
+                resized
+            } else {
+                retry_size
+            };
+            attempt = attempt.saturating_add(1);
+            if termios::tcsetwinsize(&master, requested).is_err() {
                 terminate_group(&mut child);
                 return failed();
             }
@@ -591,6 +607,12 @@ fn run_resize_probe(script: &str, change_size: bool) -> ResizeProbeResult {
                 verified: false,
                 output,
             };
+        }
+        // Leave the probe at the documented target dimensions even when the
+        // notification was delivered by an alternate retry size.
+        if termios::tcsetwinsize(&master, resized).is_err() {
+            terminate_group(&mut child);
+            return failed();
         }
     }
     let status = loop {

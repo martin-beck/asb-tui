@@ -230,3 +230,88 @@ fn save_rejects_symlinked_parent_directory() {
     ));
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn provider_selection_rejects_invalid_auth_model_and_provider_states() {
+    let mut draft = ProviderDefaultDraft {
+        scope: AgentScope::All,
+        provider_id: "provider-a".into(),
+        model_id: "model-a".into(),
+        auth_method: ProviderAuthMethod::None,
+        credential_reference_sha256: None,
+    };
+    assert!(
+        draft
+            .clone()
+            .into_selection(&agents(), &providers())
+            .is_err()
+    );
+    draft.auth_method = ProviderAuthMethod::CredentialReference;
+    draft.credential_reference_sha256 = None;
+    assert!(
+        draft
+            .clone()
+            .into_selection(&agents(), &providers())
+            .is_err()
+    );
+    draft.credential_reference_sha256 = Some("a".repeat(64));
+    draft.model_id = "missing".into();
+    assert!(
+        draft
+            .clone()
+            .into_selection(&agents(), &providers())
+            .is_err()
+    );
+    draft.model_id = "model-a".into();
+    draft.provider_id = "missing".into();
+    assert!(draft.into_selection(&agents(), &providers()).is_err());
+}
+
+#[test]
+fn defaults_validate_auth_references_scopes_and_schema() {
+    let mut defaults = SharedProviderDefaults::default();
+    defaults.entries.push(ProviderDefaultRecord {
+        scope: AgentScope::All,
+        provider_id: "provider-a".into(),
+        model_id: "model-a".into(),
+        auth_method: ProviderAuthMethod::None,
+        credential_reference_sha256: Some("a".repeat(64)),
+    });
+    assert!(defaults.validate().is_err());
+    defaults.entries[0].credential_reference_sha256 = None;
+    assert!(defaults.validate().is_ok());
+    defaults.entries[0].provider_id = "bad/id".into();
+    assert!(defaults.validate().is_err());
+    defaults.entries[0].provider_id = "provider-a".into();
+    defaults.entries[0].auth_method = ProviderAuthMethod::CredentialReference;
+    defaults.entries[0].credential_reference_sha256 = Some("not-a-digest".into());
+    assert!(defaults.validate().is_err());
+    defaults.schema_version = 2;
+    assert!(defaults.validate().is_err());
+}
+
+#[test]
+fn selected_scope_is_sorted_deduplicated_and_bounded() {
+    assert_eq!(
+        AgentScope::selected(["z", "a", "z"]).unwrap(),
+        AgentScope::Selected(vec!["a".into(), "z".into()])
+    );
+    assert!(AgentScope::selected(std::iter::empty::<&str>()).is_err());
+    assert!(AgentScope::selected(["bad/id"]).is_err());
+    let too_many = (0..65).map(|index| format!("agent-{index}"));
+    assert!(AgentScope::selected(too_many).is_err());
+}
+
+#[test]
+fn wizard_options_preserve_provider_model_compatibility_and_generation_rules() {
+    assert!(accept_generation(None, Revision(0)).is_err());
+    assert!(accept_generation(Some(Revision(2)), Revision(1)).is_err());
+    assert!(accept_generation(Some(Revision(2)), Revision(2)).is_ok());
+    let mut catalog = providers();
+    catalog.providers[0].models[0].availability =
+        ProviderAvailability::Unavailable("offline".into());
+    let (provider_options, model_options) = wizard_options(&catalog).unwrap();
+    assert!(provider_options[0].available);
+    assert!(!model_options[0].available);
+    assert_eq!(model_options[0].compatible_ids(), ["provider-a"]);
+}

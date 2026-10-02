@@ -44,7 +44,7 @@
     {"path":"src/development_broker.rs","reason":"Development-only broker descriptor validation, dynamic ASB/asb-tui identity handoff fencing, and bounded entrypoint dispatch; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/development_onboarding.rs","reason":"Development-only bundle/broker onboarding fixture evaluation and one-choice recovery projection; it owns no rendering or live broker authority.","expires":"2027-12-31"},
     {"path":"src/development_journey.rs","reason":"Development-only bounded journey fixture evaluation with mismatch recovery; it performs no network, credential, provider, ASB, or rendering work.","expires":"2027-12-31"},
-    {"path":"src/development_lifecycle.rs","reason":"Development-only bounded clone/build, exact source commit/tree provenance, private staging, atomic publication, rollback, and lifecycle validation; it owns no UI state, rendering, credentials, or provider authority.","expires":"2027-12-31"},
+    {"path":"src/development_lifecycle.rs","reason":"Development-only bounded clone/build, exact source commit/tree provenance, private staging, atomic publication, rollback, lifecycle validation, and AR-1625 coverage of install/upgrade/status, identity tampering, and unsafe filesystem recovery; it owns no UI state, rendering, credentials, or provider authority.","expires":"2027-12-31"},
     {"path":"src/identity_adapter.rs","reason":"Identity validation only; it has no UI state or projection ownership.","expires":"2027-12-31"},
     {"path":"src/provider_catalog.rs","reason":"Renderer-neutral provider catalog refresh, scoped shared provider/model/auth defaults, atomic redacted persistence and diagnostics, and credential-reference-only option mapping; it has no renderer ownership.","expires":"2027-12-31"},
     {"path":"src/provider_setup.rs","reason":"Renderer-neutral typed provider setup draft, catalog-bound review, digest-only authentication references, and single-use atomic apply gate; it has no renderer ownership.","expires":"2027-12-31"},
@@ -58,6 +58,6 @@
     {"path":"src/benchmark_route.rs","reason":"Renderer-neutral guided benchmark selection, exact generation-bound nested catalog handoff, authenticated v1.12 cassette/provider/agent/workload strict replay intent, and post-completion comparison seam; it performs no backend I/O or rendering ownership.","expires":"2027-12-31"},
     {"path":"src/recording_dispatch.rs","reason":"Renderer-neutral provider and recording dispatch policy including seal/reopen/remove, idempotent repeat, and digest-bound comparison; it expands all-workloads from the authoritative catalog, bounds progress, carries identities through authenticated transport, and owns no route, widget, terminal, credential, or readiness state.","expires":"2027-12-31"},
     {"path":"src/sha256.rs","reason":"Digest primitive only; it has no UI state or projection ownership.","expires":"2027-12-31"},
-    {"path":"src/system_probe.rs","reason":"Host probing and environment-independent coverage tests only; it has no UI state or projection ownership.","expires":"2027-12-31"}
+    {"path":"src/system_probe.rs","reason":"Host probing and environment-independent coverage tests only, including AR-1625 deterministic synthetic-PTY resize retry verification; it has no UI state or projection ownership.","expires":"2027-12-31"}
   ]
 }
