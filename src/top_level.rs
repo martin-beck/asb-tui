@@ -86,15 +86,21 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
         "remove" => TuiOperation::Remove,
         _ => return Err(ParseError::Usage),
     };
-    let mut development = false;
-    let mut channel_dev = false;
+    // The standalone lifecycle has one intentionally supported channel today:
+    // credential-free `dev`.  Keep it as the default so a clean consumer can
+    // run `asb-tui tui status` (and install/upgrade/remove) without having to
+    // repeat a profile marker.  Production markers remain explicitly rejected
+    // below, and unavailable named channels still produce a warning response.
+    let mut development = true;
+    let mut channel_dev = true;
+    let mut channel_selected = false;
     let mut requested_channel = None;
     let mut format_json = false;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
-            "--development" if !development => development = true,
-            "--channel" if !channel_dev => {
+            "--development" if development && !channel_selected => channel_dev = false,
+            "--channel" if !channel_selected => {
                 let Some(value) = arguments.get(index + 1).map(String::as_str) else {
                     return Err(ParseError::Usage);
                 };
@@ -107,6 +113,7 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
                 };
                 requested_channel = Some(channel);
                 channel_dev = channel == ReleaseChannel::Dev;
+                channel_selected = true;
                 development = true;
                 index += 1;
             }
@@ -124,13 +131,9 @@ pub fn parse(arguments: &[String]) -> Result<TuiCommand, ParseError> {
         }
         index += 1;
     }
-    if !development {
-        return Err(if !development {
-            ParseError::DevelopmentMarkerRequired
-        } else {
-            ParseError::Usage
-        });
-    }
+    // `dev` is the safe default.  `--development` is retained as an explicit
+    // compatibility spelling, while `--channel stable|nightly|experimental`
+    // remains selectable but unavailable rather than falling back to dev.
     let selection = ChannelSelection::for_request(ReleaseChannel::Dev, requested_channel);
     Ok(TuiCommand::Lifecycle {
         operation,
@@ -205,7 +208,13 @@ mod tests {
     fn lifecycle_defaults_to_human_and_accepts_explicit_json() {
         assert_eq!(
             parse(&args(&["status", "--format", "json"])),
-            Err(ParseError::DevelopmentMarkerRequired)
+            Ok(TuiCommand::Lifecycle {
+                operation: TuiOperation::Status,
+                development: true,
+                channel_dev: true,
+                channel: ReleaseChannel::Dev,
+                selection: ChannelSelection::fresh(),
+            })
         );
         assert_eq!(
             parse(&args(&["status", "--development"])),

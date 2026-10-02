@@ -61,13 +61,20 @@ fn trusted_tool(name: &str) -> String {
 }
 
 #[test]
-fn tui_lifecycle_commands_require_explicit_development_mode() {
+fn tui_lifecycle_commands_default_to_development_mode() {
+    let root = env::temp_dir().join(format!("asb-tui-default-dev-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
     let output = binary()
         .args(["tui", "status", "--format", "json"])
+        .env("ASB_TUI_DEV_INSTALL_ROOT", &root)
         .output()
         .expect("run asb-tui");
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("development_marker_required"));
+    assert_eq!(output.status.code(), Some(3));
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["channel"], "dev");
+    assert_eq!(response["code"], "development_not_installed");
+    assert!(output.stderr.is_empty());
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
