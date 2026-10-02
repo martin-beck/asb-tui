@@ -110,6 +110,10 @@ pub struct LifecycleResponse {
     pub workspace_config_root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_cache_root: Option<String>,
+    /// Optional public ASB/TUI current-main identity supplied by the parent
+    /// router. It is never synthesized from a local path or credential.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_main: Option<crate::development_router::CurrentMainIdentity>,
 }
 
 impl LifecycleResponse {
@@ -136,11 +140,20 @@ impl LifecycleResponse {
             workspace_state_root: None,
             workspace_config_root: None,
             workspace_cache_root: None,
+            current_main: None,
         }
     }
 
     pub fn with_channel(mut self, channel: &'static str) -> Self {
         self.channel = channel;
+        self
+    }
+
+    pub fn with_current_main(
+        mut self,
+        current_main: crate::development_router::CurrentMainIdentity,
+    ) -> Self {
+        self.current_main = Some(current_main);
         self
     }
 }
@@ -207,6 +220,7 @@ pub fn execute(request: LifecycleRequest) -> LifecycleResponse {
                 workspace_state_root: observed.workspace_state_root,
                 workspace_config_root: observed.workspace_config_root,
                 workspace_cache_root: observed.workspace_cache_root,
+                current_main: None,
             };
         }
         LifecycleRequest::Remove {
