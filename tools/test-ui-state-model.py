@@ -133,8 +133,12 @@ class UiStateModelTests(unittest.TestCase):
 
     def test_missing_help_and_focus_metadata_are_rejected(self):
         model = copy.deepcopy(self.model)
-        model["elements"][0]["help_id"] = "missing"
-        model["elements"][1].pop("focusable")
+        next(element for element in model["elements"] if element["id"] == "landing.primary")[
+            "help_id"
+        ] = "missing"
+        next(element for element in model["elements"] if element["id"] == "measures.search").pop(
+            "focusable"
+        )
         errors = MODULE.validate(model)
         self.assertIn("landing.primary: help_id does not reference a help entry", errors)
         self.assertIn("measures.search: focusable must be boolean", errors)
