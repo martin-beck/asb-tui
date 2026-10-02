@@ -27,7 +27,7 @@ qualification or an installable release. See
 For the credential-free development path, ASB's default `dev` channel resolves the current TUI
 main head on each explicit install or upgrade invocation; it never silently falls back to another
 channel.
-`main` head, builds it in an isolated staging directory, and records the exact source commit/tree
+The launcher builds that head in an isolated staging directory and records the exact source commit/tree
 and executable digest. A standalone bundle can be produced and checked with
 `tools/build-dev-bundle.py` and `tools/verify-dev-bundle.py`; its `development_only` manifest makes
 missing authentication, signatures, and key management visible warnings rather than blockers.
