@@ -158,6 +158,10 @@ fn socket_launcher_rejects_missing_or_untrusted_endpoint() {
 fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
     let (source, _repository, _commit) = local_source_fixture("top-level");
     let cargo = trusted_tool("cargo");
+    let rustc = trusted_tool("rustc");
+    let cc = trusted_tool("cc");
+    let ar = trusted_tool("ar");
+    let ld = trusted_tool("ld");
     let rustup_home = std::env::var_os("RUSTUP_HOME").expect("explicit rustup home");
     let root = std::env::temp_dir().join(format!(
         "asb-tui-ar1579-{}-{}",
@@ -176,6 +180,10 @@ fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
             .env("ASB_TUI_DEV_GIT", "/usr/bin/git")
             .env("ASB_TUI_DEV_SETSID", "/usr/bin/setsid")
             .env("ASB_TUI_DEV_CARGO", &cargo)
+            .env("ASB_TUI_DEV_RUSTC", &rustc)
+            .env("ASB_TUI_DEV_CC", &cc)
+            .env("ASB_TUI_DEV_AR", &ar)
+            .env("ASB_TUI_DEV_LD", &ld)
             .env("ASB_TUI_DEV_RUSTUP_HOME", &rustup_home)
             .output()
             .expect("run development lifecycle")

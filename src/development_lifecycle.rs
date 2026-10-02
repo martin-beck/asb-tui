@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 //! Credential-free, explicitly development-only temporary lifecycle.
 
+#[cfg(not(test))]
+use crate::release_channel::compiled_target;
 use crate::sha256::digest_hex;
 use serde::Serialize;
 use std::{
@@ -209,25 +211,44 @@ fn trusted_executable(variable: &str, name: &str) -> Result<PathBuf, &'static st
                 .collect()
         });
     for candidate in candidates {
-        let is_symlink = fs::symlink_metadata(&candidate)
-            .map(|metadata| metadata.file_type().is_symlink())
-            .unwrap_or(false);
-        let Ok(canonical) = fs::canonicalize(&candidate) else {
-            continue;
-        };
-        let Ok(metadata) = fs::symlink_metadata(&canonical) else {
-            continue;
-        };
-        if metadata.is_file()
-            && (metadata.uid() == rustix::process::getuid().as_raw() || metadata.uid() == 0)
-            && metadata.mode() & 0o022 == 0
-        {
-            // Preserve a trusted shim's argv[0] (notably cargo -> rustup),
-            // while validating the resolved target's ownership and mode.
-            return Ok(if is_symlink { candidate } else { canonical });
+        if let Some(trusted) = trusted_candidate(&candidate) {
+            return Ok(trusted);
         }
     }
     Err("development_tool_unavailable")
+}
+
+#[cfg(not(test))]
+fn trusted_candidate(candidate: &Path) -> Option<PathBuf> {
+    let is_symlink = fs::symlink_metadata(candidate)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false);
+    let canonical = fs::canonicalize(candidate).ok()?;
+    let metadata = fs::symlink_metadata(&canonical).ok()?;
+    if metadata.is_file()
+        && (metadata.uid() == rustix::process::getuid().as_raw() || metadata.uid() == 0)
+        && metadata.mode() & 0o022 == 0
+    {
+        // Preserve a trusted shim's argv[0] (notably cargo -> rustup),
+        // while validating the resolved target's ownership and mode.
+        Some(if is_symlink {
+            candidate.to_owned()
+        } else {
+            canonical
+        })
+    } else {
+        None
+    }
+}
+
+#[cfg(not(test))]
+fn trusted_toolchain_sibling(cargo: &Path, name: &str) -> Result<PathBuf, &'static str> {
+    let resolved_cargo = fs::canonicalize(cargo).map_err(|_| "development_tool_unavailable")?;
+    let bin = resolved_cargo
+        .parent()
+        .filter(|path| path.file_name().and_then(|value| value.to_str()) == Some("bin"))
+        .ok_or("development_tool_unavailable")?;
+    trusted_candidate(&bin.join(name)).ok_or("development_tool_unavailable")
 }
 
 #[cfg(not(test))]
@@ -247,6 +268,37 @@ fn trusted_tools() -> Result<(PathBuf, PathBuf, PathBuf, String), &'static str> 
         cargo,
         path.into_iter().collect::<Vec<_>>().join(":"),
     ))
+}
+
+#[cfg(not(test))]
+struct DevelopmentToolchain {
+    setsid: PathBuf,
+    git: PathBuf,
+    cargo: PathBuf,
+    path: String,
+    rustc: PathBuf,
+    cc: PathBuf,
+    ar: PathBuf,
+    ld: PathBuf,
+}
+
+#[cfg(not(test))]
+fn trusted_toolchain() -> Result<DevelopmentToolchain, &'static str> {
+    let (setsid, git, cargo, path) = trusted_tools()?;
+    let rustc = match env::var_os("ASB_TUI_DEV_RUSTC") {
+        Some(_) => trusted_executable("ASB_TUI_DEV_RUSTC", "rustc")?,
+        None => trusted_toolchain_sibling(&cargo, "rustc")?,
+    };
+    Ok(DevelopmentToolchain {
+        setsid,
+        git,
+        cargo,
+        path,
+        rustc,
+        cc: trusted_executable("ASB_TUI_DEV_CC", "cc")?,
+        ar: trusted_executable("ASB_TUI_DEV_AR", "ar")?,
+        ld: trusted_executable("ASB_TUI_DEV_LD", "ld")?,
+    })
 }
 
 #[cfg(not(test))]
@@ -359,16 +411,16 @@ fn run_bounded(mut command: Command, workspace: &Path) -> Result<Vec<u8>, &'stat
 
 #[cfg(not(test))]
 fn source_identity(source: &Path, name: &str) -> Result<String, &'static str> {
-    let (setsid, git, _cargo, path) = trusted_tools()?;
+    let tools = trusted_toolchain()?;
     let output = run_bounded(
         {
-            let mut command = Command::new(&setsid);
+            let mut command = Command::new(&tools.setsid);
             command
                 .args(["--wait"])
-                .arg(&git)
+                .arg(&tools.git)
                 .current_dir(source)
                 .env_clear()
-                .env("PATH", path)
+                .env("PATH", &tools.path)
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_TERMINAL_PROMPT", "0")
@@ -395,12 +447,12 @@ fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
     fs::create_dir_all(&cargo_home).map_err(|_| "development_workspace_create_failed")?;
     let repository = dev_repository();
     let reference = dev_ref();
-    let (setsid, git, cargo, path) = trusted_tools()?;
+    let tools = trusted_toolchain()?;
     let rustup_home = env::var_os("ASB_TUI_DEV_RUSTUP_HOME");
-    let mut clone = Command::new(&setsid);
+    let mut clone = Command::new(&tools.setsid);
     clone
         .args(["--wait"])
-        .arg(&git)
+        .arg(&tools.git)
         .args([
             "clone",
             "--depth",
@@ -412,7 +464,7 @@ fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
             &repository,
         ])
         .env_clear()
-        .env("PATH", &path)
+        .env("PATH", &tools.path)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -420,16 +472,42 @@ fn build_candidate(workspace: &Path) -> Result<(Vec<u8>, State), &'static str> {
     run_bounded(clone, workspace)?;
     let commit = source_identity(&source, "HEAD")?;
     let tree = source_identity(&source, "HEAD^{tree}")?;
-    let mut build = Command::new(&setsid);
+    let mut build = Command::new(&tools.setsid);
     build
         .args(["--wait"])
-        .arg(&cargo)
+        .arg(&tools.cargo)
         .current_dir(&source)
         .env_clear()
-        .env("PATH", &path)
         .env("HOME", workspace)
         .env("CARGO_HOME", &cargo_home)
         .env("CARGO_TARGET_DIR", &target)
+        .env("PATH", &tools.path)
+        .env("RUSTC", &tools.rustc)
+        .env("CC", &tools.cc)
+        .env("AR", &tools.ar)
+        .env("LD", &tools.ld)
+        .env("RUSTC_LINKER", &tools.cc)
+        .env(
+            format!(
+                "CARGO_TARGET_{}_LINKER",
+                compiled_target().to_ascii_uppercase().replace('-', "_")
+            ),
+            &tools.cc,
+        )
+        .env(
+            format!(
+                "CARGO_TARGET_{}_RUSTFLAGS",
+                compiled_target().to_ascii_uppercase().replace('-', "_")
+            ),
+            format!(
+                "-C link-arg=-B{}",
+                tools
+                    .ld
+                    .parent()
+                    .ok_or("development_tool_unavailable")?
+                    .display()
+            ),
+        )
         .env("RUSTFLAGS", "")
         .args(["build", "--locked", "--release", "--bin", "asb-tui"]);
     if let Some(rustup_home) = rustup_home {
