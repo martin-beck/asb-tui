@@ -58,6 +58,6 @@
     {"path":"src/benchmark_route.rs","reason":"Renderer-neutral guided benchmark selection, exact generation-bound nested catalog handoff, authenticated v1.12 cassette/provider/agent/workload strict replay intent, and post-completion comparison seam; it performs no backend I/O or rendering ownership.","expires":"2027-12-31"},
     {"path":"src/recording_dispatch.rs","reason":"Renderer-neutral provider and recording dispatch policy including seal/reopen/remove, idempotent repeat, and digest-bound comparison; it expands all-workloads from the authoritative catalog, bounds progress, carries identities through authenticated transport, and owns no route, widget, terminal, credential, or readiness state.","expires":"2027-12-31"},
     {"path":"src/sha256.rs","reason":"Digest primitive only; it has no UI state or projection ownership.","expires":"2027-12-31"},
-    {"path":"src/system_probe.rs","reason":"Host probing and environment-independent coverage tests only; it has no UI state or projection ownership.","expires":"2027-12-31"}
+    {"path":"src/system_probe.rs","reason":"Host probing and environment-independent coverage tests only, including AR-1625 deterministic synthetic-PTY resize retry verification; it has no UI state or projection ownership.","expires":"2027-12-31"}
   ]
 }
