@@ -7,15 +7,15 @@
 //! and readiness claims remain runner-owned.
 
 use crate::{
-    agent_catalog::AgentCatalog,
     actions::UiAction,
+    agent_catalog::AgentCatalog,
     control_transport::{AuthenticatedBrokerSession, TransportError},
     live_projection::{ControlProjection, LiveSnapshot},
+    provider_catalog::AgentScope,
     recording_campaign::{
         CampaignObservation, CampaignPhase, RecordingAction, RecordingCampaignModel,
         RecordingModelError, WorkloadScope,
     },
-    provider_catalog::AgentScope,
 };
 
 pub trait RecordingBackend {
