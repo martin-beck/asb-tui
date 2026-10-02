@@ -2388,6 +2388,135 @@ mod tests {
     }
 
     #[test]
+    fn setup_control_successes_cover_refresh_and_digest_only_auth_mutations() {
+        use crate::control_codec::*;
+
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let runner = "runner-setup-success";
+        let provider = ProviderCatalog {
+            runner_instance_id: runner.into(),
+            generation: Revision(2),
+            catalog_sha256: "b".repeat(64),
+            providers: vec![ProviderCatalogEntry {
+                provider_id: "openrouter".into(),
+                display_name: "OpenRouter".into(),
+                auth_methods: vec![ProviderAuthMethod::CredentialReference],
+                models: vec![ProviderModel {
+                    model_id: "free-model".into(),
+                    revision: "2026-01".into(),
+                    availability: ProviderAvailability::Available,
+                }],
+                availability: ProviderAvailability::Available,
+            }],
+            refreshed: true,
+        };
+        let join = thread::spawn(move || {
+            for _ in 0..6 {
+                let mut header = [0_u8; 4];
+                server.read_exact(&mut header).unwrap();
+                let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+                server.read_exact(&mut body).unwrap();
+                let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+                let result = match request.call {
+                    ControlCall::AuthEnroll(_)
+                    | ControlCall::AuthRotate(_)
+                    | ControlCall::AuthRevoke(_) => {
+                        ControlResult::Acknowledged(MutationAcknowledgement { accepted: true })
+                    }
+                    ControlCall::AuthStatus(_) | ControlCall::AuthHelperInvoke(_) => {
+                        ControlResult::AuthStatus(AuthStatusResponse {
+                            provider: "openrouter".into(),
+                            endpoint_identity_sha256: "e".repeat(64),
+                            credential_locator_sha256: "f".repeat(64),
+                            generation: Revision(2),
+                            status: "active".into(),
+                        })
+                    }
+                    ControlCall::ProviderCatalog(_) => {
+                        ControlResult::ProviderCatalog(provider.clone())
+                    }
+                    other => panic!("unexpected setup call: {other:?}"),
+                };
+                let response = ControlResponse::Success(SuccessResponse {
+                    jsonrpc: JSONRPC_VERSION.into(),
+                    id: request.id,
+                    result: ControlSuccess::Operation(BoundResult {
+                        request_sha256: "a".repeat(64),
+                        result,
+                    }),
+                });
+                server
+                    .write_all(&control_codec::encode(&response, 256 * 1024).unwrap())
+                    .unwrap();
+            }
+        });
+        let mut transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            ControlLimits::default(),
+        )
+        .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(V1_10);
+        let negotiated = Negotiated {
+            version: V1_10,
+            limits: ControlLimits::default(),
+            runner_instance_id: runner.into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(2),
+        };
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: None,
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        let _ = session.transport_mut();
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated).unwrap();
+        session.refresh_provider_catalog(&mut projection).unwrap();
+        session
+            .enroll_auth_receipt(
+                &mut projection,
+                crate::credential_helper::CredentialEnrollmentReceipt {
+                    provider: "openrouter".into(),
+                    endpoint_identity_sha256: "e".repeat(64),
+                    credential_locator_sha256: "f".repeat(64),
+                },
+                "enroll".into(),
+            )
+            .unwrap();
+        session
+            .rotate_auth(
+                &mut projection,
+                "openrouter".into(),
+                "f".repeat(64),
+                "rotate".into(),
+            )
+            .unwrap();
+        session
+            .revoke_auth(&mut projection, "openrouter".into(), "revoke".into())
+            .unwrap();
+        session
+            .auth_status(&mut projection, "openrouter".into())
+            .unwrap();
+        session
+            .invoke_auth_helper(
+                &mut projection,
+                "openrouter".into(),
+                serde_json::json!({"profile": "local"}),
+                "helper".into(),
+            )
+            .unwrap();
+        assert_eq!(projection.snapshot().auth_status.unwrap().status, "active");
+        join.join().unwrap();
+    }
+
+    #[test]
     fn remote_failure_paths_preserve_bounded_error_codes() {
         let limits = ControlLimits::default();
         let (mut server, client) = UnixStream::pair().unwrap();
@@ -2457,6 +2586,15 @@ mod tests {
                 .unwrap();
             let mut agent_catalog = agent_catalog;
             agent_catalog.runner_instance_id = runner.into();
+            let mut unavailable_entry = agent_catalog.agents[0].clone();
+            unavailable_entry.agent_id = "agent-z".into();
+            unavailable_entry.package = None;
+            unavailable_entry.provenance = None;
+            unavailable_entry.capabilities.clear();
+            unavailable_entry.availability = crate::agent_catalog::AgentAvailability::Unavailable(
+                crate::agent_catalog::AgentUnavailableReason::IncompleteProvenance,
+            );
+            agent_catalog.agents.push(unavailable_entry);
             agent_catalog.catalog_sha256 = agent_catalog.computed_digest().unwrap();
             let agent_entry = agent_catalog.agents[0].clone();
             let measurement: MeasurementCatalogPublication = serde_json::from_value(
@@ -2597,16 +2735,19 @@ mod tests {
                     ControlCall::AgentCatalog(_) => {
                         ControlResult::AgentCatalog(agent_catalog.clone())
                     }
-                    ControlCall::AgentStatus(params) => ControlResult::AgentLifecycle(
-                        crate::asb_lifecycle::AgentLifecycleResponse {
-                            binding: params.binding,
-                            operation_id: "operation-1".into(),
-                            state: crate::asb_lifecycle::AgentLifecycleState::Active,
-                            generation: 3,
-                            progress_percent: 100,
-                            failure: None,
-                        },
-                    ),
+                    ControlCall::AgentStatus(params) => {
+                        assert_eq!(params.binding.agent_id, "agent-a");
+                        ControlResult::AgentLifecycle(
+                            crate::asb_lifecycle::AgentLifecycleResponse {
+                                binding: params.binding,
+                                operation_id: "operation-1".into(),
+                                state: crate::asb_lifecycle::AgentLifecycleState::Active,
+                                generation: 3,
+                                progress_percent: 100,
+                                failure: None,
+                            },
+                        )
+                    }
                     ControlCall::ProviderCatalog(_) => {
                         ControlResult::ProviderCatalog(provider.clone())
                     }
@@ -2735,9 +2876,14 @@ mod tests {
         let agents = snapshot.agent_catalog.as_ref().unwrap();
         assert_eq!(agents.runner_instance_id, runner);
         assert_eq!(agents.generation, 3);
-        assert_eq!(agents.agents.len(), 1);
+        assert_eq!(agents.agents.len(), 2);
         assert_eq!(agents.agents[0].agent_id, "agent-a");
         assert!(agents.agents[0].package.is_some());
+        assert_eq!(agents.agents[1].agent_id, "agent-z");
+        assert!(matches!(
+            agents.agents[1].availability,
+            crate::agent_catalog::AgentAvailability::Unavailable(_)
+        ));
         let lifecycle = snapshot.agent_lifecycle.as_ref().unwrap();
         assert_eq!(lifecycle.binding.agent_id, "agent-a");
         assert_eq!(lifecycle.binding.runner_instance_id, runner);
