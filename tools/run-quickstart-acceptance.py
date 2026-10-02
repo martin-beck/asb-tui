@@ -54,18 +54,123 @@ def git(checkout: Path, value: str) -> str:
     return subprocess.check_output(["git", "-C", str(checkout), "rev-parse", value], text=True).strip()
 
 
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def asb_json(binary: Path, arguments: list[str], env: dict[str, str]) -> dict:
+    result = subprocess.run(
+        [str(binary), "--json", *arguments],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    lines = result.stdout.splitlines()
+    for line in reversed(lines):
+        try:
+            value = json.loads(line)
+            if result.returncode not in (0, 3):
+                raise AssertionError(f"ASB command failed: {arguments}: {result.stderr}")
+            return value
+        except json.JSONDecodeError:
+            continue
+    raise AssertionError(f"ASB command emitted no JSON: {arguments}: {result.stdout}{result.stderr}")
+
+
+def select_workload_ids(catalog: dict) -> list[str]:
+    return sorted(
+        entry["id"]
+        for entry in catalog["entries"]
+        if entry["platform"].startswith("linux-x86_64") and entry["id"].startswith("original.")
+    )
+
+
+def run_capture_replay_matrix(asb_binary: Path, asb_checkout: Path, env: dict[str, str], root: Path) -> dict:
+    root.mkdir(parents=True, exist_ok=True)
+    fixture = asb_checkout / "crates/asb-replay/fixtures/v1/buffered.json"
+    fixture_document = json.loads(fixture.read_text(encoding="utf-8"))
+    capture = {
+        "schema_version": 1,
+        "provider_profile_sha256": "a" * 64,
+        "agent_id": "codex",
+        "network": "loopback_only",
+        "estimated_cost_minor": 0,
+        "confirmation": {"record": True, "network": True, "cost": False},
+        "contents": fixture_document["contents"],
+    }
+    capture_path = root / "capture.json"
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+    catalog = asb_json(asb_binary, ["workload-catalog"], env)
+    workload_ids = select_workload_ids(catalog)
+    assert workload_ids, "no fixture-only workload catalog entries"
+
+    def campaign(name: str, selected: list[str]) -> tuple[dict, Path]:
+        campaign_root = root / name
+        campaign_root.mkdir()
+        entries = []
+        for workload_id in selected:
+            entries.append({
+                "workload_id": workload_id,
+                "capture_path": str(capture_path),
+                "cassette_path": str(campaign_root / f"{workload_id}.json"),
+            })
+        manifest = {
+            "schema_version": 1,
+            "provider_profile_sha256": "a" * 64,
+            "agent_ids": ["codex"],
+            "workload_ids": selected,
+            "entries": entries,
+        }
+        manifest_path = campaign_root / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return asb_json(asb_binary, ["easy", "record-campaign", str(manifest_path), "--local-mock"], env), campaign_root
+
+    selected, selected_root = campaign("selected", workload_ids[:1])
+    assert selected["complete_coverage"] and selected["offline_ready"], selected
+    all_workloads, all_root = campaign("all", workload_ids)
+    assert all_workloads.get("complete_coverage") and all_workloads.get("offline_ready"), all_workloads
+
+    incomplete_manifest = json.loads((all_root / "manifest.json").read_text(encoding="utf-8"))
+    incomplete_manifest["entries"] = incomplete_manifest["entries"][:-1]
+    incomplete_path = root / "incomplete.json"
+    incomplete_path.write_text(json.dumps(incomplete_manifest), encoding="utf-8")
+    incomplete = asb_json(asb_binary, ["easy", "record-campaign", str(incomplete_path), "--local-mock"], env)
+    assert not incomplete["complete_coverage"] and not incomplete["offline_ready"], incomplete
+
+    strict_fixture = asb_checkout / "crates/asb-replay/fixtures/v1/gemini-generate-content.json"
+    strict_digest = json.loads(strict_fixture.read_text(encoding="utf-8"))["integrity"]["digest"]
+    replay = asb_json(
+        asb_binary,
+        ["easy", "replay-offline", str(strict_fixture), "a" * 64, "codex", "--local-mock"],
+        env,
+    )
+    assert replay["ok"] and replay["network"] == "denied" and replay["source"] == "strict_replay", replay
+    return {
+        "selected": {"workload_count": 1, "tuple_count": selected["tuple_count"], "cassette_sha256": sha256(selected_root / f"{workload_ids[0]}.json")},
+        "all": {"workload_count": len(workload_ids), "tuple_count": all_workloads["tuple_count"]},
+        "incomplete_matrix": {"complete_coverage": incomplete["complete_coverage"], "offline_ready": incomplete["offline_ready"]},
+        "strict_replay": {"cassette_sha256": strict_digest, "result_digest": replay["result_digest"], "network": replay["network"]},
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--asb-checkout", type=Path, default=Path(os.environ.get("ASB_SOURCE_CHECKOUT", "/srv/data/projects/agent-systems-benchmark")))
     parser.add_argument("--asb-head")
+    parser.add_argument("--asb-binary", type=Path, default=Path(os.environ.get("ASB_BINARY", "")) if os.environ.get("ASB_BINARY") else None)
     parser.add_argument("--json", action="store_true", help="print the machine-readable receipt")
     args = parser.parse_args()
     checkout = Path(__file__).parents[1].resolve()
     binary = args.binary.resolve()
     asb_checkout = args.asb_checkout.resolve()
     asb_head = args.asb_head or git(asb_checkout, "HEAD")
+    asb_binary = (args.asb_binary or (asb_checkout / "target/debug/asb")).resolve()
+    if not asb_binary.is_file():
+        raise SystemExit(f"ASB binary is missing: {asb_binary}")
     env = os.environ.copy()
     with tempfile.TemporaryDirectory(prefix="asb-tui-quickstart-") as disposable:
         env.update({
@@ -77,6 +182,7 @@ def main() -> int:
             "ALL_PROXY": "http://127.0.0.1:1",
             "NO_PROXY": "*",
         })
+        matrix = run_capture_replay_matrix(asb_binary, asb_checkout, env, Path(disposable) / "matrix")
         status = invoke(binary, ["tui", "status", "--channel", "dev", "--json"], {}, env)
         assert status["channel"] == "dev" and status["code"] == "development_not_installed", status
         launch = invoke(binary, ["tui", "launch", "--channel", "dev", "--json"], {}, env)
@@ -108,15 +214,16 @@ def main() -> int:
             assert test.returncode == 0, f"{test_name}: {test.stdout}{test.stderr}"
     manifest = checkout / "release" / "channel-status.json"
     receipt = {
-        "schema_version": 1, "ar": "AR-1660", "classification": "development/mock",
+        "schema_version": 1, "ar": "AR-1688/AR-1689", "classification": "development/mock",
         "network": "denied", "credentials": "none",
         "selection": {"channel": "dev", "provider": "fixture", "auth": "development_fixture", "agent": "opencode", "model": "fixture-model", "cassette": "strict-replay-cassette", "replay": "offline"},
-        "routes": {"install": status, "launch": launch, "onboarding": onboarding, "journey": journey, "provider_selection": "provider_lifecycle_1656 passed", "fanout_capture_replay": "coverage_setup_recording and development_journey passed", "end_to_end_test": "passed"},
+        "routes": {"install": status, "launch": launch, "onboarding": onboarding, "journey": journey, "provider_selection": "provider_lifecycle_1656 passed", "fanout_capture_replay": "coverage_setup_recording and development_journey passed", "end_to_end_test": "passed", "capture_replay_matrix": matrix, "comparison": "end_to_end_qualification passed"},
         "provenance": {
             "tui_commit": git(checkout, "HEAD"), "tui_tree": git(checkout, "HEAD^{tree}"),
             "asb_commit": asb_head, "asb_tree": git(asb_checkout, f"{asb_head}^{{tree}}"),
             "manifest": "release/channel-status.json", "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
             "executable_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "asb_binary_sha256": sha256(asb_binary),
         },
     }
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
