@@ -25,6 +25,21 @@ pub enum FanoutSelectionError {
     Invalid(&'static str),
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum FanoutDispatchError {
+    Selection(FanoutSelectionError),
+    Transport(TransportError),
+}
+
+impl fmt::Display for FanoutDispatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Selection(error) => error.fmt(f),
+            Self::Transport(error) => write!(f, "fan-out control route: {error:?}"),
+        }
+    }
+}
+
 impl fmt::Display for FanoutSelectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -185,10 +200,12 @@ impl FanoutDispatchState {
         projection: &mut ControlProjection,
         idempotency_key: String,
         selection: FanoutSelection,
-    ) -> Result<(), FanoutSelectionError> {
-        let selection = selection.canonicalize()?;
+    ) -> Result<(), FanoutDispatchError> {
+        let selection = selection
+            .canonicalize()
+            .map_err(FanoutDispatchError::Selection)?;
         self.admit(backend, projection, idempotency_key, selection.requests())
-            .map_err(|_| FanoutSelectionError::Invalid("control route"))?;
+            .map_err(FanoutDispatchError::Transport)?;
         self.selection = Some(selection);
         Ok(())
     }
@@ -239,6 +256,27 @@ impl FanoutDispatchState {
 mod tests {
     use super::*;
 
+    struct FailingBackend(TransportError);
+    impl FanoutBackend for FailingBackend {
+        fn admit_fanout(
+            &mut self,
+            _projection: &mut ControlProjection,
+            _idempotency_key: String,
+            _requests: Vec<serde_json::Value>,
+        ) -> Result<FanoutAdmission, TransportError> {
+            Err(std::mem::replace(&mut self.0, TransportError::Projection))
+        }
+
+        fn cancel_fanout(
+            &mut self,
+            _projection: &mut ControlProjection,
+            _idempotency_key: String,
+            _members: Vec<FanoutMember>,
+        ) -> Result<(), TransportError> {
+            Err(TransportError::Projection)
+        }
+    }
+
     #[test]
     fn selected_scope_is_canonical_and_expands_deterministically() {
         let selection = FanoutSelection {
@@ -287,5 +325,47 @@ mod tests {
         let json = report.json();
         assert!(json.contains("\"status\":\"unavailable\""));
         assert!(!json.contains("api_key"));
+    }
+
+    #[test]
+    fn admission_preserves_reconciliation_and_transport_error_classes() {
+        let selection = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+        };
+        let mut state = FanoutDispatchState::default();
+        let mut projection = ControlProjection::default();
+        let error = state
+            .admit_selected(
+                &mut FailingBackend(TransportError::RemoteFailureCode(-33008)),
+                &mut projection,
+                "key".into(),
+                selection.clone(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            FanoutDispatchError::Transport(TransportError::RemoteFailureCode(-33008))
+        );
+        if let FanoutDispatchError::Transport(transport) = &error {
+            assert!(transport.is_reconciliation_required());
+        } else {
+            panic!("expected transport error");
+        }
+        let invalid = state
+            .admit_selected(
+                &mut FailingBackend(TransportError::RemoteFailure),
+                &mut projection,
+                "key".into(),
+                FanoutSelection {
+                    agent_ids: vec![],
+                    ..selection
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            invalid,
+            FanoutDispatchError::Selection(FanoutSelectionError::Empty("agents"))
+        );
     }
 }
