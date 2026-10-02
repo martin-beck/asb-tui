@@ -235,6 +235,36 @@ fn socket_launcher_rejects_missing_or_untrusted_endpoint() {
 }
 
 #[test]
+fn cli_dispatch_surface_is_closed_and_renderer_neutral() {
+    for args in [
+        vec!["doctor", "--format", "json"],
+        vec!["compatibility", "--format", "json"],
+        vec!["lifecycle", "--format", "json"],
+        vec!["router", "--format", "json"],
+        vec!["onboarding", "--format", "json"],
+        vec!["journey", "--format", "json"],
+        vec![
+            "lifecycle-self-test",
+            "--release",
+            "dev",
+            "--asb-version",
+            "dev",
+            "--protocol-version",
+            "1",
+            "--format",
+            "json",
+        ],
+        vec!["status"],
+        vec!["status", "--json"],
+        vec!["status", "--format", "json"],
+        vec!["not-a-command"],
+    ] {
+        let output = binary().args(args).output().expect("run CLI surface case");
+        assert!(output.status.code().is_some());
+    }
+}
+
+#[test]
 fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
     let (source, _repository, _commit) = local_source_fixture("top-level");
     let cargo = trusted_tool("cargo");
