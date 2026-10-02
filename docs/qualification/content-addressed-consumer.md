@@ -5,6 +5,7 @@
 Run this check from a clean, already-built ASB/TUI pair:
 
 ```sh
+python3 tools/test-content-addressed-qualification.py
 python3 tools/run-content-addressed-qualification.py target/release/asb-tui \
   --asb-binary /path/to/asb/target/release/asb \
   --asb-checkout /path/to/agent-systems-benchmark \

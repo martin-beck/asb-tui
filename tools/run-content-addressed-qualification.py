@@ -19,6 +19,38 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+_SECRET_ENV_MARKERS = (
+    "API_KEY",
+    "APIKEY",
+    "ACCESS_TOKEN",
+    "AUTH_TOKEN",
+    "CREDENTIAL",
+    "PASSWORD",
+    "PRIVATE_KEY",
+    "SECRET",
+    "TOKEN",
+)
+
+
+def sanitized_environment() -> dict[str, str]:
+    """Return a child environment with credential-bearing names removed."""
+
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not any(marker in name.upper() for marker in _SECRET_ENV_MARKERS)
+    }
+    environment.update(
+        {
+            "ASB_TUI_NETWORK_POLICY": "deny",
+            "HTTP_PROXY": "http://127.0.0.1:1",
+            "HTTPS_PROXY": "http://127.0.0.1:1",
+            "ALL_PROXY": "http://127.0.0.1:1",
+            "NO_PROXY": "*",
+        }
+    )
+    return environment
+
 
 def git(checkout: Path, ref: str = "HEAD") -> str:
     return subprocess.check_output(
@@ -40,6 +72,7 @@ def json_result(process: subprocess.CompletedProcess[str]) -> dict:
 def run(binary: Path, *args: str, expected: tuple[int, ...] = (0,)) -> dict:
     process = subprocess.run(
         [str(binary), "--json", *args],
+        env=sanitized_environment(),
         text=True,
         capture_output=True,
         check=False,
@@ -159,6 +192,7 @@ def main() -> int:
         agent.write_text("#!/bin/sh\necho changed\nexit 0\n", encoding="utf-8")
         stale = subprocess.run(
             [str(asb), "--json", "run", str(plan_a), "--local-mock"],
+            env=sanitized_environment(),
             text=True,
             capture_output=True,
             check=False,
@@ -172,14 +206,6 @@ def main() -> int:
             "error": stale_result.get("error", {}).get("message"),
         }
 
-        probe_env = {
-            **os.environ,
-            "ASB_TUI_NETWORK_POLICY": "deny",
-            "HTTP_PROXY": "http://127.0.0.1:1",
-            "HTTPS_PROXY": "http://127.0.0.1:1",
-            "ALL_PROXY": "http://127.0.0.1:1",
-            "NO_PROXY": "*",
-        }
         tui_probe = subprocess.run(
             [str(tui), "journey", "--format", "json"],
             input=json.dumps(
@@ -197,7 +223,7 @@ def main() -> int:
                 }
             )
             + "\n",
-            env=probe_env,
+            env=sanitized_environment(),
             text=True,
             capture_output=True,
             check=False,
