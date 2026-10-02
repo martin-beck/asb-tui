@@ -79,6 +79,8 @@ def main() -> int:
         })
         status = invoke(binary, ["tui", "status", "--channel", "dev", "--json"], {}, env)
         assert status["channel"] == "dev" and status["code"] == "development_not_installed", status
+        launch = invoke(binary, ["tui", "launch", "--channel", "dev", "--json"], {}, env)
+        assert launch["code"] == "development_launch_unavailable", launch
         onboarding = invoke(binary, ["onboarding", "--format", "json"], {
             "schema_version": 1, "profile": "development", "bundle_available": True,
             "broker_available": True, "protocol_version": 1,
@@ -92,17 +94,24 @@ def main() -> int:
             "expected_protocol_version": 1,
         }, env)
         assert journey["code"] == "development_journey_ready", journey
-        test = subprocess.run(
-            ["cargo", "test", "--locked", "--test", "end_to_end_qualification"],
-            cwd=checkout, env=env, text=True, capture_output=True, check=False,
-        )
-        assert test.returncode == 0, test.stdout + test.stderr
+        qualification_tests = [
+            "provider_lifecycle_1656",  # OpenCode/OpenDesk/model selection and defaults.
+            "coverage_setup_recording",  # fan-out, capture, cancellation, and replay dispatch.
+            "development_journey",  # credential-free capture/replay/comparison fixture.
+            "end_to_end_qualification",  # complete install-to-comparison acceptance.
+        ]
+        for test_name in qualification_tests:
+            test = subprocess.run(
+                ["cargo", "test", "--locked", "--test", test_name],
+                cwd=checkout, env=env, text=True, capture_output=True, check=False,
+            )
+            assert test.returncode == 0, f"{test_name}: {test.stdout}{test.stderr}"
     manifest = checkout / "release" / "channel-status.json"
     receipt = {
         "schema_version": 1, "ar": "AR-1660", "classification": "development/mock",
         "network": "denied", "credentials": "none",
         "selection": {"channel": "dev", "provider": "fixture", "auth": "development_fixture", "agent": "opencode", "model": "fixture-model", "cassette": "strict-replay-cassette", "replay": "offline"},
-        "routes": {"install": status, "onboarding": onboarding, "journey": journey, "end_to_end_test": "passed"},
+        "routes": {"install": status, "launch": launch, "onboarding": onboarding, "journey": journey, "provider_selection": "provider_lifecycle_1656 passed", "fanout_capture_replay": "coverage_setup_recording and development_journey passed", "end_to_end_test": "passed"},
         "provenance": {
             "tui_commit": git(checkout, "HEAD"), "tui_tree": git(checkout, "HEAD^{tree}"),
             "asb_commit": asb_head, "asb_tree": git(asb_checkout, f"{asb_head}^{{tree}}"),
