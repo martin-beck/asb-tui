@@ -3156,6 +3156,50 @@ mod tests {
     }
 
     #[test]
+    fn development_handoff_navigation_and_projections_render_all_outcomes() {
+        let mut state = WorkspaceState::default();
+        assert_eq!(state.handle_key(key(KeyCode::Char('d'))), UiAction::None);
+        assert_eq!(state.screen, Screen::DevelopmentHandoff);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            UiAction::Control(crate::actions::UiAction::MaterializeDevelopment)
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        for phase in [
+            crate::development_handoff::Phase::Cloning,
+            crate::development_handoff::Phase::Building,
+            crate::development_handoff::Phase::Installing,
+            crate::development_handoff::Phase::Installed,
+            crate::development_handoff::Phase::RolledBack,
+            crate::development_handoff::Phase::Failed,
+            crate::development_handoff::Phase::Incompatible,
+        ] {
+            state.development_handoff.phase = phase;
+            state.development_handoff.source_commit = Some("a".repeat(40));
+            state.development_handoff.source_tree = Some("b".repeat(40));
+            state.development_handoff.executable_sha256 = Some("c".repeat(64));
+            terminal
+                .draw(|frame| render(frame, &state, policy()))
+                .unwrap();
+        }
+        state.development_handoff.phase = crate::development_handoff::Phase::Ready;
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char(' '))),
+            UiAction::Control(crate::actions::UiAction::MaterializeDevelopment)
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('x'))),
+            UiAction::Control(crate::actions::UiAction::CancelDevelopment)
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('r'))),
+            UiAction::Control(crate::actions::UiAction::RetryDevelopment)
+        );
+        assert_eq!(state.handle_key(key(KeyCode::Esc)), UiAction::None);
+        assert_eq!(state.screen, Screen::Landing);
+    }
+
+    #[test]
     fn key_handling_covers_help_navigation_and_search_edges() {
         let mut state = WorkspaceState::default();
         assert_eq!(state.handle_key(key(KeyCode::Char('h'))), UiAction::None);
