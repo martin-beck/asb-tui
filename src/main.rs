@@ -19,7 +19,10 @@ use asb_tui::{
     },
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
-    terminal_handoff::{redirect_stdin_to_controlling_terminal, redirect_stdin_to_terminal_path},
+    terminal_handoff::{
+        redirect_stdin_to_controlling_terminal, redirect_stdin_to_development_terminal,
+        redirect_stdin_to_terminal_path,
+    },
     top_level::{self, TuiCommand},
 };
 use std::{env, process::ExitCode};
@@ -254,7 +257,7 @@ fn launch_broker_entry(development_mode: bool) -> ExitCode {
             env::var_os("ASB_TUI_DEVELOPMENT_TERMINAL_PATH"),
         ) {
             Some(path) => redirect_stdin_to_terminal_path(std::path::Path::new(&path)),
-            None => redirect_stdin_to_controlling_terminal(),
+            None => redirect_stdin_to_development_terminal(),
         }
     } else {
         redirect_stdin_to_controlling_terminal()

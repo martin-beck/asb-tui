@@ -283,7 +283,7 @@ fn real_asb_tui_socket_consumer_negotiates_bootstrap_and_exits_from_pty() {
 }
 
 #[test]
-fn real_asb_tui_broker_handoff_uses_fd0_and_injected_pty() {
+fn real_asb_tui_broker_handoff_uses_fd0_and_attached_output_pty() {
     let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC).unwrap();
     grantpt(&master).unwrap();
     unlockpt(&master).unwrap();
@@ -292,10 +292,6 @@ fn real_asb_tui_broker_handoff_uses_fd0_and_injected_pty() {
         OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC,
     )
     .unwrap();
-    let terminal_path = rustix::termios::ttyname(&slave, Vec::new())
-        .unwrap()
-        .into_string()
-        .unwrap();
     tcsetwinsize(
         &master,
         Winsize {
@@ -377,7 +373,9 @@ fn real_asb_tui_broker_handoff_uses_fd0_and_injected_pty() {
         .args(["run", "--broker", "--development"])
         .env_clear()
         .env("TERM", "xterm-256color")
-        .env("ASB_TUI_DEVELOPMENT_TERMINAL_PATH", &terminal_path)
+        // Exercise the production startup path: stdin is the inherited broker
+        // stream, while stdout/stderr are the attached PTY used as the
+        // development terminal fallback.
         .env(
             "ASB_TUI_DEVELOPMENT_DESCRIPTOR",
             serde_json::json!({
