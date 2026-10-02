@@ -3,7 +3,7 @@
   "ui_modules": [
     {"path":"src/actions.rs","kind":"interaction","responsibility":"Closed action registry including benchmark selection, cassette lifecycle repair, bounded retry, and digest-bound live/offline comparison commands"},
     {"path":"src/fanout_dispatch.rs","kind":"dispatch","responsibility":"Typed selected-agent fan-out admission and exact-member cancellation dispatch with renderer-neutral pending state"},
-    {"path":"src/adapter_catalog.rs","kind":"state","responsibility":"Stable coding-agent adapter catalog, explicit OpenCode/OpenDesk provider/model/auth compatibility matrix, development-only fixtures, defaults and per-agent overrides, unavailable reasons, offline validation, and transactional cancel/retry selection preservation"},
+    {"path":"src/adapter_catalog.rs","kind":"state","responsibility":"Stable coding-agent adapter catalog, explicit OpenCode/OpenDesk provider/model/auth compatibility matrix and deterministic tuple report, development-only fixtures, defaults and per-agent overrides, unavailable reasons, offline validation, and transactional cancel/retry selection preservation"},
     {"path":"src/app.rs","kind":"state"},
     {"path":"src/configuration.rs","kind":"state","responsibility":"Bounded configuration drafts, local persistence, and fail-closed startup state"},
     {"path":"src/formal_state.rs","kind":"state","responsibility":"Renderer-neutral workspace, wizard, and terminal-resize transition validation, typed multi-agent catalog actions, nested benchmark-picker bindings, and source/model element bindings"},
