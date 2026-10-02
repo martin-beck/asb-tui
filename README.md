@@ -48,6 +48,11 @@ compact fallback; an oversized initial terminal or resize fails closed and resto
 See `provenance/dependencies.lock.json` for exact tooling provenance and
 `protocol/v1/capabilities.schema.json` for the proposed external JSON boundary.
 
+The concise install-to-compare operator path is documented in
+[docs/OPERATOR_QUICKSTART.md](docs/OPERATOR_QUICKSTART.md). It keeps the
+human-readable default and explicit `--json` automation boundary visible while
+describing selection-driven wizard prompts and development-only warnings.
+
 ## Verification
 
 `cargo test --locked` exercises the closed capability contract, including unknown, missing,
