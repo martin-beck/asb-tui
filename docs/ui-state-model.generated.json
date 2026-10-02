@@ -416,7 +416,6 @@
       "id": "landing",
       "elements": [
         "landing.primary",
-        "development_handoff.primary",
         "navigation",
         "status.connection"
       ]
@@ -501,15 +500,6 @@
       "help_id": "screen.landing",
       "focusable": true,
       "hoverable": true,
-      "parent": null
-    },
-    {
-      "id": "development_handoff.primary",
-      "route": "landing",
-      "role": "action",
-      "help_id": "screen.development_handoff",
-      "focusable": true,
-      "hoverable": false,
       "parent": null
     },
     {

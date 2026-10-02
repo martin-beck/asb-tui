@@ -84,10 +84,6 @@ fn development_handoff_actions_are_formally_executable_and_bounded() {
             .any(|field| field == "development_handoff")
     );
     let bindings = model["bindings"].as_array().unwrap();
-    assert!(model["elements"].as_array().unwrap().iter().any(|element| {
-        element["id"] == "development_handoff.primary"
-            && element["help_id"] == "screen.development_handoff"
-    }));
     for action in [
         "open_development_handoff",
         "materialize_development",
