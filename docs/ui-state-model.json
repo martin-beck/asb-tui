@@ -3,7 +3,7 @@
   "model": "asb-tui.ui-state",
   "authentication_handoff": "Provider secrets are enrolled through an approved external keychain/helper; the wizard accepts only credential_helper:<endpoint_sha256>:<locator_sha256>.",
   "auth_status_after_enrollment": "After helper enrollment or invocation, the wizard reads runner-authored status and projects only digest metadata before applying provider/model configuration.",
-  "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable. Provider setup review is catalog-bound and applies at most once for the observed generation. Adapter and provider/model/auth tuples are stable-mode fail-closed and development-mode warning-only against an explicit fixture catalog. Materialized benchmark campaigns remain bound to the reviewed pool, group, benchmark, and available-measure membership. Live benchmark catalog projections are digest-validated and generation-fenced, so stale publications cannot replace the authoritative snapshot. Recording all-workloads is an explicit marker expanded from that authoritative catalog before dispatch; it is never serialized as an empty workload list, and progress polling is bounded per campaign. Offline cassette replay requires an explicit authenticated digest selection before dispatch. Seal, reopen, remove, retry, and live/offline comparison actions carry runner, campaign/run, generation, and idempotency identity through typed control dispatch; report cursor selection supplies the selected run and bounded comparison pair to those actions. Selected-agent fan-out admission and cancellation are generation- and idempotency-bound, and their projection remains explicit while work is pending or unavailable.",
+  "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable. Provider setup review is catalog-bound and applies at most once for the observed generation. Adapter and provider/model/auth tuples are stable-mode fail-closed and development-mode warning-only against an explicit fixture catalog. Materialized benchmark campaigns remain bound to the reviewed pool, group, benchmark, and available-measure membership. Live benchmark catalog projections are digest-validated and generation-fenced, so stale publications cannot replace the authoritative snapshot. Recording all-workloads is an explicit marker expanded from that authoritative catalog before dispatch; it is never serialized as an empty workload list, and progress polling is bounded per campaign. Offline cassette replay requires an explicit authenticated digest selection before dispatch. Seal, reopen, remove, retry, and live/offline comparison actions carry runner, campaign/run, generation, and idempotency identity through typed control dispatch; report cursor selection supplies the selected run and bounded comparison pair to those actions. Selected-agent fan-out admission and cancellation are generation- and idempotency-bound, and their projection remains explicit while work is pending or unavailable. Wizard editing and development handoff projections remain bounded, recoverable, and credential-free across their tested boundary states.",
   "initial": "landing",
   "layouts": ["wide", "compact", "tiny"],
   "state_fields": ["route", "focus", "hover", "query", "selection", "benchmark_catalog", "benchmark_selection", "benchmark_catalog_generation", "measurement_catalog", "connection", "capabilities", "provider_catalog", "provider_catalog_generation", "provider_registry_profile", "provider_registry_status", "provider_registry_model_count", "live_setup_catalog", "development_catalog_fallback", "development_handoff", "wizard_mode", "wizard_adapter", "configuration", "auth_status", "auth_unavailable", "auth_development_only", "auth_unavailable_reason", "recording_campaign", "recording_estimate", "recording_campaign_lifecycle", "recording_dispatch_action", "recording_progress_requests", "fanout_projection", "analysis_summary", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_completion", "provider_setup_review", "configuration_persistence"],
@@ -81,7 +81,7 @@
     ,{"action":"cancel_fanout","element":"run.cancel","key":"Ctrl-Z"}
   ],
   "routes": [
-    {"id":"landing","elements":["landing.primary","navigation","status.connection"]},
+    {"id":"landing","elements":["landing.primary","development_handoff.primary","navigation","status.connection"]},
     {"id":"wizard","elements":["wizard.agent","wizard.provider","wizard.model","wizard.configuration","wizard.authentication","wizard.recording","wizard.replay","wizard.review","wizard.controls","navigation"]},
     {"id":"measurement_selection","elements":["benchmarks.search","benchmarks.pool","benchmarks.group_toggle","benchmarks.row","measures.search","measures.row","measures.group_toggle","navigation"]},
     {"id":"configuration","elements":["configuration.entry","configuration.search","configuration.control_status","configuration.preflight","navigation"]},
@@ -92,6 +92,7 @@
   ],
   "elements": [
     {"id":"landing.primary","route":"landing","role":"action","help_id":"screen.landing","focusable":true,"hoverable":true,"parent":null},
+    {"id":"development_handoff.primary","route":"landing","role":"action","help_id":"screen.development_handoff","focusable":true,"hoverable":false,"parent":null},
     {"id":"measures.search","route":"measurement_selection","role":"editable","help_id":"measures.search","focusable":true,"hoverable":true,"parent":null},
     {"id":"measures.row","route":"measurement_selection","role":"selectable","help_id":"measures.row","focusable":true,"hoverable":true,"parent":null},
     {"id":"measures.group_toggle","route":"measurement_selection","role":"action","help_id":"measures.group_toggle","focusable":true,"hoverable":true,"parent":null},
@@ -185,6 +186,7 @@
   ],
   "help": [
     {"id":"screen.landing","text":"Choose a benchmark task or open another screen."},
+    {"id":"screen.development_handoff","text":"Review development-only provenance, warnings, cancellation, and recovery actions."},
     {"id":"wizard.agent","text":"Search and choose an available agent for this benchmark."},
     {"id":"wizard.provider","text":"Search and choose a provider for the selected agent."},
     {"id":"wizard.model","text":"Search and choose a model exposed by the selected provider."},
