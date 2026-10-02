@@ -151,6 +151,34 @@ mod tests {
     }
 
     #[test]
+    fn development_mode_warns_without_blocking_every_guided_route() {
+        for route in Route::ALL {
+            let output = Output::for_route(route);
+            assert_eq!(output.status, "unavailable");
+            let warning = output
+                .development_warning
+                .expect("development mode must explain its non-blocking boundary");
+            assert!(warning.contains("development-only"));
+            assert!(warning.contains("no credentials were used"));
+            assert!(warning.contains("not verified"));
+
+            let json = render(route, true);
+            assert!(json.contains("development_warning"));
+            assert!(!json.contains("api_key"));
+            assert!(!json.contains("signature_required"));
+            assert!(!json.contains("key_management_required"));
+        }
+    }
+
+    #[test]
+    fn human_development_warning_is_visible_without_being_an_error() {
+        let human = render(Route::Setup, false);
+        assert!(human.starts_with("setup\nStatus: unavailable\n"));
+        assert!(human.contains("Warning: development-only:"));
+        assert!(human.contains("no credentials were used"));
+    }
+
+    #[test]
     fn all_routes_have_a_selectable_name() {
         for route in Route::ALL {
             assert_eq!(Route::parse(route.name()), Some(route));

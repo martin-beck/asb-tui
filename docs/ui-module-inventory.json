@@ -23,7 +23,7 @@
     {"path":"src/wizard_catalog.rs","kind":"state","responsibility":"Bounded renderer-neutral agent, provider, and model choices, deterministic development fallback catalog, explicit draft reset, multi-agent/all-agent selection, and compatibility filtering for the setup wizard"}
   ],
   "exemptions": [
-    {"path":"src/output_contract.rs","reason":"Stable guided command output contract only; it owns no UI state, route, widget, projection, or formal model surface. Coverage tests are maintained with the contract module.","expires":"2027-12-31"},
+    {"path":"src/output_contract.rs","reason":"Stable guided command output contract only; it owns no UI state, route, widget, projection, or formal model surface. Coverage tests, including AR-1621 development-auth non-blocking warnings, are maintained with the contract module.","expires":"2027-12-31"},
     {"path":"src/frontend_handoff.rs","reason":"Installed frontend handoff envelope and environment projection only; it owns no UI state, route, widget, or formal model surface.","expires":"2027-12-31"},
     {"path":"src/credential_helper.rs","reason":"Strict credential-helper receipt codec only; it represents no raw secret, UI state, or projection ownership.","expires":"2027-12-31"},
     {"path":"src/agent_catalog.rs","reason":"Agent catalog protocol adapter, authenticated provenance validation, incomplete-entry projection boundary, and canonical digest verification only; it has no UI state or projection ownership.","expires":"2027-12-31"},

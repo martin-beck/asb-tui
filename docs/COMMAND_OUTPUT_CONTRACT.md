@@ -29,6 +29,16 @@ contains a secret, endpoint, local path, environment value, or provider
 payload.  A channel-unavailable result belongs to the selected lifecycle
 route; it is not reported as a generic benchmark protocol failure.
 
+For a source checkout or the default `dev` channel, this warning is
+informational: an absent provider API key, release signature, or local key
+manager must not prevent opening the guided setup screen or continuing to
+configure a development run.  The TUI may show the missing capability and
+offer the next setup action, but it must not turn it into an authentication
+prompt that blocks the prototype.  This development boundary does not weaken
+published-release verification: production bundle installation and upgrade
+still fail closed when an authenticated manifest or its trust anchor is
+missing or invalid.
+
 The existing `doctor --format json`, `compatibility --format json`, and
 lifecycle JSON protocols remain unchanged for callers that already consume
 those compatibility interfaces.
