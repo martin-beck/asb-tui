@@ -15,23 +15,27 @@ development envelope on standard input and require an explicit development
 marker:
 
 ```console
-asb-tui tui status --development --format json < status-request.json
-asb-tui tui install --development --format json < install-request.json
-asb-tui tui upgrade --development --format json < upgrade-request.json
-asb-tui tui launch --development --format json < launch-request.json
-asb-tui tui remove --development --format json < remove-request.json
+asb-tui tui status --development --json < status-request.json
+asb-tui tui install --development --json < install-request.json
+asb-tui tui upgrade --development --json < upgrade-request.json
+asb-tui tui launch --development --json < launch-request.json
+asb-tui tui remove --development --json < remove-request.json
 ```
 
 For a local, credential-free development materialization, the same lifecycle
 can be run without an envelope:
 
 ```console
-asb-tui tui install --channel dev --format json
-asb-tui tui status --channel dev --format json
-asb-tui tui launch --channel dev --format json
-asb-tui tui upgrade --channel dev --format json
-asb-tui tui remove --channel dev --format json
+asb-tui tui install --channel dev
+asb-tui tui status --channel dev
+asb-tui tui launch --channel dev
+asb-tui tui upgrade --channel dev
+asb-tui tui remove --channel dev
 ```
+
+Lifecycle commands default to concise human-readable diagnostics. Add
+`--json` for machine-readable output; the existing `--format json` spelling is
+retained as a compatibility alias.
 
 The development channel is the only currently available channel. A fresh
 selection defaults to `dev`; the selected channel is projected in every

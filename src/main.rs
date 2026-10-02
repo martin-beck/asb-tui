@@ -169,12 +169,49 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: asb-tui [run|run --broker|run --socket PATH] | tui | tui <install|upgrade|status|launch|remove> --channel dev --format json | tui <install|upgrade|status|launch|remove> --development --format json | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
+        "usage: asb-tui [run|run --broker|run --socket PATH] | tui | tui <install|upgrade|status|launch|remove> --channel dev [--json|--format json] | tui <install|upgrade|status|launch|remove> --development [--json|--format json] | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
     );
     ExitCode::from(2)
 }
 
+fn print_lifecycle_response<T: serde::Serialize>(response: &T, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(response).expect("serialize lifecycle response")
+        );
+        return;
+    }
+    let value = serde_json::to_value(response).expect("serialize lifecycle response");
+    for key in [
+        "channel",
+        "code",
+        "ok",
+        "classification",
+        "development_only",
+        "installed",
+        "verified",
+        "source_commit",
+        "source_tree",
+    ] {
+        if let Some(value) = value.get(key).filter(|value| !value.is_null()) {
+            let rendered = value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| value.to_string());
+            println!("{key}: {rendered}");
+        }
+    }
+    if let Some(warnings) = value.get("warnings") {
+        println!("warnings: {warnings}");
+    }
+}
+
 fn launch_tui_command(arguments: &[String]) -> ExitCode {
+    let json = arguments
+        .windows(2)
+        .any(|window| window == ["--format", "json"])
+        || arguments.iter().any(|argument| argument == "--json");
     let command = match top_level::parse(arguments) {
         Ok(command) => command,
         Err(error) => {
@@ -193,10 +230,7 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
             if let Some(code) = selection.warning {
                 let response = asb_tui::delegated::LifecycleResponse::result(false, code)
                     .with_channel(selection.requested.as_str());
-                println!(
-                    "{}",
-                    serde_json::to_string(&response).expect("serialize channel selection response")
-                );
+                print_lifecycle_response(&response, json);
                 return ExitCode::from(3);
             }
             if let TuiCommand::Lifecycle {
@@ -204,19 +238,12 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
             } = command
             {
                 let response = asb_tui::development_lifecycle::execute(operation.as_str());
-                println!(
-                    "{}",
-                    serde_json::to_string(&response)
-                        .expect("serialize development lifecycle response")
-                );
+                print_lifecycle_response(&response, json);
                 ExitCode::from(if response.ok { 0 } else { 3 })
             } else {
                 let response =
                     top_level::execute_lifecycle(operation, channel, std::io::stdin().lock());
-                println!(
-                    "{}",
-                    serde_json::to_string(&response).expect("serialize lifecycle response")
-                );
+                print_lifecycle_response(&response, json);
                 ExitCode::from(if response.ok { 0 } else { 3 })
             }
         }

@@ -32,8 +32,11 @@ missing authentication, signatures, and key management visible warnings rather t
 This path is deliberately separate from the signed production release channel.
 The standalone package also supplies the bounded target for the parent
 `asb tui` command. `asb-tui tui` launches the application; lifecycle commands
-such as `asb-tui tui status --development --format json` use the explicit
-development router envelope described in [top-level routing](docs/TOP_LEVEL_ROUTING.md).
+default to concise human-readable diagnostics. Add `--json` (or the retained
+`--format json` compatibility alias) for machine-readable output. For example,
+`asb-tui tui status --development` is human-readable and
+`asb-tui tui status --development --json` is JSON. These commands use the
+explicit development router envelope described in [top-level routing](docs/TOP_LEVEL_ROUTING.md).
 This development seam does not claim a public ASB router or a verified release.
 The Unix lifecycle registers restoration handlers before terminal acquisition: `SIGHUP`, `SIGINT`,
 `SIGQUIT`, and `SIGTERM` restore acquired effects before preserving the signal's default exit,
