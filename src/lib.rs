@@ -24,6 +24,7 @@ pub mod credential_helper;
 pub mod delegated;
 pub mod development_auth;
 pub mod development_broker;
+pub mod development_handoff;
 pub mod development_journey;
 pub mod development_lifecycle;
 pub mod development_onboarding;

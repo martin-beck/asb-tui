@@ -657,6 +657,37 @@ fn run_interactive_loop(
                         state.apply(Action::Quit)?;
                     }
                     if let ui::UiAction::Control(control_action) = ui_action
+                        && matches!(
+                            control_action,
+                            crate::actions::UiAction::MaterializeDevelopment
+                                | crate::actions::UiAction::RetryDevelopment
+                        )
+                    {
+                        if development_mode {
+                            let operation = if workspace.development_handoff.phase
+                                == crate::development_handoff::Phase::Installed
+                            {
+                                "upgrade"
+                            } else {
+                                "install"
+                            };
+                            let response = crate::development_lifecycle::execute(operation);
+                            workspace.development_handoff.apply_response(&response);
+                        } else {
+                            workspace.development_handoff.phase =
+                                crate::development_handoff::Phase::Failed;
+                            workspace.development_handoff.code =
+                                "development_profile_required".into();
+                        }
+                        continue;
+                    }
+                    if matches!(
+                        ui_action,
+                        ui::UiAction::Control(crate::actions::UiAction::CancelDevelopment)
+                    ) {
+                        continue;
+                    }
+                    if let ui::UiAction::Control(control_action) = ui_action
                         && let (Some(control), Some(projection)) =
                             (control.as_deref_mut(), projection.as_deref_mut())
                     {
