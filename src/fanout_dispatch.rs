@@ -330,6 +330,36 @@ mod tests {
         }
     }
 
+    struct SuccessfulBackend {
+        cancel_error: Option<TransportError>,
+    }
+
+    impl FanoutBackend for SuccessfulBackend {
+        fn admit_fanout(
+            &mut self,
+            _projection: &mut ControlProjection,
+            _idempotency_key: String,
+            _requests: Vec<serde_json::Value>,
+        ) -> Result<FanoutAdmission, TransportError> {
+            Ok(FanoutAdmission {
+                idempotency_key: "fanout".into(),
+                members: vec![FanoutMember {
+                    run_id: crate::control_codec::RunId("run".into()),
+                    attempt_id: crate::control_codec::AttemptId("attempt".into()),
+                }],
+            })
+        }
+
+        fn cancel_fanout(
+            &mut self,
+            _projection: &mut ControlProjection,
+            _idempotency_key: String,
+            _members: Vec<FanoutMember>,
+        ) -> Result<(), TransportError> {
+            self.cancel_error.take().map_or(Ok(()), Err)
+        }
+    }
+
     #[test]
     fn selected_scope_is_canonical_and_expands_deterministically() {
         let selection = FanoutSelection {
@@ -400,6 +430,55 @@ mod tests {
     }
 
     #[test]
+    fn identity_and_revision_bounds_fail_before_control_submission() {
+        let valid = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        for selection in [
+            FanoutSelection {
+                provider_id: String::new(),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                provider_id: "p".repeat(129),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                provider_id: "pé".into(),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                model_id: "m\nodel".into(),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                model_id: "m".repeat(129),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                catalog_digest: "A".repeat(64),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                workload_revision: "f".repeat(63),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                scorer_revision: "g".repeat(65),
+                ..valid.clone()
+            },
+        ] {
+            assert!(selection.canonicalize().is_err());
+        }
+    }
+
+    #[test]
     fn report_is_stable_and_secret_free_in_human_and_json_forms() {
         let report = FanoutDispatchState::default().report();
         assert!(report.human().contains("Status: unavailable"));
@@ -453,5 +532,143 @@ mod tests {
             invalid,
             FanoutDispatchError::Selection(FanoutSelectionError::Empty("agents"))
         );
+    }
+
+    #[test]
+    fn cancellation_without_admission_and_failed_cancellation_are_recoverable() {
+        let mut state = FanoutDispatchState::default();
+        let mut projection = ControlProjection::default();
+        assert_eq!(
+            state.cancel(
+                &mut FailingBackend(TransportError::Projection),
+                &mut projection,
+                "cancel".into()
+            ),
+            Err(TransportError::Projection)
+        );
+
+        let selection = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        state
+            .admit_selected(
+                &mut FailingBackend(TransportError::Projection),
+                &mut projection,
+                "request".into(),
+                selection,
+            )
+            .unwrap_err();
+        assert_eq!(state.status(), FanoutStatus::Unavailable);
+    }
+
+    #[test]
+    fn report_projects_pending_admitted_cancel_requested_and_cancelled() {
+        let selection = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        let mut state = FanoutDispatchState::default();
+        let mut projection = ControlProjection::default();
+        let mut backend = SuccessfulBackend {
+            cancel_error: Some(TransportError::Projection),
+        };
+        state
+            .admit_selected(&mut backend, &mut projection, "request".into(), selection)
+            .unwrap();
+        assert_eq!(state.report().status, "admitted");
+        assert_eq!(
+            state.cancel(&mut backend, &mut projection, "cancel".into()),
+            Err(TransportError::Projection)
+        );
+        assert_eq!(state.report().status, "admitted");
+        backend.cancel_error = None;
+        state
+            .cancel(&mut backend, &mut projection, "cancel".into())
+            .unwrap();
+        assert_eq!(state.report().status, "cancelled");
+    }
+
+    #[test]
+    fn error_and_report_formats_are_bounded_and_renderer_neutral() {
+        assert_eq!(
+            FanoutSelectionError::Empty("agents").to_string(),
+            "fan-out agents selection is empty"
+        );
+        assert_eq!(
+            FanoutSelectionError::TooMany("workloads").to_string(),
+            "fan-out workloads selection is too large"
+        );
+        assert_eq!(
+            FanoutSelectionError::Invalid("provider").to_string(),
+            "fan-out provider selection is invalid"
+        );
+        assert!(
+            FanoutDispatchError::Transport(TransportError::Projection)
+                .to_string()
+                .contains("fan-out control route")
+        );
+        assert!(
+            FanoutDispatchError::Selection(FanoutSelectionError::Empty("agents"))
+                .to_string()
+                .contains("agents selection is empty")
+        );
+        let report = FanoutDispatchState::default().report();
+        assert!(report.human().contains("Workloads:"));
+        assert!(report.json().contains("member_count"));
+    }
+
+    #[test]
+    fn scope_bounds_and_status_projection_cover_all_control_states() {
+        let too_many = FanoutSelection {
+            agent_ids: (0..=MAX_SELECTION_ITEMS)
+                .map(|n| format!("agent-{n}"))
+                .collect(),
+            workload_ids: vec!["workload".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        assert_eq!(
+            too_many.canonicalize(),
+            Err(FanoutSelectionError::TooMany("agents"))
+        );
+
+        let mut state = FanoutDispatchState {
+            status: FanoutStatus::Pending,
+            ..Default::default()
+        };
+        assert_eq!(state.report().status, "pending");
+        state.status = FanoutStatus::CancelRequested;
+        assert_eq!(state.report().status, "cancel_requested");
+        assert_eq!(state.admission(), None);
+    }
+
+    #[test]
+    fn authenticated_backend_wrapper_preserves_protocol_gate() {
+        let (sender, _receiver) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut backend =
+            crate::control_transport::AuthenticatedBrokerSession::test_session(sender).unwrap();
+        let mut projection = ControlProjection::default();
+        assert!(matches!(
+            FanoutBackend::admit_fanout(&mut backend, &mut projection, "key".into(), vec![]),
+            Err(TransportError::NotNegotiated)
+        ));
+        assert!(matches!(
+            FanoutBackend::cancel_fanout(&mut backend, &mut projection, "key".into(), vec![]),
+            Err(TransportError::NotNegotiated)
+        ));
     }
 }
