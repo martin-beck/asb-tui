@@ -787,8 +787,11 @@ pub fn execute_with_cancel(operation: &str, cancelled: &AtomicBool) -> Response 
                 } else {
                     let moved = (|| {
                         for name in ["asb-tui", "provenance.json", "channel-manifest.json"] {
-                            fs::rename(root.join(name), trash.join(name))
-                                .map_err(|_| "development_remove_failed")?;
+                            let current = root.join(name);
+                            if current.exists() {
+                                fs::rename(current, trash.join(name))
+                                    .map_err(|_| "development_remove_failed")?;
+                            }
                         }
                         fs::remove_dir_all(&trash).map_err(|_| "development_remove_failed")
                     })();
