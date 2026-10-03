@@ -304,7 +304,11 @@ fn fanout_selection_and_status_projection_are_formally_bounded() {
     let selection = FanoutSelection {
         agent_ids: vec!["agent-b".into(), "agent-a".into(), "agent-a".into()],
         workload_ids: vec!["workload-b".into(), "workload-a".into()],
-        ..Default::default()
+        provider_id: "provider".into(),
+        model_id: "model".into(),
+        catalog_digest: "0".repeat(64),
+        workload_revision: "0".repeat(64),
+        scorer_revision: "0".repeat(64),
     }
     .canonicalize()
     .unwrap();
