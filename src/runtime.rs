@@ -615,6 +615,7 @@ fn run_interactive_loop(
     let backend = BoundedBackend(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
     let mut recording_state: Option<crate::recording_dispatch::RecordingDispatchState> = None;
+    let mut fanout_state = crate::fanout_dispatch::FanoutDispatchState::default();
     let mut active_adapter_id: Option<String> = None;
     let mut development_worker: Option<(
         Arc<AtomicBool>,
@@ -721,7 +722,9 @@ fn run_interactive_loop(
                             })?;
                             control
                                 .launch_materialized(projection, bundle, "asb-tui-launch".into())
-                                .map_err(|error| RuntimeError(io::Error::other(error)))?;
+                                .map_err(|error| {
+                                    RuntimeError(io::Error::other(error.to_string()))
+                                })?;
                             let snapshot = projection.snapshot();
                             if let Some(launch) = workspace.launch_state_mut()
                                 && let Some(run) = snapshot.runs.first()
@@ -740,7 +743,9 @@ fn run_interactive_loop(
                             })?;
                             control
                                 .cancel_active_run(projection, &launch, "asb-tui-cancel".into())
-                                .map_err(|error| RuntimeError(io::Error::other(error)))?;
+                                .map_err(|error| {
+                                    RuntimeError(io::Error::other(error.to_string()))
+                                })?;
                             let snapshot = projection.snapshot();
                             if let Some(launch) = workspace.launch_state_mut()
                                 && let Some(run) = snapshot.runs.first()
@@ -748,6 +753,33 @@ fn run_interactive_loop(
                                 let _ = launch.observe_summary(run);
                             }
                             workspace.apply_live_snapshot(snapshot);
+                            continue;
+                        }
+                        if control_action == crate::actions::UiAction::AdmitFanout {
+                            let selection = workspace
+                                .fanout_selection()
+                                .map_err(io::Error::other)
+                                .map_err(RuntimeError)?;
+                            fanout_state
+                                .admit_selected(
+                                    control,
+                                    projection,
+                                    "asb-tui-fanout".into(),
+                                    selection,
+                                )
+                                .map_err(|error| {
+                                    RuntimeError(io::Error::other(error.to_string()))
+                                })?;
+                            workspace.apply_live_snapshot(projection.snapshot());
+                            continue;
+                        }
+                        if control_action == crate::actions::UiAction::CancelFanout {
+                            fanout_state
+                                .cancel(control, projection, "asb-tui-fanout-cancel".into())
+                                .map_err(|error| {
+                                    RuntimeError(io::Error::other(error.to_string()))
+                                })?;
+                            workspace.apply_live_snapshot(projection.snapshot());
                             continue;
                         }
                         if control_action == crate::actions::UiAction::Reconnect {

@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "fanout_request_contract": "Fan-out dispatch expands reviewed agent/workload selections into complete ASB RunRequest payloads with provider/model, catalog and revision digests, local-mock authority, bounded limits, and stable idempotency before transport.",
   "model": "asb-tui.ui-state",
   "authentication_handoff": "Provider secrets are enrolled through an approved external keychain/helper; the wizard accepts only credential_helper:<endpoint_sha256>:<locator_sha256>.",
   "auth_status_after_enrollment": "After helper enrollment or invocation, the wizard reads runner-authored status and projects only digest metadata before applying provider/model configuration.",

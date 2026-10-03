@@ -41,6 +41,14 @@ completion and delegates compatibility checks to `reports::compare`, which
 retains provenance and measure-set conflicts instead of ranking incomparable
 runs.
 
+The Run control screen also exposes bounded selected-agent fan-out. `A` expands
+the applied configuration's agent identities across the currently selected
+benchmark workloads and submits one versioned admission; `Ctrl-Z` cancels the
+exact admitted members returned by ASB. The TUI never reconstructs member
+identities from labels, and the projection shows the admitted count and
+idempotency identity without credentials. Empty or stale selections are
+rejected before transport.
+
 The nested selection and generation-recovery guarantees are covered by
 `tests/benchmark_selection.rs` and `tests/benchmark_route.rs`; the existing
 reports and development-journey tests cover bounded history, strict replay,
