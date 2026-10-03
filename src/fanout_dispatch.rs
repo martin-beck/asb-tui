@@ -655,4 +655,20 @@ mod tests {
         assert_eq!(state.report().status, "cancel_requested");
         assert_eq!(state.admission(), None);
     }
+
+    #[test]
+    fn authenticated_backend_wrapper_preserves_protocol_gate() {
+        let (sender, _receiver) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut backend =
+            crate::control_transport::AuthenticatedBrokerSession::test_session(sender).unwrap();
+        let mut projection = ControlProjection::default();
+        assert!(matches!(
+            FanoutBackend::admit_fanout(&mut backend, &mut projection, "key".into(), vec![]),
+            Err(TransportError::NotNegotiated)
+        ));
+        assert!(matches!(
+            FanoutBackend::cancel_fanout(&mut backend, &mut projection, "key".into(), vec![]),
+            Err(TransportError::NotNegotiated)
+        ));
+    }
 }
