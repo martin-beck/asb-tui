@@ -283,6 +283,8 @@ fn cli_dispatch_surface_is_closed_and_renderer_neutral() {
 #[test]
 fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
     let (source, _repository, _commit) = local_source_fixture("top-level");
+    let git = trusted_tool("git");
+    let setsid = trusted_tool("setsid");
     let cargo = trusted_tool("cargo");
     let rustc = trusted_tool("rustc");
     let cc = trusted_tool("cc");
@@ -305,8 +307,8 @@ fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
             .env("ASB_TUI_CHANNEL_STATE", &state)
             .env("ASB_TUI_DEV_REPOSITORY", &source)
             .env("ASB_TUI_DEV_REF", "fixture")
-            .env("ASB_TUI_DEV_GIT", "/usr/bin/git")
-            .env("ASB_TUI_DEV_SETSID", "/usr/bin/setsid")
+            .env("ASB_TUI_DEV_GIT", &git)
+            .env("ASB_TUI_DEV_SETSID", &setsid)
             .env("ASB_TUI_DEV_CARGO", &cargo)
             .env("ASB_TUI_DEV_RUSTC", &rustc)
             .env("ASB_TUI_DEV_CC", &cc)
@@ -317,7 +319,13 @@ fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
             .expect("run development lifecycle")
     };
     let installed = run("install");
-    assert_eq!(installed.status.code(), Some(0));
+    assert_eq!(
+        installed.status.code(),
+        Some(0),
+        "install failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&installed.stdout),
+        String::from_utf8_lossy(&installed.stderr)
+    );
     let installed_json: serde_json::Value = serde_json::from_slice(&installed.stdout).unwrap();
     assert_eq!(installed_json["code"], "development_installed");
     assert_eq!(installed_json["development_only"], true);
