@@ -330,6 +330,36 @@ mod tests {
         }
     }
 
+    struct SuccessfulBackend {
+        cancel_error: Option<TransportError>,
+    }
+
+    impl FanoutBackend for SuccessfulBackend {
+        fn admit_fanout(
+            &mut self,
+            _projection: &mut ControlProjection,
+            _idempotency_key: String,
+            _requests: Vec<serde_json::Value>,
+        ) -> Result<FanoutAdmission, TransportError> {
+            Ok(FanoutAdmission {
+                idempotency_key: "fanout".into(),
+                members: vec![FanoutMember {
+                    run_id: crate::control_codec::RunId("run".into()),
+                    attempt_id: crate::control_codec::AttemptId("attempt".into()),
+                }],
+            })
+        }
+
+        fn cancel_fanout(
+            &mut self,
+            _projection: &mut ControlProjection,
+            _idempotency_key: String,
+            _members: Vec<FanoutMember>,
+        ) -> Result<(), TransportError> {
+            self.cancel_error.take().map_or(Ok(()), Err)
+        }
+    }
+
     #[test]
     fn selected_scope_is_canonical_and_expands_deterministically() {
         let selection = FanoutSelection {
@@ -523,5 +553,37 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(state.status(), FanoutStatus::Unavailable);
+    }
+
+    #[test]
+    fn report_projects_pending_admitted_cancel_requested_and_cancelled() {
+        let selection = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        let mut state = FanoutDispatchState::default();
+        let mut projection = ControlProjection::default();
+        let mut backend = SuccessfulBackend {
+            cancel_error: Some(TransportError::Projection),
+        };
+        state
+            .admit_selected(&mut backend, &mut projection, "request".into(), selection)
+            .unwrap();
+        assert_eq!(state.report().status, "admitted");
+        assert_eq!(
+            state.cancel(&mut backend, &mut projection, "cancel".into()),
+            Err(TransportError::Projection)
+        );
+        assert_eq!(state.report().status, "admitted");
+        backend.cancel_error = None;
+        state
+            .cancel(&mut backend, &mut projection, "cancel".into())
+            .unwrap();
+        assert_eq!(state.report().status, "cancelled");
     }
 }
