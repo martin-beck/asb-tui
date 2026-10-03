@@ -72,6 +72,10 @@ fn failed_refresh_is_typed_redacted_and_keeps_catalog() {
         .refresh(|_| Err("raw api_key=never-returned".into()))
         .unwrap_err();
     assert!(matches!(error, ProviderRefreshError::Unavailable(_)));
+    let rendered = error.to_string();
+    assert!(rendered.contains("details redacted"));
+    assert!(!rendered.contains("api_key"));
+    assert!(!rendered.contains("never-returned"));
     assert_eq!(registry.available_models().len(), 1);
     let json = registry.diagnostic().to_json().unwrap();
     assert!(!json.contains("api_key") && !json.contains("never-returned"));
