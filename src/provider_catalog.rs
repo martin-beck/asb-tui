@@ -641,7 +641,13 @@ impl ConnectedProviderRegistry {
             .draft_profile
             .as_ref()
             .ok_or(ProviderRefreshError::Cancelled)?;
-        let next = fetch(profile).map_err(ProviderRefreshError::Unavailable)?;
+        // Provider adapters may return response bodies, credentials, or other
+        // untrusted diagnostics.  Never carry that text into a user-facing
+        // error; the catalog and its typed availability fields are the only
+        // provider data this frontend exposes.
+        let next = fetch(profile).map_err(|_| {
+            ProviderRefreshError::Unavailable("refresh failed; details redacted".into())
+        })?;
         if next.generation.0 == 0
             || next
                 .providers
