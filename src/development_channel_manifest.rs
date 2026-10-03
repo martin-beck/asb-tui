@@ -62,6 +62,7 @@ impl ManifestError {
 pub struct ConsumedManifest {
     pub manifest: DevelopmentChannelManifest,
     pub sha256: String,
+    pub(crate) bytes: Vec<u8>,
 }
 
 impl DevelopmentChannelManifest {
@@ -134,6 +135,7 @@ pub fn consume(path: &Path) -> Result<ConsumedManifest, ManifestError> {
     Ok(ConsumedManifest {
         manifest,
         sha256: digest_hex(&bytes),
+        bytes,
     })
 }
 
