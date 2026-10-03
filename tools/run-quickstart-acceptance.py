@@ -313,11 +313,15 @@ def main() -> int:
         env.update({
             "ASB_TUI_CHANNEL_STATE": f"{disposable}/channel.json",
             "ASB_TUI_DEV_INSTALL_ROOT": f"{disposable}/install",
-            # Always consume the verified public main ref. The binary under
-            # test may come from an isolated PR checkout, but the materialized
-            # source and receipt must be the merged main head.
-            "ASB_TUI_DEV_REPOSITORY": "https://github.com/martin-beck/asb-tui.git",
-            "ASB_TUI_DEV_REF": "main",
+            # Default to the verified public main ref. Qualification runners
+            # may explicitly bind a local exact-head repository/ref; retaining
+            # those values prevents a receipt from mixing the tested binary
+            # with a different materialized source head.
+            "ASB_TUI_DEV_REPOSITORY": os.environ.get(
+                "ASB_TUI_DEV_REPOSITORY",
+                "https://github.com/martin-beck/asb-tui.git",
+            ),
+            "ASB_TUI_DEV_REF": os.environ.get("ASB_TUI_DEV_REF", "main"),
             # The materializer gives Cargo a disposable HOME; retain the
             # owner-private pinned rustup toolchain explicitly.
             "ASB_TUI_DEV_RUSTUP_HOME": os.environ.get(
