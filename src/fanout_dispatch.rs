@@ -618,8 +618,41 @@ mod tests {
                 .to_string()
                 .contains("fan-out control route")
         );
+        assert!(
+            FanoutDispatchError::Selection(FanoutSelectionError::Empty("agents"))
+                .to_string()
+                .contains("agents selection is empty")
+        );
         let report = FanoutDispatchState::default().report();
         assert!(report.human().contains("Workloads:"));
         assert!(report.json().contains("member_count"));
+    }
+
+    #[test]
+    fn scope_bounds_and_status_projection_cover_all_control_states() {
+        let too_many = FanoutSelection {
+            agent_ids: (0..=MAX_SELECTION_ITEMS)
+                .map(|n| format!("agent-{n}"))
+                .collect(),
+            workload_ids: vec!["workload".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        assert_eq!(
+            too_many.canonicalize(),
+            Err(FanoutSelectionError::TooMany("agents"))
+        );
+
+        let mut state = FanoutDispatchState {
+            status: FanoutStatus::Pending,
+            ..Default::default()
+        };
+        assert_eq!(state.report().status, "pending");
+        state.status = FanoutStatus::CancelRequested;
+        assert_eq!(state.report().status, "cancel_requested");
+        assert_eq!(state.admission(), None);
     }
 }
