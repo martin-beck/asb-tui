@@ -509,6 +509,16 @@ fn build_candidate(
     let reference = dev_ref();
     let tools = trusted_toolchain()?;
     let rustup_home = env::var_os("ASB_TUI_DEV_RUSTUP_HOME");
+    // The clean-room paths are intentionally disposable, but rustc embeds
+    // source and build paths in debuginfo and panic metadata.  Bind both
+    // private roots to stable development-only names so equivalent
+    // materializations have the same executable digest without changing the
+    // source, toolchain, or runtime verification contract.
+    let remap_flags = format!(
+        "--remap-path-prefix={}=/asb-tui-build --remap-path-prefix={}=/asb-tui-cargo-home",
+        workspace.display(),
+        cargo_home.display()
+    );
     let mut clone = Command::new(&tools.setsid);
     clone
         .args(["--wait"])
@@ -560,7 +570,7 @@ fn build_candidate(
                 compiled_target().to_ascii_uppercase().replace('-', "_")
             ),
             format!(
-                "-C link-arg=-B{}",
+                "-C link-arg=-B{} {remap_flags}",
                 tools
                     .ld
                     .parent()
@@ -568,7 +578,7 @@ fn build_candidate(
                     .display()
             ),
         )
-        .env("RUSTFLAGS", "")
+        .env("RUSTFLAGS", &remap_flags)
         .args(["build", "--locked", "--release", "--bin", "asb-tui"]);
     if let Some(rustup_home) = rustup_home {
         build.env("RUSTUP_HOME", rustup_home);
@@ -677,11 +687,8 @@ fn materialize(
         )
         .map_err(|_| "development_stage_failed")?;
         if let Some(value) = consumed {
-            fs::write(
-                stage.join("channel-manifest.json"),
-                serde_json::to_vec(&value.manifest).map_err(|_| "development_stage_failed")?,
-            )
-            .map_err(|_| "development_stage_failed")?;
+            fs::write(stage.join("channel-manifest.json"), value.bytes)
+                .map_err(|_| "development_stage_failed")?;
         }
         let backup = root.join(format!(".backup-{nonce}"));
         if replacing {

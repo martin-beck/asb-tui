@@ -75,21 +75,27 @@ fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
     let ar = trusted_tool("ar");
     let ld = trusted_tool("ld");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_asb-tui"))
-        .env("ASB_TUI_DEV_REPOSITORY", &repository)
-        .env("ASB_TUI_DEV_REF", "fixture")
-        .env("ASB_TUI_DEV_RUSTUP_HOME", rustup_home)
-        .env("ASB_TUI_DEV_GIT", "/usr/bin/git")
-        .env("ASB_TUI_DEV_SETSID", "/usr/bin/setsid")
-        .env("ASB_TUI_DEV_CARGO", cargo)
-        .env("ASB_TUI_DEV_CC", cc)
-        .env("ASB_TUI_DEV_AR", ar)
-        .env("ASB_TUI_DEV_LD", ld)
-        .env("PATH", "/nonexistent")
-        .env("ASB_TUI_DEV_INSTALL_ROOT", &root)
-        .args(["tui", "install", "--channel", "dev", "--format", "json"])
-        .output()
-        .unwrap();
+    let run_install = |install_root: &PathBuf, manifest: Option<&PathBuf>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_asb-tui"));
+        command
+            .env("ASB_TUI_DEV_REPOSITORY", &repository)
+            .env("ASB_TUI_DEV_REF", "fixture")
+            .env("ASB_TUI_DEV_RUSTUP_HOME", &rustup_home)
+            .env("ASB_TUI_DEV_GIT", "/usr/bin/git")
+            .env("ASB_TUI_DEV_SETSID", "/usr/bin/setsid")
+            .env("ASB_TUI_DEV_CARGO", &cargo)
+            .env("ASB_TUI_DEV_CC", &cc)
+            .env("ASB_TUI_DEV_AR", &ar)
+            .env("ASB_TUI_DEV_LD", &ld)
+            .env("PATH", "/nonexistent")
+            .env("ASB_TUI_DEV_INSTALL_ROOT", install_root)
+            .args(["tui", "install", "--channel", "dev", "--format", "json"]);
+        if let Some(manifest) = manifest {
+            command.env("ASB_TUI_CHANNEL_MANIFEST", manifest);
+        }
+        command.output().unwrap()
+    };
+    let output = run_install(&root, None);
     assert!(output.status.success(), "{output:?}");
     let response: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(response["code"], "development_installed");
@@ -103,6 +109,42 @@ fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
             .to_string_lossy()
             .starts_with('.')
     }));
+    let second_root = env::temp_dir().join(format!("asb-tui-clone-build-second-{nonce}"));
+    let manifest_path = env::temp_dir().join(format!("asb-tui-clone-build-manifest-{nonce}.json"));
+    let first_executable = fs::read(root.join("asb-tui")).unwrap();
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "channel": "dev",
+        "development_only": true,
+        "asb_repository": "https://github.com/martin-beck/agent-systems-benchmark.git",
+        "asb_ref": "refs/heads/main",
+        "asb_source_commit": "a".repeat(40),
+        "asb_source_tree": "b".repeat(40),
+        "tui_repository": "https://github.com/martin-beck/asb-tui.git",
+        "tui_ref": "refs/heads/main",
+        "tui_source_commit": response["source_commit"],
+        "tui_source_tree": response["source_tree"],
+        "executable_sha256": response["executable_sha256"],
+        "executable_size": first_executable.len(),
+        "built_unix": 1,
+        "warnings": []
+    });
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let second = run_install(&second_root, Some(&manifest_path));
+    assert!(second.status.success(), "{second:?}");
+    let second_response: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(second_response["code"], "development_installed");
+    assert_eq!(second_response["verified"], true);
+    assert_eq!(
+        second_response["executable_sha256"],
+        response["executable_sha256"]
+    );
+    assert_eq!(
+        fs::read(second_root.join("asb-tui")).unwrap(),
+        first_executable
+    );
+    fs::remove_dir_all(second_root).unwrap();
+    fs::remove_file(manifest_path).unwrap();
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(repository).unwrap();
 }
