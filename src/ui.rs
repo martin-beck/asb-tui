@@ -2891,6 +2891,47 @@ mod tests {
     }
 
     #[test]
+    fn fanout_selection_requires_applied_configuration_and_catalog_context() {
+        let mut state = WorkspaceState::default();
+        assert!(state.fanout_selection().is_err());
+        state.live = Some(LiveSnapshot {
+            connection: Connection::Negotiated,
+            runner_instance_id: Some("runner".into()),
+            latest_revision: Some(Revision(1)),
+            capabilities: None,
+            measurement_catalog: None,
+            benchmark_catalog: None,
+            agent_catalog: None,
+            agent_lifecycle: None,
+            provider_catalog: None,
+            configuration: None,
+            auth_status: None,
+            auth_unavailable: false,
+            auth_development_only: true,
+            auth_unavailable_reason: None,
+            recording_campaign: None,
+            recording_estimate: None,
+            recording_campaign_lifecycle: None,
+            fanout: None,
+            runs: Vec::new(),
+            analysis: None,
+        });
+        assert!(state.fanout_selection().is_err());
+        state.live.as_mut().unwrap().configuration =
+            Some(crate::control_codec::ConfigurationSnapshot {
+                runner_instance_id: "runner".into(),
+                generation: Revision(1),
+                configured: true,
+                agent_ids: vec!["agent".into()],
+                provider_id: None,
+                model_id: None,
+                auth_method: None,
+                credential_reference_sha256: None,
+            });
+        assert!(state.fanout_selection().is_err());
+    }
+
+    #[test]
     fn explicit_development_runtime_context_installs_fixture_catalog() {
         let mut state = WorkspaceState::default();
         assert_eq!(state.wizard.mode(), crate::wizard::WizardMode::Stable);
