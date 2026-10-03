@@ -94,6 +94,8 @@ impl AdapterRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdapterCatalog {
     records: BTreeMap<String, AdapterRecord>,
+    unavailable_providers: BTreeMap<String, String>,
+    unavailable_models: BTreeMap<(String, String), String>,
 }
 
 /// Explicit compatibility view used by setup and offline replay.  It keeps
@@ -207,7 +209,11 @@ impl AdapterCatalog {
         if records.is_empty() || records.len() > MAX_ITEMS || records.values().any(|r| !r.valid()) {
             return Err("invalid adapter catalog".into());
         }
-        Ok(Self { records })
+        Ok(Self {
+            records,
+            unavailable_providers: BTreeMap::new(),
+            unavailable_models: BTreeMap::new(),
+        })
     }
     pub fn get(&self, id: &str) -> Option<&AdapterRecord> {
         self.records.get(id)
@@ -252,9 +258,26 @@ impl AdapterCatalog {
         catalog: &crate::control_codec::ProviderCatalog,
     ) -> Result<Self, String> {
         let mut record = AdapterRecord::new("opencode", "OpenCode");
+        let mut unavailable_providers = BTreeMap::new();
+        let mut unavailable_models = BTreeMap::new();
         for provider in &catalog.providers {
             let models = provider.models.iter().map(|model| model.model_id.clone());
             record = record.provider(provider.provider_id.clone(), models);
+            if let crate::control_codec::ProviderAvailability::Unavailable(reason) =
+                &provider.availability
+            {
+                unavailable_providers.insert(provider.provider_id.clone(), reason.clone());
+            }
+            for model in &provider.models {
+                if let crate::control_codec::ProviderAvailability::Unavailable(reason) =
+                    &model.availability
+                {
+                    unavailable_models.insert(
+                        (provider.provider_id.clone(), model.model_id.clone()),
+                        reason.clone(),
+                    );
+                }
+            }
             for auth in &provider.auth_methods {
                 record = record.auth(match auth {
                     crate::control_codec::ProviderAuthMethod::CredentialReference => {
@@ -277,7 +300,10 @@ impl AdapterCatalog {
             providers: record.providers.clone(),
             auth_methods: record.auth_methods.clone(),
         };
-        Self::new([record, opendesk])
+        let mut catalog = Self::new([record, opendesk])?;
+        catalog.unavailable_providers = unavailable_providers;
+        catalog.unavailable_models = unavailable_models;
+        Ok(catalog)
     }
 }
 
@@ -293,7 +319,9 @@ pub struct AdapterSelection {
 pub enum SelectionError {
     UnknownAdapter,
     UnknownProvider,
+    UnavailableProvider(String),
     UnknownModel,
+    UnavailableModel(String),
     UnsupportedAuth,
     InvalidSelection,
 }
@@ -349,23 +377,34 @@ impl SelectionSession {
         let providers = adapter
             .providers
             .keys()
-            .map(|id| AdapterOption {
-                id: id.clone(),
-                label: id.clone(),
-                available: true,
-                reason: None,
+            .map(|id| {
+                let reason = self.catalog.unavailable_providers.get(id).cloned();
+                AdapterOption {
+                    id: id.clone(),
+                    label: id.clone(),
+                    available: reason.is_none(),
+                    reason,
+                }
             })
-            .collect();
+            .collect::<Vec<_>>();
         let models = adapter
             .providers
             .iter()
             .filter(|(id, _)| provider_id.is_none_or(|selected| selected == id.as_str()))
-            .flat_map(|(_, models)| models.iter())
-            .map(|id| AdapterOption {
-                id: id.clone(),
-                label: id.clone(),
-                available: true,
-                reason: None,
+            .flat_map(|(provider, models)| models.iter().map(move |model| (provider, model)))
+            .map(|(provider, id)| {
+                let reason = self
+                    .catalog
+                    .unavailable_models
+                    .get(&(provider.clone(), id.clone()))
+                    .cloned()
+                    .or_else(|| self.catalog.unavailable_providers.get(provider).cloned());
+                AdapterOption {
+                    id: id.clone(),
+                    label: id.clone(),
+                    available: reason.is_none(),
+                    reason,
+                }
             })
             .collect();
         let auth_methods = adapter
@@ -397,10 +436,17 @@ impl SelectionSession {
                 "provider '{}' is not supported by {}",
                 selection.provider_id, selection.adapter_id
             ),
+            Err(SelectionError::UnavailableProvider(reason)) => format!(
+                "provider '{}' is unavailable: {reason}",
+                selection.provider_id
+            ),
             Err(SelectionError::UnknownModel) => format!(
                 "model '{}' is not supported for provider '{}'",
                 selection.model_id, selection.provider_id
             ),
+            Err(SelectionError::UnavailableModel(reason)) => {
+                format!("model '{}' is unavailable: {reason}", selection.model_id)
+            }
             Err(SelectionError::UnsupportedAuth) => format!(
                 "authentication '{}' is not supported by {}",
                 auth_label(selection.auth),
@@ -418,6 +464,20 @@ impl SelectionSession {
             .providers
             .get(&selection.provider_id)
             .ok_or(SelectionError::UnknownProvider)?;
+        if let Some(reason) = self
+            .catalog
+            .unavailable_providers
+            .get(&selection.provider_id)
+        {
+            return Err(SelectionError::UnavailableProvider(reason.clone()));
+        }
+        if let Some(reason) = self
+            .catalog
+            .unavailable_models
+            .get(&(selection.provider_id.clone(), selection.model_id.clone()))
+        {
+            return Err(SelectionError::UnavailableModel(reason.clone()));
+        }
         if !models.contains(&selection.model_id) {
             return Err(SelectionError::UnknownModel);
         }
@@ -449,6 +509,20 @@ impl SelectionSession {
             .providers
             .get(&selection.provider_id)
             .ok_or(SelectionError::UnknownProvider)?;
+        if let Some(reason) = self
+            .catalog
+            .unavailable_providers
+            .get(&selection.provider_id)
+        {
+            return Err(SelectionError::UnavailableProvider(reason.clone()));
+        }
+        if let Some(reason) = self
+            .catalog
+            .unavailable_models
+            .get(&(selection.provider_id.clone(), selection.model_id.clone()))
+        {
+            return Err(SelectionError::UnavailableModel(reason.clone()));
+        }
         if !models.contains(&selection.model_id) {
             return Err(SelectionError::UnknownModel);
         }
