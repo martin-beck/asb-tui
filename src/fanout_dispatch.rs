@@ -81,6 +81,28 @@ impl FanoutSelection {
             values.sort();
             values.dedup();
         }
+        for (name, value) in [("provider", &self.provider_id), ("model", &self.model_id)] {
+            if value.is_empty()
+                || value.len() > 128
+                || !value.is_ascii()
+                || value.chars().any(char::is_control)
+            {
+                return Err(FanoutSelectionError::Invalid(name));
+            }
+        }
+        for (name, value) in [
+            ("catalog_digest", &self.catalog_digest),
+            ("workload_revision", &self.workload_revision),
+            ("scorer_revision", &self.scorer_revision),
+        ] {
+            if value.len() != 64
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(FanoutSelectionError::Invalid(name));
+            }
+        }
         Ok(self)
     }
 
@@ -352,9 +374,29 @@ mod tests {
                 workload_ids: vec!["w".into()],
                 ..Default::default()
             },
+            FanoutSelection {
+                agent_ids: vec!["a".into()],
+                workload_ids: vec!["w".into()],
+                provider_id: "provider".into(),
+                model_id: "model".into(),
+                catalog_digest: "A".repeat(64),
+                workload_revision: "b".repeat(64),
+                scorer_revision: "c".repeat(64),
+            },
         ] {
             assert!(selection.canonicalize().is_err());
         }
+
+        let development_selection = FanoutSelection {
+            agent_ids: vec!["a".into()],
+            workload_ids: vec!["w".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "0".repeat(64),
+            workload_revision: "0".repeat(64),
+            scorer_revision: "0".repeat(64),
+        };
+        assert!(development_selection.canonicalize().is_ok());
     }
 
     #[test]
