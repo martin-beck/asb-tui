@@ -400,6 +400,43 @@ mod tests {
     }
 
     #[test]
+    fn identity_and_revision_bounds_fail_before_control_submission() {
+        let valid = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        for selection in [
+            FanoutSelection {
+                provider_id: String::new(),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                model_id: "m\nodel".into(),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                catalog_digest: "A".repeat(64),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                workload_revision: "f".repeat(63),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                scorer_revision: "g".repeat(65),
+                ..valid.clone()
+            },
+        ] {
+            assert!(selection.canonicalize().is_err());
+        }
+    }
+
+    #[test]
     fn report_is_stable_and_secret_free_in_human_and_json_forms() {
         let report = FanoutDispatchState::default().report();
         assert!(report.human().contains("Status: unavailable"));
@@ -453,5 +490,38 @@ mod tests {
             invalid,
             FanoutDispatchError::Selection(FanoutSelectionError::Empty("agents"))
         );
+    }
+
+    #[test]
+    fn cancellation_without_admission_and_failed_cancellation_are_recoverable() {
+        let mut state = FanoutDispatchState::default();
+        let mut projection = ControlProjection::default();
+        assert_eq!(
+            state.cancel(
+                &mut FailingBackend(TransportError::Projection),
+                &mut projection,
+                "cancel".into()
+            ),
+            Err(TransportError::Projection)
+        );
+
+        let selection = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        state
+            .admit_selected(
+                &mut FailingBackend(TransportError::Projection),
+                &mut projection,
+                "request".into(),
+                selection,
+            )
+            .unwrap_err();
+        assert_eq!(state.status(), FanoutStatus::Unavailable);
     }
 }
