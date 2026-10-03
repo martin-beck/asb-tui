@@ -111,6 +111,14 @@ impl DevelopmentChannelManifest {
         }
         Ok(())
     }
+
+    pub fn validate_executable(&self, bytes: &[u8]) -> Result<(), ManifestError> {
+        if self.executable_sha256 != digest_hex(bytes) || self.executable_size != bytes.len() as u64
+        {
+            return Err(ManifestError::DigestMismatch);
+        }
+        Ok(())
+    }
 }
 
 pub fn consume(path: &Path) -> Result<ConsumedManifest, ManifestError> {
