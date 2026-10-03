@@ -59,6 +59,43 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def find_installed_executable(root: Path) -> Path:
+    direct = root / "asb-tui"
+    if direct.is_file():
+        return direct
+    candidates = sorted(root.glob("dev-versions/*/asb-tui"))
+    if len(candidates) != 1:
+        raise AssertionError(f"expected one development executable, found {candidates}")
+    return candidates[0]
+
+
+def development_handoff(asb_checkout: Path, tui_commit: str, tui_tree: str, executable: Path, path: Path) -> dict:
+    """Write the privacy-safe ASB-to-TUI development handoff envelope."""
+    value = {
+        "schema_version": 1,
+        "channel": "dev",
+        "development_only": True,
+        "asb_repository": "https://github.com/martin-beck/agent-systems-benchmark.git",
+        "asb_ref": "refs/heads/main",
+        "asb_source_commit": git(asb_checkout, "HEAD"),
+        "asb_source_tree": git(asb_checkout, "HEAD^{tree}"),
+        "tui_repository": "https://github.com/martin-beck/asb-tui.git",
+        "tui_ref": "refs/heads/main",
+        "tui_source_commit": tui_commit,
+        "tui_source_tree": tui_tree,
+        "executable_sha256": sha256(executable),
+        "executable_size": executable.stat().st_size,
+        "built_unix": 1,
+        "warnings": [
+            "development_missing_authentication_allowed",
+            "development_missing_signatures_allowed",
+            "development_missing_key_management_allowed",
+        ],
+    }
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return value
+
+
 _SECRET_ENV_MARKERS = (
     "API_KEY",
     "APIKEY",
@@ -254,6 +291,17 @@ def main() -> int:
         env.update({
             "ASB_TUI_CHANNEL_STATE": f"{disposable}/channel.json",
             "ASB_TUI_DEV_INSTALL_ROOT": f"{disposable}/install",
+            # Always consume the verified public main ref. The binary under
+            # test may come from an isolated PR checkout, but the materialized
+            # source and receipt must be the merged main head.
+            "ASB_TUI_DEV_REPOSITORY": "https://github.com/martin-beck/asb-tui.git",
+            "ASB_TUI_DEV_REF": "main",
+            # The materializer deliberately gives Cargo a disposable HOME;
+            # point rustup at the preinstalled, owner-private toolchain so the
+            # clean-room build can resolve its pinned compiler.
+            "ASB_TUI_DEV_RUSTUP_HOME": os.environ.get(
+                "RUSTUP_HOME", str(Path.home() / ".rustup")
+            ),
             "ASB_TUI_NETWORK_POLICY": "deny",
             "HTTP_PROXY": "http://127.0.0.1:1",
             "HTTPS_PROXY": "http://127.0.0.1:1",
@@ -261,10 +309,46 @@ def main() -> int:
             "NO_PROXY": "*",
         })
         matrix = run_capture_replay_matrix(asb_binary, asb_checkout, env, Path(disposable) / "matrix")
-        status = invoke(binary, ["tui", "status", "--channel", "dev", "--json"], {}, env)
-        assert status["channel"] == "dev" and status["code"] == "development_not_installed", status
-        launch = invoke(binary, ["tui", "launch", "--channel", "dev", "--json"], {}, env)
-        assert launch["code"] == "development_launch_unavailable", launch
+        # Omitted channel must select dev. First materialize from the exact
+        # local main checkout, then build a content-bound handoff from the
+        # resulting executable and consume it on a fresh install root.
+        # Installation is the only network-capable step (clone/build); all
+        # benchmark and replay operations below retain the deny policy.
+        install_env = dict(env)
+        install_env["ASB_TUI_NETWORK_POLICY"] = "allow"
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+            install_env.pop(key, None)
+        initial = invoke(binary, ["tui", "install", "--json"], {}, install_env)
+        assert initial["channel"] == "dev" and initial["ok"], initial
+        installed = find_installed_executable(Path(env["ASB_TUI_DEV_INSTALL_ROOT"]))
+        handoff_path = Path(disposable) / "channel-manifest.json"
+        tui_commit = initial["source_commit"]
+        tui_tree = initial["source_tree"]
+        assert len(tui_commit) == 40 and len(tui_tree) == 40, initial
+        handoff = development_handoff(asb_checkout, tui_commit, tui_tree, installed, handoff_path)
+        env["ASB_TUI_CHANNEL_MANIFEST"] = str(handoff_path)
+        env["ASB_TUI_DEV_INSTALL_ROOT"] = f"{disposable}/handoff-install"
+        install_env["ASB_TUI_CHANNEL_MANIFEST"] = str(handoff_path)
+        install_env["ASB_TUI_DEV_INSTALL_ROOT"] = env["ASB_TUI_DEV_INSTALL_ROOT"]
+        installed_with_handoff = invoke(binary, ["tui", "install", "--json"], {}, install_env)
+        assert installed_with_handoff["channel"] == "dev" and installed_with_handoff["ok"], installed_with_handoff
+        installed_executable = find_installed_executable(Path(env["ASB_TUI_DEV_INSTALL_ROOT"]))
+        installed_executable_sha256 = sha256(installed_executable)
+        status = invoke(binary, ["tui", "status", "--json"], {}, env)
+        assert status["channel"] == "dev" and status["installed"] and status["verified"], status
+        assert status["channel_manifest_sha256"] == hashlib.sha256(handoff_path.read_bytes()).hexdigest(), status
+        assert status["asb_source_commit"] == handoff["asb_source_commit"], status
+        launch = invoke(binary, ["tui", "launch", "--json"], {}, env)
+        assert launch["channel"] == "dev" and launch["code"] in {"development_launch_ready", "development_launch_unavailable"}, launch
+        restarted = invoke(binary, ["tui", "status", "--json"], {}, env)
+        assert restarted["channel_manifest_sha256"] == status["channel_manifest_sha256"], restarted
+        # Typed tamper negative: status must not accept edited handoff bytes.
+        installed_manifest = Path(env["ASB_TUI_DEV_INSTALL_ROOT"]) / "channel-manifest.json"
+        original_handoff = installed_manifest.read_bytes()
+        installed_manifest.write_bytes(original_handoff + b" tampered")
+        tampered = invoke(binary, ["tui", "status", "--json"], {}, env)
+        assert tampered["code"] in {"dev_channel_manifest_invalid", "dev_channel_manifest_digest_mismatch"}, tampered
+        installed_manifest.write_bytes(original_handoff)
         onboarding = invoke(binary, ["onboarding", "--format", "json"], {
             "schema_version": 1, "profile": "development", "bundle_available": True,
             "broker_available": True, "protocol_version": 1,
@@ -291,22 +375,26 @@ def main() -> int:
             )
             assert test.returncode == 0, f"{test_name}: {test.stdout}{test.stderr}"
     manifest = checkout / "release" / "channel-status.json"
+    manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest() if manifest.is_file() else None
     receipt = {
-        "schema_version": 1, "ar": "AR-1688/AR-1689", "classification": "development/mock",
-        "network": "denied", "credentials": "none",
+        "schema_version": 1, "ar": "AR-1693", "classification": "development/mock",
+        "network": {"install_materialization": "allowed", "benchmark_and_replay": "denied"}, "credentials": "none",
         "selection": {"channel": "dev", "provider": "fixture", "auth": "development_fixture", "agent": "opencode", "model": "fixture-model", "cassette": "strict-replay-cassette", "replay": "offline"},
-        "routes": {"install": status, "launch": launch, "onboarding": onboarding, "journey": journey, "provider_selection": "provider_lifecycle_1656 passed", "fanout_capture_replay": "coverage_setup_recording and development_journey passed", "end_to_end_test": "passed", "capture_replay_matrix": matrix, "comparison": "end_to_end_qualification passed"},
+        "routes": {"install": installed_with_handoff, "status": status, "restart_status": restarted, "launch": launch, "tamper_negative": tampered, "onboarding": onboarding, "journey": journey, "provider_selection": "provider_lifecycle_1656 passed", "fanout_capture_replay": "coverage_setup_recording and development_journey passed", "end_to_end_test": "passed", "capture_replay_matrix": matrix, "comparison": "end_to_end_qualification passed", "analysis": "end_to_end_qualification passed"},
         "provenance": {
-            "tui_commit": git(checkout, "HEAD"), "tui_tree": git(checkout, "HEAD^{tree}"),
+            "tui_commit": tui_commit, "tui_tree": tui_tree,
             "asb_commit": asb_head, "asb_tree": git(asb_checkout, f"{asb_head}^{{tree}}"),
-            "manifest": "release/channel-status.json", "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
-            "executable_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "manifest": "release/channel-status.json", "manifest_sha256": manifest_digest,
+            "handoff_manifest_sha256": hashlib.sha256(handoff_path.read_bytes()).hexdigest(),
+            "handoff": handoff,
+            "runner_binary_sha256": sha256(binary),
+            "installed_executable_sha256": installed_executable_sha256,
             "asb_binary_sha256": sha256(asb_binary),
         },
     }
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(receipt, sort_keys=True) if args.json else "AR-1660 quickstart acceptance passed (development/mock, network denied)")
+    print(json.dumps(receipt, sort_keys=True) if args.json else "AR-1693 quickstart acceptance passed (development/mock; install materialization allowed, benchmark/replay network denied)")
     return 0
 
 
