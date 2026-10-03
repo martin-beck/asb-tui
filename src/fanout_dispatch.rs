@@ -446,7 +446,19 @@ mod tests {
                 ..valid.clone()
             },
             FanoutSelection {
+                provider_id: "p".repeat(129),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                provider_id: "pé".into(),
+                ..valid.clone()
+            },
+            FanoutSelection {
                 model_id: "m\nodel".into(),
+                ..valid.clone()
+            },
+            FanoutSelection {
+                model_id: "m".repeat(129),
                 ..valid.clone()
             },
             FanoutSelection {
@@ -585,5 +597,29 @@ mod tests {
             .cancel(&mut backend, &mut projection, "cancel".into())
             .unwrap();
         assert_eq!(state.report().status, "cancelled");
+    }
+
+    #[test]
+    fn error_and_report_formats_are_bounded_and_renderer_neutral() {
+        assert_eq!(
+            FanoutSelectionError::Empty("agents").to_string(),
+            "fan-out agents selection is empty"
+        );
+        assert_eq!(
+            FanoutSelectionError::TooMany("workloads").to_string(),
+            "fan-out workloads selection is too large"
+        );
+        assert_eq!(
+            FanoutSelectionError::Invalid("provider").to_string(),
+            "fan-out provider selection is invalid"
+        );
+        assert!(
+            FanoutDispatchError::Transport(TransportError::Projection)
+                .to_string()
+                .contains("fan-out control route")
+        );
+        let report = FanoutDispatchState::default().report();
+        assert!(report.human().contains("Workloads:"));
+        assert!(report.json().contains("member_count"));
     }
 }
