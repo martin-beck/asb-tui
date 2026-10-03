@@ -201,16 +201,14 @@ fn connected_catalog_keeps_unavailable_provider_and_model_visible_but_unselectab
         Some("development authentication unavailable")
     );
     assert!(
-        session
-            .validate(AdapterSelection {
-                adapter_id: "opendesk".into(),
-                provider_id: "openrouter".into(),
-                model_id: "fixture-model".into(),
-                auth: AuthMethod::None,
-            })
-            == Err(asb_tui::adapter_catalog::SelectionError::UnavailableModel(
-                "development authentication unavailable".into()
-            ))
+        session.validate(AdapterSelection {
+            adapter_id: "opendesk".into(),
+            provider_id: "openrouter".into(),
+            model_id: "fixture-model".into(),
+            auth: AuthMethod::None,
+        }) == Err(asb_tui::adapter_catalog::SelectionError::UnavailableModel(
+            "development authentication unavailable".into()
+        ))
     );
 }
 
