@@ -217,6 +217,32 @@ impl Default for WorkspaceState {
 }
 
 impl WorkspaceState {
+    /// Return the exact bounded fan-out selection reviewed by the operator.
+    /// Agent identities come from the authenticated configuration snapshot;
+    /// workload identities come from the generation-bound benchmark picker.
+    /// The runtime must never infer either set from display rows.
+    pub(crate) fn fanout_selection(
+        &self,
+    ) -> Result<crate::fanout_dispatch::FanoutSelection, String> {
+        let agents = self
+            .live
+            .as_ref()
+            .and_then(|snapshot| snapshot.configuration.as_ref())
+            .map(|configuration| configuration.agent_ids.clone())
+            .ok_or_else(|| "fan-out requires an applied configuration".to_owned())?;
+        let benchmark_selection = self
+            .benchmark_selection
+            .as_ref()
+            .ok_or_else(|| "fan-out requires a benchmark catalog".to_owned())?;
+        let campaign = benchmark_selection
+            .campaign_handoff(benchmark_selection.catalog().generation())
+            .map_err(|error| format!("fan-out workload selection invalid: {error:?}"))?;
+        Ok(crate::fanout_dispatch::FanoutSelection {
+            agent_ids: agents,
+            workload_ids: campaign.benchmark_ids,
+        })
+    }
+
     /// Return the report run currently under the cursor and the bounded pair
     /// used by the explicit live/offline comparison action.
     pub fn operator_run_selection(
@@ -1099,6 +1125,15 @@ impl WorkspaceState {
                 return UiAction::Control(crate::actions::UiAction::Reconnect);
             }
             return UiAction::None;
+        }
+        if self.screen == Screen::RunControl && key.code == KeyCode::Char('A') {
+            return UiAction::Control(crate::actions::UiAction::AdmitFanout);
+        }
+        if self.screen == Screen::RunControl
+            && key.code == KeyCode::Char('z')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            return UiAction::Control(crate::actions::UiAction::CancelFanout);
         }
         if self.screen == Screen::Reports && key.code == KeyCode::Char(' ') {
             if let Some(run_id) = self
@@ -2176,6 +2211,17 @@ fn run_control(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy
         } else {
             lines.push(Line::from("No authoritative run event received yet."));
         }
+        if let Some(fanout) = state
+            .live
+            .as_ref()
+            .and_then(|snapshot| snapshot.fanout.as_ref())
+        {
+            lines.push(Line::from(format!(
+                "Fan-out: admitted {} members (idempotency {})",
+                fanout.members.len(),
+                fanout.idempotency_key
+            )));
+        }
         lines
     } else {
         vec![
@@ -2186,7 +2232,7 @@ fn run_control(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy
     frame.render_widget(
         Paragraph::new(lines)
             .block(panel(
-                " Run control - Enter start | Ctrl-C cancel | x reconnect ",
+                " Run control - Enter start | A fan-out | Ctrl-C cancel | Ctrl-Z cancel fan-out | x reconnect ",
                 policy,
             ))
             .wrap(Wrap { trim: true }),
@@ -3335,6 +3381,14 @@ mod tests {
         assert_eq!(
             state.handle_key(key(KeyCode::Char(']'))),
             UiAction::Control(crate::actions::UiAction::SelectOfflineCassette)
+        );
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('A'))),
+            UiAction::Control(crate::actions::UiAction::AdmitFanout)
+        );
+        assert_eq!(
+            state.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            UiAction::Control(crate::actions::UiAction::CancelFanout)
         );
         state.screen = Screen::Reports;
         assert_eq!(state.handle_key(key(KeyCode::Char('q'))), UiAction::Quit);
