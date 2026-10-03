@@ -56,6 +56,11 @@ fn selected_scope_expands_in_stable_order_and_cancel_uses_exact_members() {
             FanoutSelection {
                 agent_ids: vec!["agent-b".into(), "agent-a".into()],
                 workload_ids: vec!["workload-b".into(), "workload-a".into()],
+                provider_id: "provider".into(),
+                model_id: "model".into(),
+                catalog_digest: "0".repeat(64),
+                workload_revision: "0".repeat(64),
+                scorer_revision: "0".repeat(64),
             },
         )
         .unwrap();
