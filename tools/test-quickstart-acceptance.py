@@ -63,6 +63,8 @@ class QuickstartAcceptanceTests(unittest.TestCase):
             "handoff_manifest_sha256 = hashlib.sha256(handoff_path.read_bytes()).hexdigest()",
             source,
         )
+        self.assertIn("run_channel_compatibility_matrix", source)
+        self.assertIn('"channel_compatibility_matrix": channel_matrix', source)
         self.assertIn('"handoff_manifest_sha256": handoff_manifest_sha256', source)
 
 

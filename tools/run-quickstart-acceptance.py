@@ -12,6 +12,7 @@ import json
 import os
 import pty
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -147,6 +148,27 @@ def asb_json(binary: Path, arguments: list[str], env: dict[str, str]) -> dict:
         except json.JSONDecodeError:
             continue
     raise AssertionError(f"ASB command emitted no JSON: {arguments}: {result.stdout}{result.stderr}")
+
+
+def run_channel_compatibility_matrix(
+    binary: Path, asb_checkout: Path, asb_head: str, receipt: Path
+) -> dict:
+    """Run the paired lifecycle matrix as part of the quickstart release gate."""
+    runner = Path(__file__).with_name("run-channel-compatibility-matrix.py")
+    result = subprocess.run(
+        [sys.executable, str(runner), str(binary), "--asb-checkout", str(asb_checkout),
+         "--asb-head", asb_head, "--receipt", str(receipt)],
+        cwd=runner.parent.parent, text=True, capture_output=True, check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"paired channel matrix failed: {result.stdout}{result.stderr}")
+    try:
+        value = json.loads(result.stdout.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as error:
+        raise AssertionError(f"paired channel matrix emitted no JSON: {result.stdout}{result.stderr}") from error
+    assert value["ar"] == "AR-1676"
+    assert len(value["cases"]) == 11
+    return value
 
 
 def select_workload_ids(catalog: dict) -> list[str]:
@@ -307,6 +329,9 @@ def main() -> int:
             "ALL_PROXY": "http://127.0.0.1:1",
             "NO_PROXY": "*",
         })
+        channel_matrix = run_channel_compatibility_matrix(
+            binary, asb_checkout, asb_head, Path(disposable) / "channel-matrix.json"
+        )
         matrix = run_capture_replay_matrix(asb_binary, asb_checkout, env, Path(disposable) / "matrix")
         # Omitted channel must select dev. First materialize from the exact
         # local main checkout, then build a content-bound handoff from the
@@ -383,7 +408,7 @@ def main() -> int:
         "schema_version": 1, "ar": "AR-1693", "classification": "development/mock",
         "network": {"install_materialization": "allowed", "benchmark_and_replay": "denied"}, "credentials": "none",
         "selection": {"channel": "dev", "provider": "fixture", "auth": "development_fixture", "agent": "opencode", "model": "fixture-model", "cassette": "strict-replay-cassette", "replay": "offline"},
-        "routes": {"install": installed_with_handoff, "status": status, "restart_status": restarted, "launch": launch, "tamper_negative": tampered, "onboarding": onboarding, "journey": journey, "provider_selection": "provider_lifecycle_1656 passed", "fanout_capture_replay": "coverage_setup_recording and development_journey passed", "end_to_end_test": "passed", "capture_replay_matrix": matrix, "comparison": "end_to_end_qualification passed", "analysis": "end_to_end_qualification passed"},
+        "routes": {"install": installed_with_handoff, "status": status, "restart_status": restarted, "launch": launch, "tamper_negative": tampered, "onboarding": onboarding, "journey": journey, "provider_selection": "provider_lifecycle_1656 passed", "fanout_capture_replay": "coverage_setup_recording and development_journey passed", "end_to_end_test": "passed", "channel_compatibility_matrix": channel_matrix, "capture_replay_matrix": matrix, "comparison": "end_to_end_qualification passed", "analysis": "end_to_end_qualification passed"},
         "provenance": {
             "tui_commit": tui_commit, "tui_tree": tui_tree,
             "asb_commit": asb_head, "asb_tree": git(asb_checkout, f"{asb_head}^{{tree}}"),
