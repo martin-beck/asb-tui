@@ -50,8 +50,15 @@ class QuickstartAcceptanceTests(unittest.TestCase):
 
     def test_receipt_matrix_contract_names_negative_and_strict_paths(self):
         source = Path(RUNNER.__file__).read_text(encoding="utf-8")
-        for field in ("selected", "all", "incomplete_matrix", "strict_replay", "strict_replay_reference", "cassette_sha256", "result_digest"):
+        for field in ("selected", "all", "incomplete_matrix", "strict_replay", "strict_replay_reference", "cassette_sha256", "result_digest", "handoff_manifest_sha256", "tamper_negative", "restart_status"):
             self.assertIn(f'"{field}"', source)
+
+    def test_quickstart_binds_omitted_channel_and_actual_handoff_digest(self):
+        source = Path(RUNNER.__file__).read_text(encoding="utf-8")
+        self.assertIn('["tui", "install", "--json"]', source)
+        self.assertIn("ASB_TUI_CHANNEL_MANIFEST", source)
+        self.assertIn('"executable_sha256"', source)
+        self.assertIn("channel_manifest_sha256", source)
 
 
 if __name__ == "__main__":
