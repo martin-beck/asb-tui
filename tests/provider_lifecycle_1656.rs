@@ -174,6 +174,47 @@ fn connected_catalog_projects_both_adapter_routes() {
 }
 
 #[test]
+fn connected_catalog_keeps_unavailable_provider_and_model_visible_but_unselectable() {
+    let mut catalog = catalog("openrouter", "fixture-model");
+    catalog.providers[0].models[0].availability =
+        ProviderAvailability::Unavailable("development authentication unavailable".into());
+    let adapters = AdapterCatalog::from_provider_catalog(&catalog).unwrap();
+    let session = asb_tui::adapter_catalog::SelectionSession::new(adapters);
+    let options = session
+        .compatibility_options("opendesk")
+        .expect("connected adapter route");
+    let provider = options
+        .providers
+        .iter()
+        .find(|option| option.id == "openrouter")
+        .expect("provider remains visible");
+    assert!(provider.available);
+    assert!(provider.reason.is_none());
+    let model = options
+        .models
+        .iter()
+        .find(|option| option.id == "fixture-model")
+        .expect("model remains visible");
+    assert!(!model.available);
+    assert_eq!(
+        model.reason.as_deref(),
+        Some("development authentication unavailable")
+    );
+    assert!(
+        session
+            .validate(AdapterSelection {
+                adapter_id: "opendesk".into(),
+                provider_id: "openrouter".into(),
+                model_id: "fixture-model".into(),
+                auth: AuthMethod::None,
+            })
+            == Err(asb_tui::adapter_catalog::SelectionError::UnavailableModel(
+                "development authentication unavailable".into()
+            ))
+    );
+}
+
+#[test]
 fn matrix_covers_every_development_tuple_and_opendesk_defaults_offline() {
     let mut matrix = CompatibilityMatrix::development();
     let tuples = matrix
