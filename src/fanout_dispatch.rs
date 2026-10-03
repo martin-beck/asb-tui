@@ -12,10 +12,18 @@ use std::fmt;
 
 const MAX_SELECTION_ITEMS: usize = 64;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FanoutSelection {
     pub agent_ids: Vec<String>,
     pub workload_ids: Vec<String>,
+    /// Provider/model and catalog identity reviewed by the wizard/preflight.
+    pub provider_id: String,
+    pub model_id: String,
+    pub catalog_digest: String,
+    /// Content-pinned development revisions.  The benchmark catalog digest is
+    /// used when the catalog does not publish separate revisions.
+    pub workload_revision: String,
+    pub scorer_revision: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,7 +89,29 @@ impl FanoutSelection {
             .iter()
             .flat_map(|agent_id| {
                 self.workload_ids.iter().map(move |workload_id| {
-                    serde_json::json!({"agent_id": agent_id, "workload_id": workload_id})
+                    serde_json::json!({
+                        "kind": "run_request",
+                        "schema_version": 1,
+                        "idempotency_key": "asb-tui-fanout-member",
+                        "agent_id": agent_id,
+                        "provider_id": self.provider_id,
+                        "model_id": self.model_id,
+                        "workload_id": workload_id,
+                        "catalog_digest": self.catalog_digest,
+                        "workload_revision": self.workload_revision,
+                        "scorer_revision": self.scorer_revision,
+                        "mode": "local-mock",
+                        "cassette_digest": null,
+                        "credential_ref_digest": null,
+                        "limits": {
+                            "timeout_ms": 30_000,
+                            "max_output_bytes": 65_536,
+                            "max_events": 128,
+                            "max_artifacts": 16,
+                            "max_artifact_bytes": 65_536,
+                            "max_artifact_total_bytes": 262_144
+                        }
+                    })
                 })
             })
             .collect()
@@ -179,6 +209,7 @@ impl FanoutDispatchState {
         let selection = self.selection.clone().unwrap_or(FanoutSelection {
             agent_ids: Vec::new(),
             workload_ids: Vec::new(),
+            ..Default::default()
         });
         FanoutDispatchReport {
             status: match self.status {
@@ -282,6 +313,11 @@ mod tests {
         let selection = FanoutSelection {
             agent_ids: vec!["agent-b".into(), "agent-a".into(), "agent-a".into()],
             workload_ids: vec!["workload-b".into(), "workload-a".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
         }
         .canonicalize()
         .unwrap();
@@ -290,10 +326,10 @@ mod tests {
         assert_eq!(
             selection.requests(),
             vec![
-                serde_json::json!({"agent_id":"agent-a","workload_id":"workload-a"}),
-                serde_json::json!({"agent_id":"agent-a","workload_id":"workload-b"}),
-                serde_json::json!({"agent_id":"agent-b","workload_id":"workload-a"}),
-                serde_json::json!({"agent_id":"agent-b","workload_id":"workload-b"}),
+                serde_json::json!({"kind":"run_request","schema_version":1,"idempotency_key":"asb-tui-fanout-member","agent_id":"agent-a","provider_id":"provider","model_id":"model","workload_id":"workload-a","catalog_digest":"a".repeat(64),"workload_revision":"b".repeat(64),"scorer_revision":"c".repeat(64),"mode":"local-mock","cassette_digest":null,"credential_ref_digest":null,"limits":{"timeout_ms":30000,"max_output_bytes":65536,"max_events":128,"max_artifacts":16,"max_artifact_bytes":65536,"max_artifact_total_bytes":262144}}),
+                serde_json::json!({"kind":"run_request","schema_version":1,"idempotency_key":"asb-tui-fanout-member","agent_id":"agent-a","provider_id":"provider","model_id":"model","workload_id":"workload-b","catalog_digest":"a".repeat(64),"workload_revision":"b".repeat(64),"scorer_revision":"c".repeat(64),"mode":"local-mock","cassette_digest":null,"credential_ref_digest":null,"limits":{"timeout_ms":30000,"max_output_bytes":65536,"max_events":128,"max_artifacts":16,"max_artifact_bytes":65536,"max_artifact_total_bytes":262144}}),
+                serde_json::json!({"kind":"run_request","schema_version":1,"idempotency_key":"asb-tui-fanout-member","agent_id":"agent-b","provider_id":"provider","model_id":"model","workload_id":"workload-a","catalog_digest":"a".repeat(64),"workload_revision":"b".repeat(64),"scorer_revision":"c".repeat(64),"mode":"local-mock","cassette_digest":null,"credential_ref_digest":null,"limits":{"timeout_ms":30000,"max_output_bytes":65536,"max_events":128,"max_artifacts":16,"max_artifact_bytes":65536,"max_artifact_total_bytes":262144}}),
+                serde_json::json!({"kind":"run_request","schema_version":1,"idempotency_key":"asb-tui-fanout-member","agent_id":"agent-b","provider_id":"provider","model_id":"model","workload_id":"workload-b","catalog_digest":"a".repeat(64),"workload_revision":"b".repeat(64),"scorer_revision":"c".repeat(64),"mode":"local-mock","cassette_digest":null,"credential_ref_digest":null,"limits":{"timeout_ms":30000,"max_output_bytes":65536,"max_events":128,"max_artifacts":16,"max_artifact_bytes":65536,"max_artifact_total_bytes":262144}}),
             ]
         );
     }
@@ -304,14 +340,17 @@ mod tests {
             FanoutSelection {
                 agent_ids: vec![],
                 workload_ids: vec!["w".into()],
+                ..Default::default()
             },
             FanoutSelection {
                 agent_ids: vec!["a".into()],
                 workload_ids: vec![],
+                ..Default::default()
             },
             FanoutSelection {
                 agent_ids: vec!["a\n".into()],
                 workload_ids: vec!["w".into()],
+                ..Default::default()
             },
         ] {
             assert!(selection.canonicalize().is_err());
@@ -332,6 +371,11 @@ mod tests {
         let selection = FanoutSelection {
             agent_ids: vec!["agent".into()],
             workload_ids: vec!["workload".into()],
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
         };
         let mut state = FanoutDispatchState::default();
         let mut projection = ControlProjection::default();

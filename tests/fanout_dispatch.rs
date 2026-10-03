@@ -56,6 +56,7 @@ fn selected_scope_expands_in_stable_order_and_cancel_uses_exact_members() {
             FanoutSelection {
                 agent_ids: vec!["agent-b".into(), "agent-a".into()],
                 workload_ids: vec!["workload-b".into(), "workload-a".into()],
+                ..Default::default()
             },
         )
         .unwrap();
