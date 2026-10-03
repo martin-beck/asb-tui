@@ -325,6 +325,10 @@ def main() -> int:
         tui_tree = initial["source_tree"]
         assert len(tui_commit) == 40 and len(tui_tree) == 40, initial
         handoff = development_handoff(asb_checkout, tui_commit, tui_tree, installed, handoff_path)
+        # Capture this before the disposable workspace is torn down.  The
+        # receipt is emitted after the acceptance scope so it must not retain
+        # a path into TemporaryDirectory.
+        handoff_manifest_sha256 = hashlib.sha256(handoff_path.read_bytes()).hexdigest()
         env["ASB_TUI_CHANNEL_MANIFEST"] = str(handoff_path)
         env["ASB_TUI_DEV_INSTALL_ROOT"] = f"{disposable}/handoff-install"
         install_env["ASB_TUI_CHANNEL_MANIFEST"] = str(handoff_path)
@@ -384,7 +388,7 @@ def main() -> int:
             "tui_commit": tui_commit, "tui_tree": tui_tree,
             "asb_commit": asb_head, "asb_tree": git(asb_checkout, f"{asb_head}^{{tree}}"),
             "manifest": "release/channel-status.json", "manifest_sha256": manifest_digest,
-            "handoff_manifest_sha256": hashlib.sha256(handoff_path.read_bytes()).hexdigest(),
+            "handoff_manifest_sha256": handoff_manifest_sha256,
             "handoff": handoff,
             "runner_binary_sha256": sha256(binary),
             "installed_executable_sha256": installed_executable_sha256,

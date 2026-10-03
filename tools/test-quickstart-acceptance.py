@@ -59,6 +59,11 @@ class QuickstartAcceptanceTests(unittest.TestCase):
         self.assertIn("ASB_TUI_CHANNEL_MANIFEST", source)
         self.assertIn('"executable_sha256"', source)
         self.assertIn("channel_manifest_sha256", source)
+        self.assertIn(
+            "handoff_manifest_sha256 = hashlib.sha256(handoff_path.read_bytes()).hexdigest()",
+            source,
+        )
+        self.assertIn('"handoff_manifest_sha256": handoff_manifest_sha256', source)
 
 
 if __name__ == "__main__":
