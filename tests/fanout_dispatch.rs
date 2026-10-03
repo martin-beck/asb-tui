@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 use asb_tui::{
-    control_codec::{AttemptId, FanoutAdmission, FanoutMember, RunId},
+    control_codec::{
+        AttemptId, ControlCall, ControlLimits, ControlRequest, FanoutAdmission, FanoutMember,
+        FanoutParams, JSONRPC_VERSION, MAX_FRAME_BYTES, RequestId, RunId, V1_14, decode, encode,
+    },
     control_transport::TransportError,
     fanout_dispatch::{FanoutBackend, FanoutDispatchState, FanoutSelection, FanoutStatus},
     live_projection::ControlProjection,
@@ -73,6 +76,61 @@ fn selected_scope_expands_in_stable_order_and_cancel_uses_exact_members() {
     assert_eq!(state.status(), FanoutStatus::Cancelled);
     assert_eq!(backend.cancelled[0].0, "cancel-1");
     assert_eq!(backend.cancelled[0].1, state.admission().unwrap().members);
+}
+
+#[test]
+fn selected_fanout_requests_round_trip_over_v1_14_wire_shape() {
+    let mut backend = FakeBackend::default();
+    let mut projection = ControlProjection::default();
+    let mut state = FanoutDispatchState::default();
+    state
+        .admit_selected(
+            &mut backend,
+            &mut projection,
+            "wire-request".into(),
+            FanoutSelection {
+                agent_ids: vec!["opencode".into(), "opendesk".into()],
+                workload_ids: vec!["workload-a".into()],
+                provider_id: "openrouter".into(),
+                model_id: "openai/gpt-4o".into(),
+                catalog_digest: "a".repeat(64),
+                workload_revision: "b".repeat(64),
+                scorer_revision: "c".repeat(64),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(backend.admitted[0].1.len(), 2);
+    for request in &backend.admitted[0].1 {
+        for field in [
+            "agent_id",
+            "provider_id",
+            "model_id",
+            "workload_id",
+            "catalog_digest",
+            "workload_revision",
+            "scorer_revision",
+            "mode",
+            "limits",
+        ] {
+            assert!(request.get(field).is_some(), "missing {field}: {request}");
+        }
+    }
+
+    let request = ControlRequest {
+        jsonrpc: JSONRPC_VERSION.into(),
+        id: RequestId(1650),
+        timeout_ms: 30_000,
+        call: ControlCall::Fanout(FanoutParams {
+            idempotency_key: "wire-request".into(),
+            requests: backend.admitted[0].1.clone(),
+        }),
+    };
+    assert_eq!(request.call.minimum_version(), Some(V1_14));
+    request.validate(ControlLimits::default()).unwrap();
+    let wire = encode(&request, MAX_FRAME_BYTES).unwrap();
+    let decoded: ControlRequest = decode(&wire, MAX_FRAME_BYTES).unwrap();
+    assert_eq!(decoded, request);
 }
 
 #[test]
