@@ -63,6 +63,17 @@ classified `development_only`, and launch only reports that the materialized
 executable is verified and ready. It does not claim a signed release or
 production authentication.
 
+When ASB has selected the development channel, it may provide an absolute
+`ASB_TUI_CHANNEL_MANIFEST` path for the handoff. The TUI consumes that bounded
+manifest during install, validates the paired ASB/TUI `main` identities and the
+actual executable bytes, and stores the content digest beside the private
+installation. Subsequent status and launch operations re-check the persisted
+manifest and expose the paired identities in human-readable or `--json`
+diagnostics. A malformed, stale, or tampered supplied manifest is a typed
+development-channel error; missing provider credentials, signatures, or key
+management remain visible development warnings and do not block this
+prototype path.
+
 The parent ASB command may invoke the same target as `asb tui <operation>`.
 The request remains the v1 development-router envelope from
 `protocol/v1/lifecycle-request.schema.json`; the selected operation and the

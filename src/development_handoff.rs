@@ -56,6 +56,9 @@ pub struct HandoffProjection {
     pub source_commit: Option<String>,
     pub source_tree: Option<String>,
     pub executable_sha256: Option<String>,
+    pub asb_source_commit: Option<String>,
+    pub asb_source_tree: Option<String>,
+    pub channel_manifest_sha256: Option<String>,
     pub warning: &'static str,
 }
 
@@ -72,6 +75,9 @@ impl Default for HandoffProjection {
             source_commit: None,
             source_tree: None,
             executable_sha256: None,
+            asb_source_commit: None,
+            asb_source_tree: None,
+            channel_manifest_sha256: None,
             warning: "development-only; authentication and signatures are non-blocking",
         }
     }
@@ -121,6 +127,9 @@ impl HandoffProjection {
         self.source_commit = response.source_commit.clone();
         self.source_tree = response.source_tree.clone();
         self.executable_sha256 = response.executable_sha256.clone();
+        self.asb_source_commit = response.asb_source_commit.clone();
+        self.asb_source_tree = response.asb_source_tree.clone();
+        self.channel_manifest_sha256 = response.channel_manifest_sha256.clone();
         self.previous_install_preserved = !response.ok;
         self.phase = match response.code {
             "development_installed" | "development_launch_ready" => Phase::Installed,
@@ -153,6 +162,15 @@ impl HandoffProjection {
         }
         if let Some(digest) = &self.executable_sha256 {
             lines.push(format!("executable sha256: {digest}"));
+        }
+        if let Some(commit) = &self.asb_source_commit {
+            lines.push(format!("ASB source commit: {commit}"));
+        }
+        if let Some(tree) = &self.asb_source_tree {
+            lines.push(format!("ASB source tree: {tree}"));
+        }
+        if let Some(digest) = &self.channel_manifest_sha256 {
+            lines.push(format!("channel manifest sha256: {digest}"));
         }
         lines
     }
@@ -188,6 +206,9 @@ mod tests {
             source_commit: Some("a".repeat(40)),
             source_tree: Some("b".repeat(40)),
             executable_sha256: None,
+            asb_source_commit: None,
+            asb_source_tree: None,
+            channel_manifest_sha256: None,
         };
         handoff.apply_response(&response);
         assert_eq!(handoff.phase, Phase::RolledBack);
@@ -231,6 +252,9 @@ mod tests {
             source_commit: Some("a".repeat(40)),
             source_tree: Some("b".repeat(40)),
             executable_sha256: Some("c".repeat(64)),
+            asb_source_commit: None,
+            asb_source_tree: None,
+            channel_manifest_sha256: None,
         };
         handoff.apply_response(&response);
         assert_eq!(handoff.phase, Phase::Installed);

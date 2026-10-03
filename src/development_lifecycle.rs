@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 //! Credential-free, explicitly development-only temporary lifecycle.
 
+use crate::development_channel_manifest::{ConsumedManifest, consume, consume_from_env};
 #[cfg(not(test))]
 use crate::release_channel::compiled_target;
 use crate::sha256::digest_hex;
@@ -60,6 +61,12 @@ pub struct Response {
     pub source_commit: Option<String>,
     pub source_tree: Option<String>,
     pub executable_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asb_source_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asb_source_tree: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_manifest_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, Serialize)]
@@ -72,6 +79,12 @@ struct State {
     source_tree: String,
     executable_sha256: String,
     source_repository: String,
+    #[serde(default)]
+    asb_source_commit: Option<String>,
+    #[serde(default)]
+    asb_source_tree: Option<String>,
+    #[serde(default)]
+    channel_manifest_sha256: Option<String>,
 }
 
 fn response(code: &'static str, ok: bool) -> Response {
@@ -87,6 +100,9 @@ fn response(code: &'static str, ok: bool) -> Response {
         source_commit: None,
         source_tree: None,
         executable_sha256: None,
+        asb_source_commit: None,
+        asb_source_tree: None,
+        channel_manifest_sha256: None,
     }
 }
 fn state_path(root: &Path) -> PathBuf {
@@ -168,26 +184,53 @@ fn status(root: &Path) -> Response {
     let Ok(bytes) = fs::read(executable_path(root)) else {
         return response("development_installation_invalid", false);
     };
+    let manifest = root.join("channel-manifest.json");
+    let manifest_result = if manifest.exists() {
+        Some(consume(&manifest))
+    } else {
+        None
+    };
+    let manifest_valid = match manifest_result.as_ref() {
+        Some(Ok(value)) => {
+            value.manifest.tui_source_commit == state.source_commit
+                && value.manifest.tui_source_tree == state.source_tree
+                && value.manifest.validate_executable(&bytes).is_ok()
+                && state.channel_manifest_sha256.as_deref() == Some(value.sha256.as_str())
+        }
+        Some(Err(_)) => false,
+        None => state.channel_manifest_sha256.is_none(),
+    };
     let valid = state.schema_version == 1
         && state.channel == CHANNEL
         && state.development_only
         && state.source_repository == dev_repository()
         && valid_identity(&state.source_commit)
         && valid_identity(&state.source_tree)
-        && digest_hex(&bytes) == state.executable_sha256;
-    let mut result = response(
-        if valid {
-            "development_installed"
-        } else {
-            "development_installation_invalid"
-        },
-        valid,
-    );
+        && digest_hex(&bytes) == state.executable_sha256
+        && manifest_valid;
+    let code = match manifest_result.as_ref() {
+        Some(Err(error)) => error.code(),
+        Some(Ok(value)) if !manifest_valid => {
+            if value.manifest.tui_source_commit != state.source_commit
+                || value.manifest.tui_source_tree != state.source_tree
+            {
+                "dev_channel_manifest_stale"
+            } else {
+                "dev_channel_manifest_digest_mismatch"
+            }
+        }
+        _ if valid => "development_installed",
+        _ => "development_installation_invalid",
+    };
+    let mut result = response(code, valid);
     result.installed = true;
     result.verified = valid;
     result.source_commit = Some(state.source_commit);
     result.source_tree = Some(state.source_tree);
     result.executable_sha256 = Some(state.executable_sha256);
+    result.asb_source_commit = state.asb_source_commit;
+    result.asb_source_tree = state.asb_source_tree;
+    result.channel_manifest_sha256 = state.channel_manifest_sha256;
     result
 }
 
@@ -545,6 +588,9 @@ fn build_candidate(
         source_tree: tree,
         executable_sha256: digest_hex(&bytes),
         source_repository: repository,
+        asb_source_commit: None,
+        asb_source_tree: None,
+        channel_manifest_sha256: None,
     };
     Ok((bytes, state))
 }
@@ -568,6 +614,9 @@ fn build_candidate(
             source_tree: "b".repeat(40),
             executable_sha256: digest_hex(&bytes),
             source_repository: dev_repository(),
+            asb_source_commit: None,
+            asb_source_tree: None,
+            channel_manifest_sha256: None,
         },
     ))
 }
@@ -594,7 +643,27 @@ fn materialize(
     fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700))
         .map_err(|_| "development_workspace_create_failed")?;
     let result = (|| {
-        let (bytes, state) = build_candidate(&workspace, cancelled)?;
+        let (bytes, mut state) = build_candidate(&workspace, cancelled)?;
+        let consumed: Option<ConsumedManifest> =
+            consume_from_env().map_err(|error| error.code())?;
+        if let Some(value) = &consumed {
+            value
+                .manifest
+                .validate_current_main(
+                    &value.manifest.asb_source_commit,
+                    &value.manifest.asb_source_tree,
+                    &state.source_commit,
+                    &state.source_tree,
+                )
+                .map_err(|error| error.code())?;
+            value
+                .manifest
+                .validate_executable(&bytes)
+                .map_err(|error| error.code())?;
+            state.asb_source_commit = Some(value.manifest.asb_source_commit.clone());
+            state.asb_source_tree = Some(value.manifest.asb_source_tree.clone());
+            state.channel_manifest_sha256 = Some(value.sha256.clone());
+        }
         if cancelled.is_some_and(|value| value.load(Ordering::Relaxed)) {
             return Err("development_cancelled");
         }
@@ -607,13 +676,20 @@ fn materialize(
             serde_json::to_vec(&state).map_err(|_| "development_stage_failed")?,
         )
         .map_err(|_| "development_stage_failed")?;
+        if let Some(value) = consumed {
+            fs::write(
+                stage.join("channel-manifest.json"),
+                serde_json::to_vec(&value.manifest).map_err(|_| "development_stage_failed")?,
+            )
+            .map_err(|_| "development_stage_failed")?;
+        }
         let backup = root.join(format!(".backup-{nonce}"));
         if replacing {
             fs::create_dir(&backup).map_err(|_| "development_activation_failed")?;
-            for name in ["asb-tui", "provenance.json"] {
+            for name in ["asb-tui", "provenance.json", "channel-manifest.json"] {
                 let old = root.join(name);
                 if old.exists() && fs::rename(&old, backup.join(name)).is_err() {
-                    for restore in ["asb-tui", "provenance.json"] {
+                    for restore in ["asb-tui", "provenance.json", "channel-manifest.json"] {
                         let saved = backup.join(restore);
                         if saved.exists() {
                             let _ = fs::rename(saved, root.join(restore));
@@ -631,12 +707,19 @@ fn materialize(
                 &root.join("provenance.json"),
                 2,
             )?;
+            if stage.join("channel-manifest.json").exists() {
+                rename_entry(
+                    &stage.join("channel-manifest.json"),
+                    &root.join("channel-manifest.json"),
+                    3,
+                )?;
+            }
             Ok::<(), &'static str>(())
         })();
         if let Err(error) = activation {
             // Restore both old entries before reporting failure; a failed
             // upgrade must never leave a half-new installation active.
-            for name in ["asb-tui", "provenance.json"] {
+            for name in ["asb-tui", "provenance.json", "channel-manifest.json"] {
                 let current = root.join(name);
                 if current.exists() {
                     let _ = fs::remove_file(&current);
@@ -703,14 +786,17 @@ pub fn execute_with_cancel(operation: &str, cancelled: &AtomicBool) -> Response 
                     response("development_remove_failed", false)
                 } else {
                     let moved = (|| {
-                        for name in ["asb-tui", "provenance.json"] {
-                            fs::rename(root.join(name), trash.join(name))
-                                .map_err(|_| "development_remove_failed")?;
+                        for name in ["asb-tui", "provenance.json", "channel-manifest.json"] {
+                            let current = root.join(name);
+                            if current.exists() {
+                                fs::rename(current, trash.join(name))
+                                    .map_err(|_| "development_remove_failed")?;
+                            }
                         }
                         fs::remove_dir_all(&trash).map_err(|_| "development_remove_failed")
                     })();
                     if moved.is_err() {
-                        for name in ["asb-tui", "provenance.json"] {
+                        for name in ["asb-tui", "provenance.json", "channel-manifest.json"] {
                             let old = trash.join(name);
                             if old.exists() {
                                 let _ = fs::rename(old, root.join(name));
@@ -754,6 +840,9 @@ mod tests {
             source_tree: "unknown".into(),
             executable_sha256: digest_hex(b"candidate"),
             source_repository: DEFAULT_REPOSITORY.into(),
+            asb_source_commit: None,
+            asb_source_tree: None,
+            channel_manifest_sha256: None,
         };
         let root = temp_root("malformed");
         fs::write(state_path(&root), serde_json::to_vec(&state).unwrap()).unwrap();
@@ -838,6 +927,9 @@ mod tests {
             source_tree: "b".repeat(40),
             executable_sha256: digest_hex(bytes),
             source_repository: DEFAULT_REPOSITORY.into(),
+            asb_source_commit: None,
+            asb_source_tree: None,
+            channel_manifest_sha256: None,
         };
         fs::write(state_path(&root), serde_json::to_vec(&valid).unwrap()).unwrap();
         assert!(status(&root).verified);
@@ -876,6 +968,53 @@ mod tests {
         fs::write(state_path(&root), serde_json::to_vec(&valid).unwrap()).unwrap();
         fs::write(executable_path(&root), b"tampered").unwrap();
         assert_eq!(status(&root).code, "development_installation_invalid");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn status_consumes_channel_manifest_and_binds_actual_executable_digest() {
+        let root = temp_root("channel-manifest");
+        let bytes = b"candidate";
+        fs::write(executable_path(&root), bytes).unwrap();
+        let manifest = crate::development_channel_manifest::DevelopmentChannelManifest {
+            schema_version: 1,
+            channel: CHANNEL.into(),
+            development_only: true,
+            asb_repository: crate::development_channel_manifest::ASB_REPOSITORY.into(),
+            asb_ref: crate::development_channel_manifest::MAIN_REF.into(),
+            asb_source_commit: "c".repeat(40),
+            asb_source_tree: "d".repeat(40),
+            tui_repository: DEFAULT_REPOSITORY.into(),
+            tui_ref: crate::development_channel_manifest::MAIN_REF.into(),
+            tui_source_commit: "a".repeat(40),
+            tui_source_tree: "b".repeat(40),
+            executable_sha256: digest_hex(bytes),
+            executable_size: bytes.len() as u64,
+            built_unix: 1,
+            warnings: Vec::new(),
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let manifest_digest = digest_hex(&manifest_bytes);
+        fs::write(root.join("channel-manifest.json"), &manifest_bytes).unwrap();
+        let state = State {
+            schema_version: 1,
+            channel: CHANNEL.into(),
+            development_only: true,
+            source_commit: "a".repeat(40),
+            source_tree: "b".repeat(40),
+            executable_sha256: digest_hex(bytes),
+            source_repository: DEFAULT_REPOSITORY.into(),
+            asb_source_commit: Some("c".repeat(40)),
+            asb_source_tree: Some("d".repeat(40)),
+            channel_manifest_sha256: Some(manifest_digest.clone()),
+        };
+        fs::write(state_path(&root), serde_json::to_vec(&state).unwrap()).unwrap();
+        let result = status(&root);
+        assert!(result.verified);
+        assert_eq!(result.asb_source_commit, Some("c".repeat(40)));
+        assert_eq!(result.channel_manifest_sha256, Some(manifest_digest));
+        fs::write(root.join("channel-manifest.json"), b"tampered").unwrap();
+        assert_eq!(status(&root).code, "dev_channel_manifest_invalid");
         fs::remove_dir_all(root).unwrap();
     }
 
