@@ -296,6 +296,11 @@ def main() -> int:
             # source and receipt must be the merged main head.
             "ASB_TUI_DEV_REPOSITORY": "https://github.com/martin-beck/asb-tui.git",
             "ASB_TUI_DEV_REF": "main",
+            # The materializer gives Cargo a disposable HOME; retain the
+            # owner-private pinned rustup toolchain explicitly.
+            "ASB_TUI_DEV_RUSTUP_HOME": os.environ.get(
+                "RUSTUP_HOME", str(Path.home() / ".rustup")
+            ),
             "ASB_TUI_NETWORK_POLICY": "deny",
             "HTTP_PROXY": "http://127.0.0.1:1",
             "HTTPS_PROXY": "http://127.0.0.1:1",
