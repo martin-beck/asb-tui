@@ -432,6 +432,183 @@ pub struct Comparison {
     pub excluded_measures: Vec<String>,
 }
 
+/// The availability of the inputs selected for a comparison.
+///
+/// This is deliberately separate from [`Comparison::compatible`].  A report
+/// may be present and usable for inspection while still being unsuitable for
+/// a numerical comparison (for example, when its provenance differs from the
+/// baseline).  `Partial` means that at least one selected input is usable and
+/// at least one is missing, stale, or invalid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ComparisonAvailability {
+    Available,
+    Partial,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ComparisonRole {
+    Baseline,
+    Candidate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComparisonSide {
+    pub role: ComparisonRole,
+    pub run_id: RunId,
+    pub available: bool,
+    /// Stable, user-facing reason codes.  These are intentionally bounded
+    /// and contain no report contents or host-specific values.
+    pub unavailable_reasons: Vec<String>,
+    /// Reasons this side cannot be compared with the baseline even though its
+    /// own report is present and valid.
+    pub confounders: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComparisonAssessment {
+    pub run_ids: Vec<RunId>,
+    pub availability: ComparisonAvailability,
+    pub comparable: bool,
+    pub sides: Vec<ComparisonSide>,
+    pub unavailable_reasons: Vec<String>,
+    pub confounders: Vec<String>,
+    pub excluded_measures: Vec<String>,
+}
+
+/// Assess comparison readiness without turning an asymmetric history page
+/// into an opaque command error.
+///
+/// The first selected run is the baseline and every subsequent run is a
+/// candidate.  Missing or stale reports are retained in the side projection
+/// with an actionable reason.  This makes symmetric, asymmetric, and
+/// multi-candidate selections distinguishable to both the TUI and JSON
+/// callers while keeping comparison claims fail-closed.
+pub fn assess_comparison(reports: &[Report], selected: &[RunId]) -> ComparisonAssessment {
+    let by_id: BTreeMap<_, _> = reports.iter().map(|r| (&r.run_id, r)).collect();
+    let mut sides = Vec::with_capacity(selected.len());
+    let mut available = Vec::new();
+    let mut global_reasons = BTreeSet::new();
+    let mut global_confounders = BTreeSet::new();
+
+    if selected.len() < 2 {
+        global_reasons.insert("selection_requires_at_least_two_runs".to_owned());
+    }
+    let mut seen = BTreeSet::new();
+    for (index, id) in selected.iter().enumerate() {
+        let role = if index == 0 {
+            ComparisonRole::Baseline
+        } else {
+            ComparisonRole::Candidate
+        };
+        let mut side_reasons = Vec::new();
+        match by_id.get(id) {
+            None => {
+                side_reasons.push("report_missing".to_owned());
+                global_reasons.insert("report_missing".to_owned());
+            }
+            Some(_) if !seen.insert(id.clone()) => {
+                side_reasons.push("duplicate_run".to_owned());
+                global_reasons.insert("duplicate_run".to_owned());
+            }
+            Some(report) if report.stale => {
+                side_reasons.push("report_stale".to_owned());
+                global_reasons.insert("report_stale".to_owned());
+            }
+            Some(report) => match report.validate() {
+                Err(_) => {
+                    side_reasons.push("report_invalid".to_owned());
+                    global_reasons.insert("report_invalid".to_owned());
+                }
+                Ok(()) => {
+                    if report.provenance.is_empty() {
+                        side_reasons.push("provenance_missing".to_owned());
+                        global_reasons.insert("provenance_missing".to_owned());
+                    }
+                    if report.measures.is_empty() {
+                        side_reasons.push("measures_missing".to_owned());
+                        global_reasons.insert("measures_missing".to_owned());
+                    }
+                    if !report.is_conclusive() {
+                        side_reasons.push("results_inconclusive".to_owned());
+                        global_reasons.insert("results_inconclusive".to_owned());
+                    }
+                    available.push(report);
+                }
+            },
+        }
+        sides.push(ComparisonSide {
+            role,
+            run_id: id.clone(),
+            available: side_reasons.is_empty(),
+            unavailable_reasons: side_reasons,
+            confounders: Vec::new(),
+        });
+    }
+
+    let mut excluded_measures = BTreeSet::new();
+    if let Some(first) = available.first() {
+        let common = available.iter().skip(1).fold(
+            first.measures.keys().cloned().collect::<BTreeSet<_>>(),
+            |set, report| {
+                set.intersection(&report.measures.keys().cloned().collect())
+                    .cloned()
+                    .collect()
+            },
+        );
+        let all: BTreeSet<_> = available
+            .iter()
+            .flat_map(|report| report.measures.keys().cloned())
+            .collect();
+        excluded_measures = all.difference(&common).cloned().collect();
+        if !excluded_measures.is_empty() {
+            global_reasons.insert("measures_not_shared".to_owned());
+        }
+        let compatibility_key = first.compatibility_key.as_str();
+        let evidence = &first.evidence;
+        for (index, side) in sides.iter_mut().enumerate().skip(1) {
+            let Some(report) = by_id.get(&selected[index]) else {
+                continue;
+            };
+            if report.stale || report.validate().is_err() {
+                continue;
+            }
+            if report.provenance != first.provenance {
+                side.confounders.push("provenance_differs".to_owned());
+                global_confounders.insert("provenance_differs".to_owned());
+            }
+            if report.compatibility_key != compatibility_key {
+                side.confounders.push("compatibility_differs".to_owned());
+                global_confounders.insert("compatibility_differs".to_owned());
+            }
+            if report.evidence != *evidence {
+                side.confounders.push("evidence_kind_differs".to_owned());
+                global_confounders.insert("evidence_kind_differs".to_owned());
+            }
+        }
+    }
+
+    let usable_count = sides.iter().filter(|side| side.available).count();
+    let availability = match (usable_count, sides.len()) {
+        (0, _) => ComparisonAvailability::Unavailable,
+        (usable, total) if usable < total => ComparisonAvailability::Partial,
+        _ => ComparisonAvailability::Available,
+    };
+    let comparable = matches!(availability, ComparisonAvailability::Available)
+        && global_reasons.is_empty()
+        && global_confounders.is_empty()
+        && selected.len() >= 2;
+    ComparisonAssessment {
+        run_ids: selected.to_vec(),
+        availability,
+        comparable,
+        sides,
+        unavailable_reasons: global_reasons.into_iter().collect(),
+        confounders: global_confounders.into_iter().collect(),
+        excluded_measures: excluded_measures.into_iter().collect(),
+    }
+}
+
 pub fn compare(reports: &[Report], selected: &[RunId]) -> Result<Comparison, CompareError> {
     if !(2..=MAX_COMPARE_RUNS).contains(&selected.len()) {
         return Err(CompareError::Cardinality);
