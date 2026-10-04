@@ -2,7 +2,7 @@
   "schema_version": 1,
   "ui_modules": [
     {"path":"src/actions.rs","kind":"interaction","responsibility":"Closed action registry including benchmark selection, cassette lifecycle repair, bounded retry, and digest-bound live/offline comparison commands"},
-    {"path":"src/fanout_dispatch.rs","kind":"dispatch","responsibility":"Typed selected-agent/workload fan-out matrix canonicalization, versioned admission and exact-member cancellation dispatch, with explicit local-mock/live mode, digest-only credential references, renderer-neutral pending state, stable human/JSON status, and bounded identity/recovery coverage"},
+    {"path":"src/fanout_dispatch.rs","kind":"dispatch","responsibility":"Typed selected-agent/workload fan-out matrix canonicalization, versioned admission and exact-member cancellation dispatch, with explicit local-mock/live mode, digest-only credential references, pre-submission live credential validation, renderer-neutral pending state, stable human/JSON status, and bounded identity/recovery coverage"},
     {"path":"src/adapter_catalog.rs","kind":"state","responsibility":"Stable coding-agent adapter catalog, explicit OpenCode/OpenDesk provider/model/auth compatibility matrix and deterministic tuple report, development-only fixtures, defaults and per-agent overrides, typed unavailable provider/model reasons retained from authoritative catalogs and enforced as disabled selections, offline validation, and transactional cancel/retry selection preservation"},
     {"path":"src/app.rs","kind":"state"},
     {"path":"src/configuration.rs","kind":"state","responsibility":"Bounded configuration drafts, local persistence, and fail-closed startup state"},
