@@ -56,6 +56,7 @@ jobs:
           python3 tools/test-development-journey.py
           python3 tools/test-end-to-end-journey.py
           python3 tools/test-current-main-quickstart.py
+          python3 tools/test-agent-provider-matrix.py
           python3 tools/check-credential-boundary.py
           python3 tools/test-release-verifier.py
           python3 tools/test-dev-bundle.py
