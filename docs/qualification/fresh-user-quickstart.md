@@ -1,3 +1,5 @@
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
+<!-- SPDX-License-Identifier: MIT -->
 # AR-1643 executable fresh-user quickstart
 
 From a clean checkout, build and run the complete development journey with:
