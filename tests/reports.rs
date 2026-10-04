@@ -155,6 +155,57 @@ fn comparison_reports_conflicts_and_command_is_quoted() {
 }
 
 #[test]
+fn assessment_marks_symmetric_runs_available_and_comparable() {
+    let reports = vec![
+        report("baseline", "catalog-a", false),
+        report("candidate", "catalog-a", false),
+    ];
+    let assessment = assess_comparison(&reports, &[id("baseline"), id("candidate")]);
+    assert_eq!(assessment.availability, ComparisonAvailability::Available);
+    assert!(assessment.comparable);
+    assert_eq!(assessment.sides.len(), 2);
+    assert_eq!(assessment.sides[0].role, ComparisonRole::Baseline);
+    assert_eq!(assessment.sides[1].role, ComparisonRole::Candidate);
+    assert!(assessment.sides.iter().all(|side| side.available));
+    assert!(assessment.unavailable_reasons.is_empty());
+    assert!(assessment.confounders.is_empty());
+}
+
+#[test]
+fn assessment_explains_asymmetric_missing_candidate_without_claiming_comparability() {
+    let reports = vec![report("baseline", "catalog-a", false)];
+    let assessment = assess_comparison(&reports, &[id("baseline"), id("candidate")]);
+    assert_eq!(assessment.availability, ComparisonAvailability::Partial);
+    assert!(!assessment.comparable);
+    assert!(assessment.sides[0].available);
+    assert_eq!(assessment.sides[1].unavailable_reasons, ["report_missing"]);
+    assert_eq!(assessment.unavailable_reasons, ["report_missing"]);
+    assert!(assessment.confounders.is_empty());
+}
+
+#[test]
+fn assessment_preserves_multi_candidate_side_reasons_and_provenance_conflict() {
+    let reports = vec![
+        report("baseline", "catalog-a", false),
+        report("candidate-a", "catalog-a", false),
+        report("candidate-b", "catalog-b", false),
+    ];
+    let assessment = assess_comparison(
+        &reports,
+        &[id("baseline"), id("candidate-a"), id("candidate-b")],
+    );
+    assert_eq!(assessment.availability, ComparisonAvailability::Available);
+    assert!(!assessment.comparable);
+    assert!(
+        assessment
+            .confounders
+            .contains(&"provenance_differs".into())
+    );
+    assert_eq!(assessment.sides[2].confounders, ["provenance_differs"]);
+    assert!(assessment.sides.iter().all(|side| side.available));
+}
+
+#[test]
 fn comparison_rejects_mixed_live_and_replay_evidence() {
     let a = report("a", "same", false);
     let mut b = report("b", "same", false);

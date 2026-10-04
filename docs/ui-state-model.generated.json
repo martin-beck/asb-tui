@@ -1428,7 +1428,7 @@
     },
     {
       "id": "reports.compare",
-      "text": "Compare selected runs only after reviewing evidence, measure status, provenance, and compatibility warnings."
+      "text": "Compare selected runs only after reviewing evidence, availability, measure status, provenance, and compatibility warnings."
     },
     {
       "id": "help.search",
