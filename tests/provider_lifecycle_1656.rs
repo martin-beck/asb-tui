@@ -266,3 +266,25 @@ fn matrix_covers_every_development_tuple_and_opendesk_defaults_offline() {
         })
     );
 }
+
+#[test]
+fn emit_development_matrix_catalog_for_external_acceptance_runner() {
+    let catalog = CompatibilityMatrix::development();
+    let tuples = catalog
+        .evaluate()
+        .into_iter()
+        .map(|case| {
+            serde_json::json!({
+                "agent": case.adapter_id,
+                "provider": case.provider_id,
+                "model": case.model_id,
+                "supported": case.supported,
+                "reason": case.reason,
+            })
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "AR1657_CATALOG_JSON={}",
+        serde_json::to_string(&tuples).unwrap()
+    );
+}

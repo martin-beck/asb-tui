@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "tuples": [
+    {"agent":"opencode","provider":"openai","model":"gpt-4o"},
+    {"agent":"opencode","provider":"openai","model":"fixture-model"},
+    {"agent":"opencode","provider":"openrouter","model":"openai/gpt-4o"},
+    {"agent":"opendesk","provider":"openai","model":"gpt-4o"},
+    {"agent":"opendesk","provider":"openai","model":"fixture-model"},
+    {"agent":"opendesk","provider":"local","model":"fixture-model"}
+  ]
+}

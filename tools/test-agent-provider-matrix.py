@@ -4,16 +4,30 @@
 """Contract tests for the AR-1657 deterministic matrix runner."""
 
 import unittest
+import json
 from pathlib import Path
 
 SOURCE = Path(__file__).with_name("run-agent-provider-matrix.py").read_text(encoding="utf-8")
+FIXTURE = json.loads((Path(__file__).parents[1] / "tests/fixtures/agent-provider-matrix.json").read_text(encoding="utf-8"))
 
 
 class AgentProviderMatrixTests(unittest.TestCase):
     def test_matrix_declares_both_agents_and_all_development_tuples(self):
-        for value in ("opencode", "opendesk", "openrouter", "fixture-model", "gpt-4o"):
+        for value in ("AR1657_CATALOG_JSON=", "agent-provider-matrix.json"):
             self.assertIn(value, SOURCE)
-        self.assertIn('"tuple_count": len(EXPECTED_TUPLES)', SOURCE)
+        self.assertIn("catalog", SOURCE)
+        self.assertEqual(len(FIXTURE["tuples"]), 6)
+        self.assertEqual({tuple["agent"] for tuple in FIXTURE["tuples"]}, {"opencode", "opendesk"})
+
+    def test_matrix_rejects_catalog_drift(self):
+        self.assertIn("catalog drifted from the reviewed fixture", SOURCE)
+        self.assertIn("actual != expected", SOURCE)
+
+    def test_matrix_has_parent_installed_command_parity_acceptance(self):
+        for value in ("tui", "install", "--offline", "installed_asb_tui_status", "installed_asb_tui_launch", "parity"):
+            self.assertIn(value, SOURCE)
+        self.assertIn("did not produce an installed frontend", SOURCE)
+        self.assertIn("installed asb tui status is not ready", SOURCE)
 
     def test_matrix_is_offline_and_credential_free(self):
         self.assertIn('"--offline"', SOURCE)

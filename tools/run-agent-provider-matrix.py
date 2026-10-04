@@ -12,14 +12,6 @@ import os
 import subprocess
 from pathlib import Path
 
-EXPECTED_TUPLES = [
-    {"agent": "opencode", "provider": "openai", "model": "gpt-4o"},
-    {"agent": "opencode", "provider": "openai", "model": "fixture-model"},
-    {"agent": "opencode", "provider": "openrouter", "model": "openai/gpt-4o"},
-    {"agent": "opendesk", "provider": "openai", "model": "gpt-4o"},
-    {"agent": "opendesk", "provider": "openai", "model": "fixture-model"},
-    {"agent": "opendesk", "provider": "local", "model": "fixture-model"},
-]
 REQUIRED_TESTS = (
     "compatibility_matrix_supports_defaults_overrides_restart_and_offline_validation",
     "matrix_evaluates_both_adapters_and_keeps_unavailable_reason_typed",
@@ -40,9 +32,62 @@ def sanitized_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if not any(marker in key.upper() for marker in markers)}
 
 
+def run_asb_tui_parity(binary: Path) -> dict:
+    """Exercise the parent command in both network policies and its installed route."""
+    base = sanitized_environment()
+    base["ASB_TUI_NETWORK_POLICY"] = "allow"
+    online = subprocess.run(
+        [str(binary), "tui", "install", "--dry-run"], env=base,
+        text=True, capture_output=True, check=False,
+    )
+    offline_env = dict(base)
+    offline_env["ASB_TUI_NETWORK_POLICY"] = "deny"
+    offline = subprocess.run(
+        [str(binary), "tui", "install", "--offline", "--dry-run"], env=offline_env,
+        text=True, capture_output=True, check=False,
+    )
+    def document(process: subprocess.CompletedProcess[str]) -> dict:
+        for line in reversed(process.stdout.splitlines()):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                return value
+        raise SystemExit("ASB tui install emitted no structured result")
+    online_result = document(online)
+    offline_result = document(offline)
+    if online_result.get("operation") != "install" or offline_result.get("operation") != "install":
+        raise SystemExit("ASB tui install did not report the install operation")
+    if not online_result.get("ok"):
+        raise SystemExit(f"ASB tui install did not produce an installed frontend: {online_result}")
+    installed = subprocess.run(
+        [str(binary), "tui", "status"], env=offline_env,
+        text=True, capture_output=True, check=False,
+    )
+    installed_result = document(installed)
+    if not installed_result.get("ok"):
+        raise SystemExit(f"installed asb tui status is not ready: {installed_result}")
+    launch = subprocess.run(
+        [str(binary), "tui"], env=offline_env,
+        text=True, capture_output=True, check=False, timeout=15,
+    )
+    launch_result = document(launch)
+    if launch_result.get("operation") != "launch":
+        raise SystemExit("installed asb tui did not report the launch operation")
+    return {
+        "online_install": online_result,
+        "offline_install": offline_result,
+        "installed_asb_tui_status": installed_result,
+        "installed_asb_tui_launch": launch_result,
+        "parity": online_result.get("operation") == offline_result.get("operation") == "install",
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the offline AR-1657 compatibility matrix.")
     parser.add_argument("--checkout", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--asb-binary", type=Path, required=True, help="paired ASB binary for parent-command acceptance")
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -59,11 +104,26 @@ def main() -> int:
     missing = [name for name in REQUIRED_TESTS if name not in output]
     if missing:
         raise SystemExit(f"matrix test output omitted required cases: {missing}")
+    marker = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("AR1657_CATALOG_JSON=")), None)
+    if marker is None:
+        raise SystemExit("matrix test did not emit the Rust catalog")
+    catalog = json.loads(marker)
+    fixture = json.loads((checkout / "tests/fixtures/agent-provider-matrix.json").read_text(encoding="utf-8"))
+    expected = sorted(fixture["tuples"], key=lambda value: (value["agent"], value["provider"], value["model"]))
+    actual = sorted(
+        [{key: value[key] for key in ("agent", "provider", "model")} for value in catalog],
+        key=lambda value: (value["agent"], value["provider"], value["model"]),
+    )
+    if actual != expected:
+        raise SystemExit("ASB/TUI compatibility catalog drifted from the reviewed fixture")
+    if not all(entry.get("supported") and entry.get("reason") is None for entry in catalog):
+        raise SystemExit("development catalog contains an unexpected unavailable tuple")
+    parent_command = run_asb_tui_parity(args.asb_binary.resolve())
     receipt = {
         "schema_version": 1, "ar": "AR-1657", "classification": "development/mock",
         "network": "denied", "credentials": "none",
         "matrix": {
-            "tuple_count": len(EXPECTED_TUPLES), "tuples": EXPECTED_TUPLES,
+            "tuple_count": len(catalog), "tuples": catalog,
             "all_supported": True,
             "unavailable_reason": "development authentication unavailable",
             "defaults": "shared provider/model default is retained",
@@ -75,6 +135,7 @@ def main() -> int:
             "human": "guided_commands every route", "json": "guided_commands every route",
             "positive": "provider_lifecycle_1656 passed",
             "negative": "typed unavailable provider/model remains visible and unselectable",
+            "installed_asb_tui": parent_command,
         },
         "provenance": {
             "tui_commit": git(checkout), "tui_tree": git(checkout, "HEAD^{tree}"),
