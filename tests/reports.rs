@@ -199,6 +199,9 @@ fn selected_agent_orchestration_joins_online_and_replay_terminal_refs() {
             ComparisonTerminalSource::OfflineReplay,
         ]
     );
+    let human = SelectedAgentComparison::human(&result);
+    assert!(human.contains("online=Online"));
+    assert!(human.contains("replay=OfflineReplay"));
     assert!(SelectedAgentComparison::json(&result).contains("OfflineReplay"));
 }
 
@@ -215,6 +218,32 @@ fn selected_agent_orchestration_rejects_out_of_scope_terminal() {
         Err(ComparisonOrchestrationError::InvalidTerminal(
             "terminal is outside the selected agent/workload scope"
         ))
+    );
+}
+
+#[test]
+fn selected_agent_orchestration_rejects_duplicate_member_and_incomplete_scope() {
+    let mut orchestration = SelectedAgentComparison::new(comparison_selection()).unwrap();
+    orchestration
+        .add_terminal(
+            id("first"),
+            "agent-a",
+            "smoke",
+            ComparisonTerminalSource::Online,
+        )
+        .unwrap();
+    assert_eq!(
+        orchestration.add_terminal(
+            id("second"),
+            "agent-a",
+            "smoke",
+            ComparisonTerminalSource::OfflineReplay,
+        ),
+        Err(ComparisonOrchestrationError::DuplicateMember)
+    );
+    assert_eq!(
+        orchestration.orchestrate(&[report("first", "catalog", false)]),
+        Err(ComparisonOrchestrationError::IncompleteSelection)
     );
 }
 

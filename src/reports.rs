@@ -314,6 +314,8 @@ pub enum ComparisonOrchestrationError {
     InvalidSelection(crate::fanout_dispatch::FanoutSelectionError),
     InvalidTerminal(&'static str),
     TooManyTerminals,
+    DuplicateMember,
+    IncompleteSelection,
     DuplicateRun,
     Comparison(CompareError),
 }
@@ -372,6 +374,13 @@ impl SelectedAgentComparison {
         if self
             .terminals
             .iter()
+            .any(|terminal| terminal.agent_id == agent_id && terminal.workload_id == workload_id)
+        {
+            return Err(ComparisonOrchestrationError::DuplicateMember);
+        }
+        if self
+            .terminals
+            .iter()
             .any(|terminal| terminal.run_id == run_id)
         {
             return Err(ComparisonOrchestrationError::DuplicateRun);
@@ -389,6 +398,19 @@ impl SelectedAgentComparison {
         &self,
         reports: &[Report],
     ) -> Result<ComparisonOrchestrationResult, ComparisonOrchestrationError> {
+        let selected_members = self
+            .terminals
+            .iter()
+            .map(|terminal| (terminal.agent_id.as_str(), terminal.workload_id.as_str()))
+            .collect::<BTreeSet<_>>();
+        if !self.selection.agent_ids.iter().all(|agent| {
+            self.selection
+                .workload_ids
+                .iter()
+                .all(|workload| selected_members.contains(&(agent.as_str(), workload.as_str())))
+        }) {
+            return Err(ComparisonOrchestrationError::IncompleteSelection);
+        }
         let selected_run_ids = self
             .terminals
             .iter()
@@ -417,8 +439,21 @@ impl SelectedAgentComparison {
         } else {
             "not-ready"
         };
+        let evidence = result
+            .terminal_sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let source = match source {
+                    ComparisonTerminalSource::Online => "Online",
+                    ComparisonTerminalSource::OfflineReplay => "OfflineReplay",
+                };
+                format!("{}={source}", result.selected_run_ids[index].as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         format!(
-            "selected-agent comparison\nStatus: {status}\nRuns: {}\n",
+            "selected-agent comparison\nStatus: {status}\nRuns: {}\nEvidence: {evidence}\n",
             result
                 .selected_run_ids
                 .iter()
