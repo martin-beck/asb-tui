@@ -344,9 +344,12 @@ fn fanout_behavior_coverage_is_bound_to_the_formal_ui_contract() {
 
 #[test]
 fn live_run_control_failure_and_identity_are_declared_in_the_formal_model() {
-    let model: serde_json::Value =
-        serde_json::from_str(std::fs::read_to_string("docs/ui-state-model.json").unwrap().as_str())
-            .unwrap();
+    let model: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string("docs/ui-state-model.json")
+            .unwrap()
+            .as_str(),
+    )
+    .unwrap();
     let fields = model["state_fields"].as_array().unwrap();
     assert!(fields.iter().any(|field| field == "run_error"));
     let contract = model["fanout_request_contract"].as_str().unwrap();
@@ -358,9 +361,9 @@ fn live_run_control_failure_and_identity_are_declared_in_the_formal_model() {
             transition["event"] == event
                 && transition["from"] == "run_control"
                 && transition["to"] == "run_control"
-                && transition["effects"]
-                    .as_array()
-                    .is_some_and(|effects| effects.iter().any(|effect| effect == "run_state_changed"))
+                && transition["effects"].as_array().is_some_and(|effects| {
+                    effects.iter().any(|effect| effect == "run_state_changed")
+                })
         }));
     }
 }
