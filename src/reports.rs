@@ -8,13 +8,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Serialize;
+
 pub const MAX_PAGE_RUNS: usize = 100;
 pub const MAX_RETAINED_PAGES: usize = 10;
 pub const MAX_COMPARE_RUNS: usize = 256;
 pub const MAX_MEASURES: usize = 512;
 pub const MAX_TEXT_BYTES: usize = 512;
+const MAX_COMPARISON_TERMINALS: usize = 64;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 pub struct RunId(String);
 
 impl RunId {
@@ -276,6 +279,202 @@ pub struct Report {
     /// Digest-bound provider/model/catalog/configuration identity.  Reports
     /// with different keys are never comparable, even if their measures fit.
     pub compatibility_key: String,
+}
+
+/// Where a terminal run reference came from.  The source is retained all the
+/// way through comparison so replay results cannot be presented as live.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum ComparisonTerminalSource {
+    Online,
+    OfflineReplay,
+}
+
+/// The bounded identity needed to join a selected fan-out member to its
+/// terminal report.  It deliberately contains no credentials or host paths.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ComparisonTerminalRef {
+    pub run_id: RunId,
+    pub agent_id: String,
+    pub workload_id: String,
+    pub source: ComparisonTerminalSource,
+}
+
+/// Renderer-neutral orchestration for selected-agent comparisons.  Fan-out
+/// admission and replay dispatch remain owned by their respective backends;
+/// this type is the single join point that records terminal identities and
+/// turns them into a truthful comparison assessment/result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectedAgentComparison {
+    selection: crate::fanout_dispatch::FanoutSelection,
+    terminals: Vec<ComparisonTerminalRef>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ComparisonOrchestrationError {
+    InvalidSelection(crate::fanout_dispatch::FanoutSelectionError),
+    InvalidTerminal(&'static str),
+    TooManyTerminals,
+    DuplicateMember,
+    IncompleteSelection,
+    DuplicateRun,
+    Comparison(CompareError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComparisonOrchestrationResult {
+    pub selected_run_ids: Vec<RunId>,
+    pub terminal_sources: Vec<ComparisonTerminalSource>,
+    pub assessment: ComparisonAssessment,
+    pub comparison: Option<Comparison>,
+}
+
+impl SelectedAgentComparison {
+    pub fn new(
+        selection: crate::fanout_dispatch::FanoutSelection,
+    ) -> Result<Self, ComparisonOrchestrationError> {
+        Ok(Self {
+            selection: selection
+                .canonicalize()
+                .map_err(ComparisonOrchestrationError::InvalidSelection)?,
+            terminals: Vec::new(),
+        })
+    }
+
+    pub fn selection(&self) -> &crate::fanout_dispatch::FanoutSelection {
+        &self.selection
+    }
+
+    pub fn terminals(&self) -> &[ComparisonTerminalRef] {
+        &self.terminals
+    }
+
+    pub fn add_terminal(
+        &mut self,
+        run_id: RunId,
+        agent_id: impl Into<String>,
+        workload_id: impl Into<String>,
+        source: ComparisonTerminalSource,
+    ) -> Result<(), ComparisonOrchestrationError> {
+        if self.terminals.len() >= MAX_COMPARISON_TERMINALS {
+            return Err(ComparisonOrchestrationError::TooManyTerminals);
+        }
+        let agent_id = agent_id.into();
+        let workload_id = workload_id.into();
+        if !self.selection.agent_ids.iter().any(|id| id == &agent_id)
+            || !self
+                .selection
+                .workload_ids
+                .iter()
+                .any(|id| id == &workload_id)
+        {
+            return Err(ComparisonOrchestrationError::InvalidTerminal(
+                "terminal is outside the selected agent/workload scope",
+            ));
+        }
+        if self
+            .terminals
+            .iter()
+            .any(|terminal| terminal.agent_id == agent_id && terminal.workload_id == workload_id)
+        {
+            return Err(ComparisonOrchestrationError::DuplicateMember);
+        }
+        if self
+            .terminals
+            .iter()
+            .any(|terminal| terminal.run_id == run_id)
+        {
+            return Err(ComparisonOrchestrationError::DuplicateRun);
+        }
+        self.terminals.push(ComparisonTerminalRef {
+            run_id,
+            agent_id,
+            workload_id,
+            source,
+        });
+        Ok(())
+    }
+
+    pub fn orchestrate(
+        &self,
+        reports: &[Report],
+    ) -> Result<ComparisonOrchestrationResult, ComparisonOrchestrationError> {
+        let selected_members = self
+            .terminals
+            .iter()
+            .map(|terminal| (terminal.agent_id.as_str(), terminal.workload_id.as_str()))
+            .collect::<BTreeSet<_>>();
+        if !self.selection.agent_ids.iter().all(|agent| {
+            self.selection
+                .workload_ids
+                .iter()
+                .all(|workload| selected_members.contains(&(agent.as_str(), workload.as_str())))
+        }) {
+            return Err(ComparisonOrchestrationError::IncompleteSelection);
+        }
+        let selected_run_ids = self
+            .terminals
+            .iter()
+            .map(|terminal| terminal.run_id.clone())
+            .collect::<Vec<_>>();
+        let assessment = assess_comparison(reports, &selected_run_ids);
+        let comparison = if assessment.comparable {
+            Some(
+                compare(reports, &selected_run_ids)
+                    .map_err(ComparisonOrchestrationError::Comparison)?,
+            )
+        } else {
+            None
+        };
+        Ok(ComparisonOrchestrationResult {
+            selected_run_ids,
+            terminal_sources: self.terminals.iter().map(|t| t.source).collect(),
+            assessment,
+            comparison,
+        })
+    }
+
+    pub fn human(result: &ComparisonOrchestrationResult) -> String {
+        let status = if result.comparison.is_some() {
+            "ready"
+        } else {
+            "not-ready"
+        };
+        let evidence = result
+            .terminal_sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let source = match source {
+                    ComparisonTerminalSource::Online => "Online",
+                    ComparisonTerminalSource::OfflineReplay => "OfflineReplay",
+                };
+                format!("{}={source}", result.selected_run_ids[index].as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "selected-agent comparison\nStatus: {status}\nRuns: {}\nEvidence: {evidence}\n",
+            result
+                .selected_run_ids
+                .iter()
+                .map(RunId::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+
+    pub fn json(result: &ComparisonOrchestrationResult) -> String {
+        serde_json::json!({
+            "status": if result.comparison.is_some() { "ready" } else { "not-ready" },
+            "run_ids": result.selected_run_ids.iter().map(RunId::as_str).collect::<Vec<_>>(),
+            "terminal_sources": result.terminal_sources,
+            "comparable": result.assessment.comparable,
+            "unavailable_reasons": result.assessment.unavailable_reasons,
+            "confounders": result.assessment.confounders,
+            "excluded_measures": result.assessment.excluded_measures,
+        })
+        .to_string()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
