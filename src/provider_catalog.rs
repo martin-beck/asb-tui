@@ -89,7 +89,7 @@ impl ProviderDefaultRecord {
     }
 
     fn validate(&self) -> Result<(), ProviderDefaultsError> {
-        if !is_safe_id(&self.provider_id) || !is_safe_id(&self.model_id) {
+        if !is_safe_id(&self.provider_id) || !is_safe_model_id(&self.model_id) {
             return Err(ProviderDefaultsError::Invalid(
                 "provider/model id is invalid".into(),
             ));
@@ -748,6 +748,15 @@ fn is_safe_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn is_safe_model_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.is_ascii()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b':' | b'@')
+        })
 }
 
 #[cfg(test)]

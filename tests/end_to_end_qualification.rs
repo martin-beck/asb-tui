@@ -23,9 +23,10 @@ use asb_tui::{
     },
     selection::{
         BenchmarkCatalog, BenchmarkDefinition, BenchmarkGroup, BenchmarkMeasure, BenchmarkPool,
-        BenchmarkSelection,
+        BenchmarkSelection, CampaignSelection,
     },
     top_level::{self, TuiCommand},
+    ui::WorkspaceState,
     wizard::{Step, Wizard},
     wizard_catalog::WizardCatalog,
 };
@@ -60,6 +61,68 @@ fn benchmark_catalog() -> BenchmarkCatalog {
     let group = BenchmarkGroup::new("quality", "Quality", vec![benchmark]).unwrap();
     let pool = BenchmarkPool::new("core", "Core pool", vec![group]).unwrap();
     BenchmarkCatalog::new(Revision(7), CATALOG_DIGEST, vec![pool]).unwrap()
+}
+
+#[test]
+fn persisted_live_openrouter_setup_survives_tui_restart_without_mock_fallback() {
+    let root = disposable_root();
+    let config_path = root.join("config.json");
+    let materialized_root = root.join("materialized");
+    let selection = ConfigurationSelection {
+        agent_ids: vec!["opencode".into(), "opendesk".into()],
+        provider_id: "openrouter".into(),
+        model_id: "cohere/north-mini-code:free".into(),
+        auth_method: ProviderAuthMethod::CredentialReference,
+        credential_reference_sha256: Some("a".repeat(64)),
+    };
+    let draft = ProviderSetupDraft::from_selection_for_development(selection.clone()).unwrap();
+    let catalog = benchmark_catalog();
+    let benchmark = CampaignSelection {
+        generation: Revision(7),
+        catalog_digest: CATALOG_DIGEST.into(),
+        pool_id: "core".into(),
+        group_ids: vec!["quality".into()],
+        benchmark_ids: vec!["chat".into()],
+        measure_ids: vec!["latency.first".into()],
+    };
+    let bundle = MaterializedBundle::build(
+        MaterializationInput {
+            provider: selection,
+            provider_catalog_generation: Revision(1),
+            provider_catalog_digest: ZERO_DIGEST.into(),
+            benchmark,
+            asb_protocol: "asb-control".into(),
+            asb_version: "development".into(),
+            execution_mode: asb_tui::configuration_materialization::ExecutionMode::Live,
+        },
+        &draft,
+        &catalog,
+        Revision(1),
+        Revision(7),
+    )
+    .unwrap();
+    let store = MaterializedBundleStore::new(&materialized_root);
+    store.apply(&bundle).unwrap();
+
+    let restarted = WorkspaceState::with_configuration_store(&config_path).unwrap();
+    let values = restarted.wizard.values();
+    assert_eq!(values[0], "opencode,opendesk");
+    assert_eq!(values[1], "openrouter");
+    assert_eq!(values[2], "cohere/north-mini-code:free");
+    assert_eq!(values[5], "live");
+    assert!(!values[5].contains("mock"));
+    let loaded = store.load().unwrap().unwrap();
+    assert_eq!(
+        loaded.document.provider.execution_mode,
+        asb_tui::configuration_materialization::ExecutionMode::Live
+    );
+    assert_eq!(loaded.document.provider.provider_id, "openrouter");
+    assert_eq!(
+        loaded.document.provider.model_id,
+        "cohere/north-mini-code:free"
+    );
+    assert!(!loaded.canonical_json.contains("api_key"));
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn development_report(run_id: &str, latency: f64) -> Report {
@@ -225,6 +288,7 @@ fn complete_development_journey_has_bounded_visible_transcript() {
             benchmark: handoff,
             asb_protocol: "asb-control".into(),
             asb_version: "fixture-1".into(),
+            execution_mode: asb_tui::configuration_materialization::ExecutionMode::LocalMock,
         },
         &provider_draft,
         &catalog,

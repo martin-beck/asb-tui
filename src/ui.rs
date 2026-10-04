@@ -217,6 +217,17 @@ impl Default for WorkspaceState {
 }
 
 impl WorkspaceState {
+    /// Restore the private workspace configuration advertised by the
+    /// lifecycle handoff. Missing handoff state is normal for an uninstalled
+    /// development checkout and therefore returns the ordinary default.
+    pub fn from_persisted_environment() -> Self {
+        let Some(root) = std::env::var_os("ASB_TUI_WORKSPACE_CONFIG_ROOT") else {
+            return Self::default();
+        };
+        let path = std::path::PathBuf::from(root).join("config.json");
+        Self::with_configuration_store(path).unwrap_or_default()
+    }
+
     /// Return the exact bounded fan-out selection reviewed by the operator.
     /// Agent identities come from the authenticated configuration snapshot;
     /// workload identities come from the generation-bound benchmark picker.
@@ -262,6 +273,24 @@ impl WorkspaceState {
             workload_revision: campaign.catalog_digest.clone(),
             scorer_revision: campaign.catalog_digest,
         })
+    }
+
+    pub(crate) fn fanout_execution_mode(&self) -> crate::fanout_dispatch::FanoutExecutionMode {
+        match self.execution_mode_for_values(&self.wizard.values()) {
+            crate::configuration_materialization::ExecutionMode::Live => {
+                crate::fanout_dispatch::FanoutExecutionMode::Live
+            }
+            crate::configuration_materialization::ExecutionMode::LocalMock => {
+                crate::fanout_dispatch::FanoutExecutionMode::LocalMock
+            }
+        }
+    }
+
+    pub(crate) fn fanout_credential_reference(&self) -> Option<&str> {
+        self.live
+            .as_ref()
+            .and_then(|snapshot| snapshot.configuration.as_ref())
+            .and_then(|configuration| configuration.credential_reference_sha256.as_deref())
     }
 
     /// Return the report run currently under the cursor and the bounded pair
@@ -311,13 +340,33 @@ impl WorkspaceState {
     ) -> Result<Self, crate::configuration::ConfigError> {
         let path = path.into();
         let config = crate::configuration::ConfigurationStore::new(&path).load_or_default()?;
-        Ok(Self {
+        let mut state = Self {
             configuration_draft: crate::configuration::ConfigurationDraft::new(config)
                 .expect("store configuration was validated on load"),
             configuration_path: Some(path),
             configuration_save_state: ConfigurationSaveState::Clean,
             ..Self::default()
-        })
+        };
+        let materialized_root = state
+            .configuration_path
+            .as_ref()
+            .and_then(|value| value.parent())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("materialized");
+        if let Some(bundle) =
+            crate::configuration_materialization::MaterializedBundleStore::new(materialized_root)
+                .load()
+                .map_err(|error| {
+                    crate::configuration::ConfigError::Invalid(format!(
+                        "materialized configuration could not be restored: {error:?}"
+                    ))
+                })?
+        {
+            state
+                .restore_materialized_bundle(&bundle)
+                .map_err(crate::configuration::ConfigError::Invalid)?;
+        }
+        Ok(state)
     }
 
     /// The current local configuration draft projected by the screen.
@@ -487,6 +536,35 @@ impl WorkspaceState {
         })
     }
 
+    /// Convert the wizard's recording choice to an explicit provider
+    /// execution mode.  The setup flow is warning-only and accepts the live
+    /// choice even when authentication is unavailable; the runner performs
+    /// the credential check only when the operator starts the live run.
+    pub fn wizard_execution_mode(
+        values: &[String; 7],
+    ) -> crate::configuration_materialization::ExecutionMode {
+        match values[5].trim().to_ascii_lowercase().as_str() {
+            "live" | "online" | "live-record" | "live_record" => {
+                crate::configuration_materialization::ExecutionMode::Live
+            }
+            _ => crate::configuration_materialization::ExecutionMode::LocalMock,
+        }
+    }
+
+    fn execution_mode_for_values(
+        &self,
+        values: &[String; 7],
+    ) -> crate::configuration_materialization::ExecutionMode {
+        if values[5].trim().is_empty() {
+            self.preflight_bundle
+                .as_ref()
+                .map(|bundle| bundle.document.provider.execution_mode)
+                .unwrap_or_default()
+        } else {
+            Self::wizard_execution_mode(values)
+        }
+    }
+
     /// Convert a completed wizard into the catalog-bound typed setup draft.
     /// Callers should use this seam when a live or development catalog is
     /// available; the legacy selection helper above remains for protocol
@@ -542,6 +620,47 @@ impl WorkspaceState {
         self.preflight_bundle = None;
         self.preflight_error = None;
         self.launch_state = None;
+    }
+
+    /// Restore the exact durable provider/model/mode draft and reviewed
+    /// preflight. The materialized bundle is already digest-validated by the
+    /// store, but the integrity check is repeated at this public seam so a
+    /// caller cannot inject an unreviewed bundle.
+    pub fn restore_materialized_bundle(
+        &mut self,
+        bundle: &crate::configuration_materialization::MaterializedBundle,
+    ) -> Result<(), String> {
+        bundle
+            .validate_integrity()
+            .map_err(|error| format!("materialized configuration invalid: {error:?}"))?;
+        let provider = &bundle.document.provider;
+        let auth = match (
+            provider.auth_method,
+            provider.credential_reference_sha256.as_deref(),
+        ) {
+            (crate::control_codec::ProviderAuthMethod::None, None) => "none".into(),
+            (crate::control_codec::ProviderAuthMethod::LocalDaemon, None) => "local_daemon".into(),
+            (crate::control_codec::ProviderAuthMethod::CredentialReference, Some(digest)) => {
+                format!("credential_reference:{digest}")
+            }
+            _ => return Err("materialized authentication reference is inconsistent".into()),
+        };
+        let values = [
+            provider.agent_ids.join(","),
+            provider.provider_id.clone(),
+            provider.model_id.clone(),
+            "restored defaults".into(),
+            auth,
+            provider.execution_mode.label().into(),
+            "strict offline replay".into(),
+        ];
+        self.wizard
+            .restore_values(values)
+            .map_err(|error| format!("materialized wizard draft invalid: {error:?}"))?;
+        self.preflight = Some(bundle.preflight_summary());
+        self.preflight_bundle = Some(bundle.clone());
+        self.preflight_error = None;
+        Ok(())
     }
 
     /// Supply the catalog-bound provider review produced by the authenticated
@@ -618,6 +737,7 @@ impl WorkspaceState {
             benchmark: campaign,
             asb_protocol: "asb-control".into(),
             asb_version: "development".into(),
+            execution_mode: self.execution_mode_for_values(&values),
         };
         let bundle = crate::configuration_materialization::MaterializedBundle::build(
             input,
@@ -670,6 +790,7 @@ impl WorkspaceState {
     ) -> Result<(), crate::configuration_materialization::MaterializationError> {
         store.apply(bundle)?;
         self.preflight = Some(bundle.preflight_summary());
+        self.preflight_bundle = Some(bundle.clone());
         Ok(())
     }
 
@@ -843,6 +964,11 @@ impl WorkspaceState {
             );
             self.wizard_formal = WizardFormalState::new_with_catalog(catalog)
                 .expect("validated live wizard catalog must satisfy the state model");
+            if let Some(bundle) = self.preflight_bundle.clone() {
+                // A catalog refresh replaces the renderer catalog, but never
+                // the durable provider/model/mode draft selected previously.
+                let _ = self.restore_materialized_bundle(&bundle);
+            }
             self.development_catalog_fallback = false;
         }
         if self.authoritative_provider_catalog_seen
@@ -2175,6 +2301,18 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
                     preflight.agent_count,
                     preflight.pool_id,
                     preflight.measure_count
+                )));
+                lines.push(Line::from(format!(
+                    "  execution: {}{}",
+                    preflight.execution_mode.label(),
+                    if matches!(
+                        preflight.execution_mode,
+                        crate::configuration_materialization::ExecutionMode::Live
+                    ) {
+                        " (provider network; key checked at run)"
+                    } else {
+                        " (credential-free)"
+                    }
                 )));
                 lines.push(Line::from(format!(
                     "  digest={}{}",
@@ -3640,6 +3778,32 @@ mod tests {
         values[4] = "none".into();
         let selection = WorkspaceState::wizard_configuration_selection(&values).unwrap();
         assert_eq!(selection.auth_method, ProviderAuthMethod::None);
+    }
+
+    #[test]
+    fn wizard_live_choice_is_explicit_but_authentication_remains_warning_only() {
+        let mut values = [
+            "opencode,opendesk".into(),
+            "openrouter".into(),
+            "cohere/north-mini-code:free".into(),
+            "shared defaults".into(),
+            "none".into(),
+            "live".into(),
+            "offline replay after capture".into(),
+        ];
+        assert_eq!(
+            WorkspaceState::wizard_execution_mode(&values),
+            crate::configuration_materialization::ExecutionMode::Live
+        );
+        // Setup stays non-blocking: the same live intent can be reviewed even
+        // before a helper receipt is available. ASB owns the explicit run-time
+        // credential error when the operator starts the live run.
+        assert!(WorkspaceState::wizard_configuration_selection(&values).is_ok());
+        values[5] = "mock".into();
+        assert_eq!(
+            WorkspaceState::wizard_execution_mode(&values),
+            crate::configuration_materialization::ExecutionMode::LocalMock
+        );
     }
 
     #[test]

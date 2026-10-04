@@ -1344,7 +1344,7 @@
     },
     {
       "id": "wizard.recording",
-      "text": "Choose whether to record benchmark activity."
+      "text": "Choose live/online provider execution or local-mock development execution."
     },
     {
       "id": "wizard.replay",

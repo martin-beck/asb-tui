@@ -193,7 +193,7 @@
     {"id":"wizard.model","text":"Search and choose a model exposed by the selected provider."},
     {"id":"wizard.configuration","text":"Review benchmark settings before continuing."},
     {"id":"wizard.authentication","text":"Select the authentication reference for this provider."},
-    {"id":"wizard.recording","text":"Choose whether to record benchmark activity."},
+    {"id":"wizard.recording","text":"Choose live/online provider execution or local-mock development execution."},
     {"id":"wizard.replay","text":"Choose the offline replay policy for this benchmark."},
     {"id":"wizard.review","text":"Review every setup choice before completing the wizard."},
     {"id":"wizard.controls","text":"Edit the active value, move between steps, or open contextual help."},

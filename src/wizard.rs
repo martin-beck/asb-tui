@@ -425,6 +425,22 @@ impl Wizard {
         Ok(())
     }
 
+    /// Restore a completed, secret-free draft from the durable materialized
+    /// configuration. This is intentionally independent of the current step
+    /// and catalog cursor so a frontend restart cannot silently lose the
+    /// selected provider, model, execution mode, or replay policy.
+    pub fn restore_values(&mut self, values: [String; 7]) -> Result<(), WizardError> {
+        if values
+            .iter()
+            .any(|value| value.chars().count() > 256 || value.chars().any(char::is_control))
+        {
+            return Err(WizardError::InvalidValue);
+        }
+        self.values = values;
+        self.cancelled = false;
+        Ok(())
+    }
+
     pub fn advance(&mut self) -> Result<(), WizardError> {
         if self.step != Step::Review && self.values[self.step as usize].trim().is_empty() {
             return Err(WizardError::Missing);
