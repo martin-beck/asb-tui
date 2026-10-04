@@ -456,6 +456,7 @@ mod tests {
             benchmark_ids: vec!["latency".into()],
             measure_ids: vec!["latency.first_response".into()],
             development_only: true,
+            execution_mode: crate::configuration_materialization::ExecutionMode::LocalMock,
         }
     }
 
@@ -489,6 +490,7 @@ mod tests {
                 credential_reference_sha256: None,
                 catalog_generation: Revision(4),
                 catalog_digest: "b".repeat(64),
+                execution_mode: crate::configuration_materialization::ExecutionMode::LocalMock,
             },
             benchmark: crate::configuration_materialization::MaterializedBenchmark {
                 generation: Revision(7),

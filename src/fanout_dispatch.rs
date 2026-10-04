@@ -12,6 +12,20 @@ use std::fmt;
 
 const MAX_SELECTION_ITEMS: usize = 64;
 
+/// Explicit execution mode for a selected-agent fan-out.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FanoutExecutionMode {
+    #[default]
+    LocalMock,
+    Live,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FanoutModeError {
+    LiveCredentialRequired,
+    InvalidCredentialReference,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FanoutSelection {
     pub agent_ids: Vec<String>,
@@ -36,6 +50,7 @@ pub enum FanoutSelectionError {
 #[derive(Debug, Eq, PartialEq)]
 pub enum FanoutDispatchError {
     Selection(FanoutSelectionError),
+    Mode(FanoutModeError),
     Transport(TransportError),
 }
 
@@ -43,6 +58,12 @@ impl fmt::Display for FanoutDispatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Selection(error) => error.fmt(f),
+            Self::Mode(FanoutModeError::LiveCredentialRequired) => {
+                f.write_str("live fan-out requires a configured credential reference")
+            }
+            Self::Mode(FanoutModeError::InvalidCredentialReference) => {
+                f.write_str("live fan-out credential reference is invalid")
+            }
             Self::Transport(error) => write!(f, "fan-out control route: {error:?}"),
         }
     }
@@ -106,7 +127,11 @@ impl FanoutSelection {
         Ok(self)
     }
 
-    fn requests(&self) -> Vec<serde_json::Value> {
+    fn requests(
+        &self,
+        mode: FanoutExecutionMode,
+        credential_reference_sha256: Option<&str>,
+    ) -> Vec<serde_json::Value> {
         self.agent_ids
             .iter()
             .flat_map(|agent_id| {
@@ -122,9 +147,12 @@ impl FanoutSelection {
                         "catalog_digest": self.catalog_digest,
                         "workload_revision": self.workload_revision,
                         "scorer_revision": self.scorer_revision,
-                        "mode": "local-mock",
+                        "mode": match mode {
+                            FanoutExecutionMode::LocalMock => "local-mock",
+                            FanoutExecutionMode::Live => "live",
+                        },
                         "cassette_digest": null,
-                        "credential_ref_digest": null,
+                        "credential_ref_digest": credential_reference_sha256,
                         "limits": {
                             "timeout_ms": 30_000,
                             "max_output_bytes": 65_536,
@@ -254,11 +282,53 @@ impl FanoutDispatchState {
         idempotency_key: String,
         selection: FanoutSelection,
     ) -> Result<(), FanoutDispatchError> {
+        self.admit_selected_with_mode(
+            backend,
+            projection,
+            idempotency_key,
+            selection,
+            FanoutExecutionMode::LocalMock,
+            None,
+        )
+    }
+
+    /// Admit an explicit live or local-mock fan-out. Live admission carries a
+    /// digest-only credential reference; raw API keys cannot be represented.
+    pub fn admit_selected_with_mode<B: FanoutBackend>(
+        &mut self,
+        backend: &mut B,
+        projection: &mut ControlProjection,
+        idempotency_key: String,
+        selection: FanoutSelection,
+        mode: FanoutExecutionMode,
+        credential_reference_sha256: Option<&str>,
+    ) -> Result<(), FanoutDispatchError> {
+        let credential = match mode {
+            FanoutExecutionMode::LocalMock => None,
+            FanoutExecutionMode::Live => {
+                let Some(value) = credential_reference_sha256 else {
+                    return Err(FanoutDispatchError::Mode(
+                        FanoutModeError::LiveCredentialRequired,
+                    ));
+                };
+                if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(FanoutDispatchError::Mode(
+                        FanoutModeError::InvalidCredentialReference,
+                    ));
+                }
+                Some(value)
+            }
+        };
         let selection = selection
             .canonicalize()
             .map_err(FanoutDispatchError::Selection)?;
-        self.admit(backend, projection, idempotency_key, selection.requests())
-            .map_err(FanoutDispatchError::Transport)?;
+        self.admit(
+            backend,
+            projection,
+            idempotency_key,
+            selection.requests(mode, credential),
+        )
+        .map_err(FanoutDispatchError::Transport)?;
         self.selection = Some(selection);
         Ok(())
     }
@@ -376,13 +446,59 @@ mod tests {
         assert_eq!(selection.agent_ids, ["agent-a", "agent-b"]);
         assert_eq!(selection.workload_ids, ["workload-a", "workload-b"]);
         assert_eq!(
-            selection.requests(),
+            selection.requests(FanoutExecutionMode::LocalMock, None),
             vec![
                 serde_json::json!({"kind":"run_request","schema_version":1,"idempotency_key":"asb-tui-fanout-member","agent_id":"agent-a","provider_id":"provider","model_id":"model","workload_id":"workload-a","catalog_digest":"a".repeat(64),"workload_revision":"b".repeat(64),"scorer_revision":"c".repeat(64),"mode":"local-mock","cassette_digest":null,"credential_ref_digest":null,"limits":{"timeout_ms":30000,"max_output_bytes":65536,"max_events":128,"max_artifacts":16,"max_artifact_bytes":65536,"max_artifact_total_bytes":262144}}),
                 serde_json::json!({"kind":"run_request","schema_version":1,"idempotency_key":"asb-tui-fanout-member","agent_id":"agent-a","provider_id":"provider","model_id":"model","workload_id":"workload-b","catalog_digest":"a".repeat(64),"workload_revision":"b".repeat(64),"scorer_revision":"c".repeat(64),"mode":"local-mock","cassette_digest":null,"credential_ref_digest":null,"limits":{"timeout_ms":30000,"max_output_bytes":65536,"max_events":128,"max_artifacts":16,"max_artifact_bytes":65536,"max_artifact_total_bytes":262144}}),
                 serde_json::json!({"kind":"run_request","schema_version":1,"idempotency_key":"asb-tui-fanout-member","agent_id":"agent-b","provider_id":"provider","model_id":"model","workload_id":"workload-a","catalog_digest":"a".repeat(64),"workload_revision":"b".repeat(64),"scorer_revision":"c".repeat(64),"mode":"local-mock","cassette_digest":null,"credential_ref_digest":null,"limits":{"timeout_ms":30000,"max_output_bytes":65536,"max_events":128,"max_artifacts":16,"max_artifact_bytes":65536,"max_artifact_total_bytes":262144}}),
                 serde_json::json!({"kind":"run_request","schema_version":1,"idempotency_key":"asb-tui-fanout-member","agent_id":"agent-b","provider_id":"provider","model_id":"model","workload_id":"workload-b","catalog_digest":"a".repeat(64),"workload_revision":"b".repeat(64),"scorer_revision":"c".repeat(64),"mode":"local-mock","cassette_digest":null,"credential_ref_digest":null,"limits":{"timeout_ms":30000,"max_output_bytes":65536,"max_events":128,"max_artifacts":16,"max_artifact_bytes":65536,"max_artifact_total_bytes":262144}}),
             ]
+        );
+    }
+
+    #[test]
+    fn live_scope_is_explicit_and_transports_only_credential_digest() {
+        let selection = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            provider_id: "openrouter".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        let requests = selection.requests(FanoutExecutionMode::Live, Some(&"d".repeat(64)));
+        assert_eq!(requests[0]["mode"], "live");
+        assert_eq!(requests[0]["credential_ref_digest"], "d".repeat(64));
+        assert!(!requests[0].to_string().contains("api_key"));
+    }
+
+    #[test]
+    fn live_scope_missing_credentials_fails_before_backend_submission() {
+        let selection = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            provider_id: "openrouter".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        let mut state = FanoutDispatchState::default();
+        let mut projection = ControlProjection::default();
+        let error = state
+            .admit_selected_with_mode(
+                &mut FailingBackend(TransportError::Projection),
+                &mut projection,
+                "live-missing-key".into(),
+                selection,
+                FanoutExecutionMode::Live,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            FanoutDispatchError::Mode(FanoutModeError::LiveCredentialRequired)
         );
     }
 

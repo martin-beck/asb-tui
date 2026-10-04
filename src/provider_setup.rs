@@ -208,7 +208,12 @@ impl AtomicProviderSetup {
 }
 
 fn bounded_id(field: &str, value: &str) -> Result<String, ProviderSetupError> {
-    if value.is_empty() || value.len() > MAX_ID_BYTES || !is_safe_id(value) {
+    let valid = if field == "model" {
+        is_safe_model_id(value)
+    } else {
+        is_safe_id(value)
+    };
+    if value.is_empty() || value.len() > MAX_ID_BYTES || !valid {
         return Err(ProviderSetupError::Invalid(format!(
             "{field} is not a supported identifier"
         )));
@@ -255,6 +260,13 @@ fn is_safe_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn is_safe_model_id(value: &str) -> bool {
+    value.is_ascii()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b':' | b'@')
+        })
 }
 
 #[cfg(test)]

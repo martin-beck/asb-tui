@@ -24,6 +24,30 @@ const MAX_LIST: usize = 256;
 const MAX_FILE_BYTES: usize = 256 * 1024;
 const SCHEMA_VERSION: u32 = 1;
 
+/// Provider execution selected by the setup wizard.
+///
+/// Development defaults remain local-mock, while a user can explicitly opt
+/// into a live provider run.  The live route is still credential-free in the
+/// frontend: ASB resolves the digest-only credential reference at dispatch
+/// time.  Offline replay is represented by the recording route and is not a
+/// provider execution mode here.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionMode {
+    #[default]
+    LocalMock,
+    Live,
+}
+
+impl ExecutionMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LocalMock => "local-mock",
+            Self::Live => "live",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MaterializationError {
     Invalid(&'static str),
@@ -41,6 +65,9 @@ pub struct MaterializationInput {
     pub benchmark: CampaignSelection,
     pub asb_protocol: String,
     pub asb_version: String,
+    /// Explicit provider execution mode selected by the wizard.  A missing
+    /// value in older callers therefore remains local-mock.
+    pub execution_mode: ExecutionMode,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -64,6 +91,8 @@ pub struct MaterializedProvider {
     pub credential_reference_sha256: Option<String>,
     pub catalog_generation: Revision,
     pub catalog_digest: String,
+    #[serde(default)]
+    pub execution_mode: ExecutionMode,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -102,6 +131,7 @@ pub struct LaunchBinding {
     pub benchmark_ids: Vec<String>,
     pub measure_ids: Vec<String>,
     pub development_only: bool,
+    pub execution_mode: ExecutionMode,
 }
 
 /// Renderer-friendly, secret-free preflight projection. It is derived from a
@@ -115,6 +145,7 @@ pub struct PreflightSummary {
     pub pool_id: String,
     pub measure_count: usize,
     pub development_only: bool,
+    pub execution_mode: ExecutionMode,
 }
 
 impl MaterializedBundle {
@@ -145,6 +176,7 @@ impl MaterializedBundle {
             benchmark_ids: self.document.benchmark.benchmark_ids.clone(),
             measure_ids: self.document.benchmark.measure_ids.clone(),
             development_only: self.document.provider.catalog_digest == "0".repeat(64),
+            execution_mode: self.document.provider.execution_mode,
         }
     }
 
@@ -158,6 +190,7 @@ impl MaterializedBundle {
             pool_id: self.document.benchmark.pool_id.clone(),
             measure_count: self.document.benchmark.measure_ids.len(),
             development_only: self.document.provider.catalog_digest == "0".repeat(64),
+            execution_mode: self.document.provider.execution_mode,
         }
     }
 }
@@ -211,6 +244,7 @@ impl MaterializedBundle {
             credential_reference_sha256: credential,
             catalog_generation: input.provider_catalog_generation,
             catalog_digest: input.provider_catalog_digest,
+            execution_mode: input.execution_mode,
         };
         let benchmark = MaterializedBenchmark {
             generation: input.benchmark.generation,
@@ -473,6 +507,7 @@ mod tests {
                 benchmark,
                 asb_protocol: "asb-control".into(),
                 asb_version: "1.0.0".into(),
+                execution_mode: ExecutionMode::LocalMock,
             },
             draft,
         )
@@ -490,6 +525,27 @@ mod tests {
         assert_eq!(one, two);
         assert_eq!(one.digest_sha256.len(), 64);
         assert!(!one.canonical_json.contains("api_key"));
+    }
+
+    #[test]
+    fn live_execution_mode_is_explicit_and_keeps_credentials_digest_only() {
+        let (mut value, _) = input();
+        value.execution_mode = ExecutionMode::Live;
+        value.provider.auth_method = ProviderAuthMethod::CredentialReference;
+        value.provider.credential_reference_sha256 = Some("d".repeat(64));
+        let draft =
+            ProviderSetupDraft::from_selection_for_development(value.provider.clone()).unwrap();
+        let catalog = benchmark_catalog();
+        let bundle =
+            MaterializedBundle::build(value, &draft, &catalog, Revision(1), Revision(3)).unwrap();
+        assert_eq!(bundle.document.provider.execution_mode, ExecutionMode::Live);
+        assert!(
+            bundle
+                .canonical_json
+                .contains("\"execution_mode\":\"live\"")
+        );
+        assert!(bundle.canonical_json.contains(&"d".repeat(64)));
+        assert!(!bundle.canonical_json.contains("api_key"));
     }
 
     #[test]

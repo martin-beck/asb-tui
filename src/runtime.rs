@@ -377,7 +377,7 @@ pub fn run_interactive_with_control_context(
     development_mode: bool,
 ) -> Result<(), RuntimeError> {
     let mut projection = ControlProjection::default();
-    let mut workspace = ui::WorkspaceState::default();
+    let mut workspace = ui::WorkspaceState::from_persisted_environment();
     session
         .poll_projection_with_context_for_runtime(&mut projection, development_mode)
         .map_err(|error| RuntimeError(io::Error::other(error)))?;
@@ -583,7 +583,7 @@ pub fn run_interactive(state: &mut AppState, policy: RenderPolicy) -> Result<(),
     run_interactive_loop(
         state,
         policy,
-        ui::WorkspaceState::default(),
+        ui::WorkspaceState::from_persisted_environment(),
         None,
         None,
         false,
@@ -761,11 +761,13 @@ fn run_interactive_loop(
                                 .map_err(io::Error::other)
                                 .map_err(RuntimeError)?;
                             fanout_state
-                                .admit_selected(
+                                .admit_selected_with_mode(
                                     control,
                                     projection,
                                     "asb-tui-fanout".into(),
                                     selection,
+                                    workspace.fanout_execution_mode(),
+                                    workspace.fanout_credential_reference(),
                                 )
                                 .map_err(|error| {
                                     RuntimeError(io::Error::other(error.to_string()))
