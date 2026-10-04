@@ -725,6 +725,9 @@ fn run_interactive_loop(
                                 bundle,
                                 "asb-tui-launch".into(),
                             ) {
+                                if let Some(launch) = workspace.launch_state_mut() {
+                                    launch.mark_failed();
+                                }
                                 workspace.set_run_error(format!("{error}"));
                                 workspace.apply_live_snapshot(projection.snapshot());
                                 continue;
@@ -751,6 +754,9 @@ fn run_interactive_loop(
                                 &launch,
                                 "asb-tui-cancel".into(),
                             ) {
+                                if let Some(launch) = workspace.launch_state_mut() {
+                                    launch.mark_failed();
+                                }
                                 workspace.set_run_error(format!("{error}"));
                                 workspace.apply_live_snapshot(projection.snapshot());
                                 continue;
