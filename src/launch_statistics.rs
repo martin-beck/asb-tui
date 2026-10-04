@@ -269,6 +269,15 @@ impl LaunchState {
         Ok(())
     }
 
+    /// Record a locally observed launch/control failure without inventing a
+    /// runner event or result. The UI may continue to show the typed error and
+    /// the operator can explicitly retry after correcting the provider setup.
+    pub fn mark_failed(&mut self) {
+        if !is_terminal(&self.state) {
+            self.state = RunState::Failed;
+        }
+    }
+
     pub fn reconnect_started(&mut self) {
         self.connection = RunConnection::Reconnecting;
     }
@@ -671,6 +680,17 @@ mod tests {
             .apply_event(event(2, PublicRunState::Cancelled))
             .unwrap();
         assert_eq!(state.state(), &RunState::Cancelled);
+    }
+
+    #[test]
+    fn local_control_failure_becomes_terminal_without_fabricating_statistics() {
+        let mut state = LaunchState::new(binding());
+        state.begin_launch().unwrap();
+        state.mark_failed();
+        assert_eq!(state.state(), &RunState::Failed);
+        assert!(state.statistics().is_none());
+        state.mark_failed();
+        assert_eq!(state.state(), &RunState::Failed);
     }
 
     #[test]

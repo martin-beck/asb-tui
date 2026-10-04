@@ -84,6 +84,10 @@ pub struct WorkspaceState {
     /// Generation-bound launch state; populated only from a reviewed
     /// materialization and retained across reconnect/cancellation.
     pub(crate) launch_state: Option<crate::launch_statistics::LaunchState>,
+    /// Last bounded launch/control error shown on the run-control screen.
+    /// Errors remain in the UI so a provider failure does not terminate the
+    /// frontend or look like a successful local/mock run.
+    pub(crate) run_error: Option<String>,
     pub report_cursor: usize,
     /// Explicit report rows selected for comparison.
     pub report_selection: Vec<crate::control_codec::RunId>,
@@ -197,6 +201,7 @@ impl Default for WorkspaceState {
             preflight_error: None,
             reviewed_provider_setup: None,
             launch_state: None,
+            run_error: None,
             report_cursor: 0,
             report_selection: Vec::new(),
             configuration_draft: crate::configuration::ConfigurationDraft::new(
@@ -699,7 +704,21 @@ impl WorkspaceState {
         self.launch_state = Some(crate::launch_statistics::LaunchState::new(
             bundle.launch_binding(),
         ));
+        self.run_error = None;
         Ok(())
+    }
+
+    /// Preserve a typed, bounded control failure for the run-control view.
+    /// The runtime owns the transport error; the workspace owns only its
+    /// privacy-safe display projection.
+    pub(crate) fn set_run_error(&mut self, error: impl Into<String>) {
+        let mut value = error.into();
+        value.truncate(512);
+        self.run_error = Some(value);
+    }
+
+    pub(crate) fn clear_run_error(&mut self) {
+        self.run_error = None;
     }
 
     /// Build a fresh digest-bound bundle from the current reviewed wizard and
@@ -2339,11 +2358,21 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
 
 fn run_control(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
     let lines = if let Some(launch) = state.launch_state.as_ref() {
+        let binding = launch.binding();
         let mut lines = vec![Line::from(format!(
             "State: {:?}  connection: {:?}",
             launch.state(),
             launch.connection()
         ))];
+        lines.push(Line::from(format!(
+            "Provider: {}  model: {}  mode: {}",
+            binding.provider_id,
+            binding.model_id,
+            binding.execution_mode.label()
+        )));
+        if let Some(error) = state.run_error.as_deref() {
+            lines.push(Line::from(format!("Run error: {error}")));
+        }
         if let Some(stats) = launch.statistics() {
             lines.push(Line::from(format!(
                 "Run {} / attempt {} | {}% ({}/{}) complete | failed={}",
@@ -3804,6 +3833,48 @@ mod tests {
             WorkspaceState::wizard_execution_mode(&values),
             crate::configuration_materialization::ExecutionMode::LocalMock
         );
+    }
+
+    #[test]
+    fn run_control_keeps_live_identity_and_typed_failure_visible() {
+        let mut state = WorkspaceState {
+            screen: Screen::RunControl,
+            ..WorkspaceState::default()
+        };
+        state.launch_state = Some(crate::launch_statistics::LaunchState::new(
+            crate::configuration_materialization::LaunchBinding {
+                materialization_digest_sha256: "a".repeat(64),
+                provider_catalog_generation: Revision(1),
+                provider_catalog_digest: "b".repeat(64),
+                benchmark_catalog_generation: Revision(2),
+                benchmark_catalog_digest: "c".repeat(64),
+                agent_ids: vec!["opencode".into(), "opendesk".into()],
+                provider_id: "openrouter".into(),
+                model_id: "free-model".into(),
+                pool_id: "default".into(),
+                group_ids: vec!["quality".into()],
+                benchmark_ids: vec!["quality".into()],
+                measure_ids: vec!["quality.correctness".into()],
+                development_only: true,
+                execution_mode: crate::configuration_materialization::ExecutionMode::Live,
+            },
+        ));
+        state.set_run_error("live provider unavailable (code -32001)");
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, policy()))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Provider: openrouter"));
+        assert!(text.contains("model: free-model"));
+        assert!(text.contains("mode: live"));
+        assert!(text.contains("Run error: live provider unavailable (code -32001)"));
     }
 
     #[test]

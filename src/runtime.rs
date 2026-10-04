@@ -720,11 +720,19 @@ fn run_interactive_loop(
                                     "reviewed preflight is required before launch",
                                 ))
                             })?;
-                            control
-                                .launch_materialized(projection, bundle, "asb-tui-launch".into())
-                                .map_err(|error| {
-                                    RuntimeError(io::Error::other(error.to_string()))
-                                })?;
+                            if let Err(error) = control.launch_materialized(
+                                projection,
+                                bundle,
+                                "asb-tui-launch".into(),
+                            ) {
+                                if let Some(launch) = workspace.launch_state_mut() {
+                                    launch.mark_failed();
+                                }
+                                workspace.set_run_error(format!("{error}"));
+                                workspace.apply_live_snapshot(projection.snapshot());
+                                continue;
+                            }
+                            workspace.clear_run_error();
                             let snapshot = projection.snapshot();
                             if let Some(launch) = workspace.launch_state_mut()
                                 && let Some(run) = snapshot.runs.first()
@@ -741,11 +749,19 @@ fn run_interactive_loop(
                             let launch = workspace.launch_state().cloned().ok_or_else(|| {
                                 RuntimeError(io::Error::other("active launch is unavailable"))
                             })?;
-                            control
-                                .cancel_active_run(projection, &launch, "asb-tui-cancel".into())
-                                .map_err(|error| {
-                                    RuntimeError(io::Error::other(error.to_string()))
-                                })?;
+                            if let Err(error) = control.cancel_active_run(
+                                projection,
+                                &launch,
+                                "asb-tui-cancel".into(),
+                            ) {
+                                if let Some(launch) = workspace.launch_state_mut() {
+                                    launch.mark_failed();
+                                }
+                                workspace.set_run_error(format!("{error}"));
+                                workspace.apply_live_snapshot(projection.snapshot());
+                                continue;
+                            }
+                            workspace.clear_run_error();
                             let snapshot = projection.snapshot();
                             if let Some(launch) = workspace.launch_state_mut()
                                 && let Some(run) = snapshot.runs.first()
