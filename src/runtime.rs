@@ -831,18 +831,47 @@ fn run_interactive_loop(
                             // dispatcher, which only accepts backend calls.
                             continue;
                         }
-                        if recording_state.is_none()
+                        if control_action == crate::actions::UiAction::RefreshProviderCatalog {
+                            control
+                                .refresh_provider_catalog(projection)
+                                .map_err(|error| RuntimeError(io::Error::other(error)))?;
+                            workspace.apply_live_snapshot(projection.snapshot());
+                            continue;
+                        }
+                        let recording_action = matches!(
+                            control_action,
+                            crate::actions::UiAction::EstimateRecording
+                                | crate::actions::UiAction::PlanRecording
+                                | crate::actions::UiAction::ConfirmRecordingCapture
+                                | crate::actions::UiAction::ProgressRecording
+                                | crate::actions::UiAction::CancelRecording
+                                | crate::actions::UiAction::ReconcileRecording
+                                | crate::actions::UiAction::ActivateOfflineDefault
+                                | crate::actions::UiAction::SealRecording
+                                | crate::actions::UiAction::ReopenRecording
+                                | crate::actions::UiAction::RemoveRecordingCassette
+                                | crate::actions::UiAction::RetryRun
+                                | crate::actions::UiAction::CompareLiveOffline
+                                | crate::actions::UiAction::ReplaySelected
+                                | crate::actions::UiAction::SelectOfflineCassette
+                        );
+                        if recording_action
+                            && recording_state.is_none()
                             && let Some(configuration) = workspace
                                 .live
                                 .as_ref()
                                 .and_then(|live| live.configuration.as_ref())
                         {
+                            let workload_scope = workspace
+                                .recording_workload_scope()
+                                .map_err(io::Error::other)
+                                .map_err(RuntimeError)?;
                             recording_state =
                                 crate::recording_dispatch::RecordingDispatchState::new(
                                     configuration.provider_id.clone().unwrap_or_default(),
                                     configuration.model_id.clone().unwrap_or_default(),
                                     configuration.agent_ids.clone(),
-                                    crate::recording_campaign::WorkloadScope::All,
+                                    workload_scope,
                                 )
                                 .ok();
                             if let (Some(adapter_id), Some(recording)) =
@@ -854,19 +883,28 @@ fn run_interactive_loop(
                                     .map_err(RuntimeError)?;
                             }
                         }
-                        if let Some(recording) = recording_state.as_mut() {
+                        if recording_action && let Some(recording) = recording_state.as_mut() {
                             let (selected_run, comparison_runs) =
                                 workspace.operator_run_selection();
                             recording.selected_run_id = selected_run;
                             recording.comparison_run_ids = comparison_runs;
-                            dispatch_control_action(
+                            if let Err(error) = dispatch_control_action(
                                 control_action,
                                 recording,
                                 control,
                                 projection,
                                 format!("asb-tui-{}", control_action.id()),
-                            )?;
-                            workspace.apply_live_snapshot(projection.snapshot());
+                            ) {
+                                // A missing live key or an unavailable
+                                // provider is an actionable run failure, not
+                                // a frontend crash. Keep the session alive so
+                                // the operator can return to setup, repair
+                                // credentials, or choose offline replay.
+                                workspace.set_run_error(format!("{error:?}"));
+                            } else {
+                                workspace.clear_run_error();
+                                workspace.apply_live_snapshot(projection.snapshot());
+                            }
                         }
                     }
                     if let (Some(control), Some(projection), Some(values)) = (
@@ -952,6 +990,11 @@ fn run_interactive_loop(
                                     "provider setup apply rejected: {error:?}"
                                 )))
                             })?;
+                        // A new wizard completion may change provider, model,
+                        // agents, and execution mode.  Discard the previous
+                        // campaign adapter so the next recording action is
+                        // rebuilt from the newly authoritative configuration.
+                        recording_state = None;
                         workspace.apply_live_snapshot(projection.snapshot());
                     }
                 }
