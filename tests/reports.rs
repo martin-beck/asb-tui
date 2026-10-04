@@ -154,6 +154,70 @@ fn comparison_reports_conflicts_and_command_is_quoted() {
     assert!(b.shell_command().unwrap().contains("'--label=hello world'"));
 }
 
+fn comparison_selection() -> asb_tui::fanout_dispatch::FanoutSelection {
+    asb_tui::fanout_dispatch::FanoutSelection {
+        agent_ids: vec!["agent-a".into(), "agent-b".into()],
+        workload_ids: vec!["smoke".into()],
+        provider_id: "provider".into(),
+        model_id: "model".into(),
+        catalog_digest: "a".repeat(64),
+        workload_revision: "b".repeat(64),
+        scorer_revision: "c".repeat(64),
+    }
+}
+
+#[test]
+fn selected_agent_orchestration_joins_online_and_replay_terminal_refs() {
+    let mut orchestration = SelectedAgentComparison::new(comparison_selection()).unwrap();
+    orchestration
+        .add_terminal(
+            id("online"),
+            "agent-a",
+            "smoke",
+            ComparisonTerminalSource::Online,
+        )
+        .unwrap();
+    orchestration
+        .add_terminal(
+            id("replay"),
+            "agent-b",
+            "smoke",
+            ComparisonTerminalSource::OfflineReplay,
+        )
+        .unwrap();
+    let result = orchestration
+        .orchestrate(&[
+            report("online", "catalog", false),
+            report("replay", "catalog", false),
+        ])
+        .unwrap();
+    assert!(result.comparison.is_some());
+    assert_eq!(
+        result.terminal_sources,
+        vec![
+            ComparisonTerminalSource::Online,
+            ComparisonTerminalSource::OfflineReplay,
+        ]
+    );
+    assert!(SelectedAgentComparison::json(&result).contains("OfflineReplay"));
+}
+
+#[test]
+fn selected_agent_orchestration_rejects_out_of_scope_terminal() {
+    let mut orchestration = SelectedAgentComparison::new(comparison_selection()).unwrap();
+    assert_eq!(
+        orchestration.add_terminal(
+            id("run"),
+            "unselected-agent",
+            "smoke",
+            ComparisonTerminalSource::Online,
+        ),
+        Err(ComparisonOrchestrationError::InvalidTerminal(
+            "terminal is outside the selected agent/workload scope"
+        ))
+    );
+}
+
 #[test]
 fn assessment_marks_symmetric_runs_available_and_comparable() {
     let reports = vec![
