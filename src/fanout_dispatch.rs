@@ -503,6 +503,45 @@ mod tests {
     }
 
     #[test]
+    fn live_scope_rejects_invalid_credential_digest_before_backend_submission() {
+        let selection = FanoutSelection {
+            agent_ids: vec!["agent".into()],
+            workload_ids: vec!["workload".into()],
+            provider_id: "openrouter".into(),
+            model_id: "model".into(),
+            catalog_digest: "a".repeat(64),
+            workload_revision: "b".repeat(64),
+            scorer_revision: "c".repeat(64),
+        };
+        let mut state = FanoutDispatchState::default();
+        let mut projection = ControlProjection::default();
+        for digest in ["", "not-a-digest", &"d".repeat(63), &"g".repeat(64)] {
+            let error = state
+                .admit_selected_with_mode(
+                    &mut FailingBackend(TransportError::Projection),
+                    &mut projection,
+                    "live-invalid-key".into(),
+                    selection.clone(),
+                    FanoutExecutionMode::Live,
+                    Some(digest),
+                )
+                .unwrap_err();
+            assert_eq!(
+                error,
+                FanoutDispatchError::Mode(FanoutModeError::InvalidCredentialReference)
+            );
+        }
+        assert_eq!(
+            FanoutDispatchError::Mode(FanoutModeError::LiveCredentialRequired).to_string(),
+            "live fan-out requires a configured credential reference"
+        );
+        assert_eq!(
+            FanoutDispatchError::Mode(FanoutModeError::InvalidCredentialReference).to_string(),
+            "live fan-out credential reference is invalid"
+        );
+    }
+
+    #[test]
     fn empty_and_hostile_scopes_fail_before_control_submission() {
         for selection in [
             FanoutSelection {
