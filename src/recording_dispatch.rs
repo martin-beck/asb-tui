@@ -80,6 +80,15 @@ pub trait RecordingBackend {
         campaign: String,
         key: String,
     ) -> Result<(), TransportError>;
+    fn recording_cassette_catalog(
+        &mut self,
+        campaign: String,
+        generation: crate::control_codec::Revision,
+    ) -> Result<crate::control_codec::RecordingCassetteCatalog, TransportError>;
+    fn dispatch_replay(
+        &mut self,
+        params: crate::control_codec::RecordingReplayDispatchParams,
+    ) -> Result<crate::control_codec::RecordingReplayDispatch, TransportError>;
     fn seal_recording_campaign(
         &mut self,
         projection: &mut ControlProjection,
@@ -126,6 +135,19 @@ impl RecordingBackend for AuthenticatedBrokerSession {
     forward_backend!(cancel_recording_campaign, cancel_recording_campaign, (campaign: String, key: String), (campaign, key));
     forward_backend!(reconcile_recording_campaign, reconcile_recording_campaign, (campaign: String, key: String), (campaign, key));
     forward_backend!(set_recording_campaign_offline_default, set_recording_campaign_offline_default, (campaign: String, key: String), (campaign, key));
+    fn recording_cassette_catalog(
+        &mut self,
+        campaign: String,
+        generation: crate::control_codec::Revision,
+    ) -> Result<crate::control_codec::RecordingCassetteCatalog, TransportError> {
+        self.recording_cassette_catalog(campaign, generation)
+    }
+    fn dispatch_replay(
+        &mut self,
+        params: crate::control_codec::RecordingReplayDispatchParams,
+    ) -> Result<crate::control_codec::RecordingReplayDispatch, TransportError> {
+        self.recording_replay_dispatch(params)
+    }
     forward_backend!(seal_recording_campaign, seal_recording_campaign, (campaign: String, key: String), (campaign, key));
     forward_backend!(reopen_recording_campaign, reopen_recording_campaign, (campaign: String, key: String), (campaign, key));
     forward_backend!(remove_recording_campaign, remove_recording_campaign, (campaign: String, key: String, cassette_sha256: String), (campaign, key, cassette_sha256));
@@ -254,6 +276,7 @@ pub enum RecordingDispatchError {
     InvalidWorkloadScope,
     WorkloadCatalogUnavailable,
     ProgressLimitReached,
+    InvalidCassetteCatalog,
 }
 
 impl From<RecordingModelError> for RecordingDispatchError {
@@ -420,8 +443,18 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
             model.request(RecordingAction::ActivateOfflineDefault)?;
             let campaign_id = campaign_id(&snapshot)?;
             session
-                .set_recording_campaign_offline_default(projection, campaign_id, idempotency_key)
+                .set_recording_campaign_offline_default(
+                    projection,
+                    campaign_id.clone(),
+                    idempotency_key,
+                )
                 .map_err(RecordingDispatchError::from)?;
+            let generation = campaign_generation(&snapshot)?;
+            let catalog = session.recording_cassette_catalog(campaign_id, generation)?;
+            state.authenticated_catalog = Some(
+                crate::benchmark_route::AuthenticatedCassetteCatalog::try_from(catalog)
+                    .map_err(|_| RecordingDispatchError::InvalidCassetteCatalog)?,
+            );
             Ok(RecordingDispatchOutcome::OfflineDefaultRequested)
         }
         UiAction::SealRecording => {
@@ -480,7 +513,39 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
             Ok(RecordingDispatchOutcome::ComparisonRequested)
         }
         UiAction::ReplaySelected | UiAction::SelectOfflineCassette => {
-            Err(RecordingDispatchError::InvalidWorkloadScope)
+            let selected = state
+                .selected_cassette_sha256
+                .as_deref()
+                .ok_or(RecordingDispatchError::InvalidWorkloadScope)?;
+            let catalog = state
+                .authenticated_catalog
+                .as_ref()
+                .ok_or(RecordingDispatchError::InvalidWorkloadScope)?;
+            let entry = catalog
+                .entries
+                .iter()
+                .find(|entry| entry.cassette_sha256 == selected)
+                .ok_or(RecordingDispatchError::InvalidWorkloadScope)?;
+            if action == UiAction::SelectOfflineCassette {
+                return Ok(RecordingDispatchOutcome::CassetteSelected);
+            }
+            let campaign = campaign_id(&snapshot)?;
+            if catalog.campaign_id != campaign {
+                return Err(RecordingDispatchError::InvalidWorkloadScope);
+            }
+            // The transport owns the authenticated runner identity and checks
+            // every campaign/generation/tuple field before accepting replay.
+            session.dispatch_replay(crate::control_codec::RecordingReplayDispatchParams {
+                idempotency_key,
+                runner_instance_id: catalog.runner_instance_id.clone(),
+                expected_generation: catalog.generation,
+                campaign_id: catalog.campaign_id.clone(),
+                provider_profile_sha256: entry.provider_profile_sha256.clone(),
+                agent_id: entry.agent_id.clone(),
+                workload_id: entry.workload_id.clone(),
+                cassette_sha256: entry.cassette_sha256.clone(),
+            })?;
+            Ok(RecordingDispatchOutcome::ReplayDispatched)
         }
         _ => Err(RecordingDispatchError::InvalidWorkloadScope),
     }
@@ -496,6 +561,22 @@ fn campaign_id(snapshot: &LiveSnapshot) -> Result<String, RecordingDispatchError
                 .recording_campaign
                 .as_ref()
                 .map(|campaign| campaign.campaign_id.clone())
+        })
+        .ok_or(RecordingDispatchError::MissingCampaign)
+}
+
+fn campaign_generation(
+    snapshot: &LiveSnapshot,
+) -> Result<crate::control_codec::Revision, RecordingDispatchError> {
+    snapshot
+        .recording_campaign_lifecycle
+        .as_ref()
+        .map(|campaign| campaign.generation)
+        .or_else(|| {
+            snapshot
+                .recording_campaign
+                .as_ref()
+                .map(|campaign| campaign.generation)
         })
         .ok_or(RecordingDispatchError::MissingCampaign)
 }
@@ -608,6 +689,33 @@ mod tests {
         ) -> Result<(), TransportError> {
             self.calls.push("offline");
             Ok(())
+        }
+        fn recording_cassette_catalog(
+            &mut self,
+            campaign: String,
+            generation: Revision,
+        ) -> Result<crate::control_codec::RecordingCassetteCatalog, TransportError> {
+            self.calls.push("catalog");
+            Ok(crate::control_codec::RecordingCassetteCatalog {
+                runner_instance_id: "runner".into(),
+                generation,
+                campaign_id: campaign,
+                entries: vec![crate::control_codec::RecordingCassetteEntry {
+                    cassette_id: "cassette".into(),
+                    cassette_sha256: "a".repeat(64),
+                    provider_profile_sha256: "b".repeat(64),
+                    agent_id: "agent".into(),
+                    workload_id: "workload".into(),
+                    scorer_revision: "scorer".into(),
+                }],
+            })
+        }
+        fn dispatch_replay(
+            &mut self,
+            _: crate::control_codec::RecordingReplayDispatchParams,
+        ) -> Result<crate::control_codec::RecordingReplayDispatch, TransportError> {
+            self.calls.push("replay");
+            Err(TransportError::RemoteFailure)
         }
         fn seal_recording_campaign(
             &mut self,
@@ -828,8 +936,9 @@ mod tests {
         );
         assert_eq!(
             backend.calls,
-            ["execute", "progress", "reconcile", "offline"]
+            ["execute", "progress", "reconcile", "offline", "catalog"]
         );
+        assert!(state.authenticated_catalog.is_some());
     }
 
     #[test]
@@ -1044,6 +1153,27 @@ mod tests {
             Ok(RecordingDispatchOutcome::ProgressRequested)
         );
         assert_eq!(state.progress_requests(), 1);
+    }
+
+    #[test]
+    fn offline_activation_loads_runner_catalog_without_local_picker_selection() {
+        let mut backend = FakeBackend::default();
+        let mut state = state(WorkloadScope::All);
+        let mut projection = projection_without_catalog("complete", 2, true);
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ActivateOfflineDefault,
+                &mut state,
+                &mut backend,
+                &mut projection,
+                "activate".into(),
+            ),
+            Ok(RecordingDispatchOutcome::OfflineDefaultRequested)
+        );
+        let catalog = state.authenticated_catalog.as_ref().unwrap();
+        assert_eq!(catalog.campaign_id, "campaign");
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(backend.calls, ["offline", "catalog"]);
     }
 
     #[test]
