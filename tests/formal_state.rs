@@ -300,6 +300,52 @@ fn fanout_control_actions_are_declared_in_the_formal_model() {
 }
 
 #[test]
+fn explicit_workload_selection_is_declared_as_a_formal_state_transition() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    assert!(
+        model["state_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "explicit_all")
+    );
+    assert!(model["bindings"].as_array().unwrap().iter().any(|binding| {
+        binding["action"] == "toggle_all_measures" && binding["element"] == "measures.group_toggle"
+    }));
+    assert!(
+        model["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|transition| {
+                transition["event"] == "toggle_all_measures"
+                    && transition["from"] == "measurement_selection"
+                    && transition["to"] == "measurement_selection"
+                    && transition["effects"].as_array().is_some_and(|effects| {
+                        effects
+                            .iter()
+                            .any(|effect| effect == "explicit_all_changed")
+                    })
+            })
+    );
+    let capabilities = capabilities();
+    let mut state = FormalUiState::new(100, 30).unwrap();
+    state
+        .apply(FormalEvent::OpenMeasurementSelection, Some(&capabilities))
+        .unwrap();
+    assert!(!state.explicit_all());
+    state
+        .apply(FormalEvent::ToggleAllMeasures, Some(&capabilities))
+        .unwrap();
+    assert!(state.explicit_all());
+    state
+        .apply(FormalEvent::ToggleAllMeasures, Some(&capabilities))
+        .unwrap();
+    assert!(!state.explicit_all());
+}
+
+#[test]
 fn fanout_selection_and_status_projection_are_formally_bounded() {
     let selection = FanoutSelection {
         agent_ids: vec!["agent-b".into(), "agent-a".into(), "agent-a".into()],

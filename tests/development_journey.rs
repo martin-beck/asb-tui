@@ -102,7 +102,12 @@ fn development_capture_replay_and_comparison_are_renderer_neutral() {
         },
         offline_ready: false,
     };
-    let mut campaign = RecordingCampaignModel::new(WorkloadScope::All, planned).unwrap();
+    let selected_scope =
+        WorkloadScope::Selected(vec!["workload-alpha".into(), "workload-beta".into()])
+            .canonical()
+            .unwrap();
+    let mut campaign = RecordingCampaignModel::new(selected_scope.clone(), planned).unwrap();
+    assert_eq!(campaign.scope(), &selected_scope);
     campaign.arm_capture_confirmation().unwrap();
     assert_eq!(
         campaign
@@ -130,6 +135,7 @@ fn development_capture_replay_and_comparison_are_renderer_neutral() {
             .action,
         RecordingAction::ActivateOfflineDefault
     );
+    assert!(campaign.observation().offline_ready);
 
     let reports = [
         report("development-replay-001", 10.0),

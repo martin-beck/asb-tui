@@ -366,6 +366,7 @@ pub struct BenchmarkSelection {
     pool_id: String,
     selected_benchmarks: BTreeSet<String>,
     selected_measures: BTreeSet<String>,
+    explicit_all: bool,
     query: String,
 }
 
@@ -381,6 +382,7 @@ impl BenchmarkSelection {
             pool_id,
             selected_benchmarks: BTreeSet::new(),
             selected_measures: BTreeSet::new(),
+            explicit_all: false,
             query: String::new(),
         })
     }
@@ -414,7 +416,30 @@ impl BenchmarkSelection {
         self.pool_id = id.to_owned();
         self.selected_benchmarks.clear();
         self.selected_measures.clear();
+        self.explicit_all = false;
         Ok(())
+    }
+
+    /// Toggle the explicit all-workloads choice. An empty selection is never
+    /// interpreted as all; callers must use this reviewed choice instead.
+    pub fn set_explicit_all(&mut self, enabled: bool) {
+        self.explicit_all = enabled;
+        if enabled {
+            self.selected_measures = self
+                .active_measure_ids()
+                .filter(|id| self.measure(id).is_some_and(BenchmarkMeasure::available))
+                .map(str::to_owned)
+                .collect();
+            self.refresh_benchmark_flags();
+        } else {
+            self.selected_measures.clear();
+            self.selected_benchmarks.clear();
+        }
+    }
+
+    #[must_use]
+    pub const fn explicit_all(&self) -> bool {
+        self.explicit_all
     }
     pub fn set_benchmark_selected(
         &mut self,
@@ -447,6 +472,7 @@ impl BenchmarkSelection {
         {
             return Err(SelectionError::UnavailableMeasure);
         }
+        self.explicit_all = false;
         for measure_id in &measure_ids {
             if selected {
                 self.selected_measures.insert(measure_id.clone());
@@ -469,6 +495,7 @@ impl BenchmarkSelection {
         if !measure.available() && selected {
             return Err(SelectionError::UnavailableMeasure);
         }
+        self.explicit_all = false;
         if selected {
             self.selected_measures.insert(id.to_owned());
         } else {
@@ -535,6 +562,7 @@ impl BenchmarkSelection {
             .filter(|measure| measure.available() && self.measure_matches(measure.id()))
             .map(|measure| measure.id().to_owned())
             .collect::<Vec<_>>();
+        self.explicit_all = false;
         for measure_id in measure_ids {
             if selected {
                 self.selected_measures.insert(measure_id);
@@ -740,6 +768,7 @@ impl BenchmarkSelection {
             return Err(SelectionError::StaleCatalog);
         }
         let previous = self.selected_measures.clone();
+        let explicit_all = self.explicit_all;
         let valid = catalog
             .all_measure_ids()
             .map(str::to_owned)
@@ -757,6 +786,9 @@ impl BenchmarkSelection {
             .cloned()
             .collect();
         self.selected_benchmarks.clear();
+        if explicit_all {
+            self.set_explicit_all(true);
+        }
         Ok(previous
             .into_iter()
             .filter(|id| !valid.contains(id.as_str()))
