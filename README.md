@@ -203,9 +203,11 @@ substituted inputs, and executes a sealed copy immune to later same-inode mutati
 enumerates `/proc` children or changes the process-global subreaper setting, so concurrently spawned
 unrelated children cannot be classified, signalled, or reaped as candidate descendants.
 
-This is the standalone half of the command contract. Current ASB releases do not yet route
-`asb tui install`, `asb tui`, `asb tui status`, `asb tui upgrade`, or `asb tui remove`; that narrow
-product-side router must land independently before those top-level commands are claimed available.
+This is the standalone half of the command contract. Current ASB main routes
+`asb tui install`, `asb tui`, `asb tui status`, `asb tui upgrade`, and `asb tui remove` through
+the paired lifecycle surface. Route availability does not by itself qualify installation or a
+live-provider run: ASB still performs fail-closed host/toolchain preflight, and the complete
+install-to-benchmark-to-capture/replay journey must be qualified against the exact paired heads.
 
 ## Agent catalog projection
 
