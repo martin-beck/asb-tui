@@ -592,6 +592,7 @@ mod tests {
         workloads: Vec<String>,
         repeated_run: Option<String>,
         compared_runs: Vec<String>,
+        invalid_catalog: bool,
     }
 
     impl RecordingBackend for FakeBackend {
@@ -700,14 +701,18 @@ mod tests {
                 runner_instance_id: "runner".into(),
                 generation,
                 campaign_id: campaign,
-                entries: vec![crate::control_codec::RecordingCassetteEntry {
-                    cassette_id: "cassette".into(),
-                    cassette_sha256: "a".repeat(64),
-                    provider_profile_sha256: "b".repeat(64),
-                    agent_id: "agent".into(),
-                    workload_id: "workload".into(),
-                    scorer_revision: "scorer".into(),
-                }],
+                entries: if self.invalid_catalog {
+                    Vec::new()
+                } else {
+                    vec![crate::control_codec::RecordingCassetteEntry {
+                        cassette_id: "cassette".into(),
+                        cassette_sha256: "a".repeat(64),
+                        provider_profile_sha256: "b".repeat(64),
+                        agent_id: "agent".into(),
+                        workload_id: "workload".into(),
+                        scorer_revision: "scorer".into(),
+                    }]
+                },
             })
         }
         fn dispatch_replay(
@@ -1174,6 +1179,104 @@ mod tests {
         assert_eq!(catalog.campaign_id, "campaign");
         assert_eq!(catalog.entries.len(), 1);
         assert_eq!(backend.calls, ["offline", "catalog"]);
+    }
+
+    #[test]
+    fn activation_rejects_an_invalid_runner_catalog() {
+        let mut backend = FakeBackend {
+            invalid_catalog: true,
+            ..FakeBackend::default()
+        };
+        let mut state = state(WorkloadScope::All);
+        let mut projection = projection_without_catalog("complete", 2, true);
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ActivateOfflineDefault,
+                &mut state,
+                &mut backend,
+                &mut projection,
+                "activate".into(),
+            ),
+            Err(RecordingDispatchError::InvalidCassetteCatalog)
+        );
+        assert!(state.authenticated_catalog.is_none());
+        assert_eq!(backend.calls, ["offline", "catalog"]);
+    }
+
+    #[test]
+    fn selection_and_replay_are_catalog_fenced_and_typed() {
+        let mut backend = FakeBackend::default();
+        let mut state = state(WorkloadScope::All);
+        state.selected_cassette_sha256 = Some("a".repeat(64));
+        state.authenticated_catalog = Some(crate::benchmark_route::AuthenticatedCassetteCatalog {
+            runner_instance_id: "runner".into(),
+            generation: Revision(2),
+            campaign_id: "campaign".into(),
+            entries: vec![crate::benchmark_route::AuthenticatedCassetteEntry {
+                cassette_id: "cassette".into(),
+                cassette_sha256: "a".repeat(64),
+                provider_profile_sha256: "b".repeat(64),
+                agent_id: "agent".into(),
+                workload_id: "workload".into(),
+                scorer_revision: "scorer".into(),
+            }],
+        });
+        let mut projection = projection("complete", 2, true);
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::SelectOfflineCassette,
+                &mut state,
+                &mut backend,
+                &mut projection,
+                "select".into(),
+            ),
+            Ok(RecordingDispatchOutcome::CassetteSelected)
+        );
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ReplaySelected,
+                &mut state,
+                &mut backend,
+                &mut projection,
+                "replay".into(),
+            ),
+            Err(RecordingDispatchError::Transport(
+                TransportError::RemoteFailure
+            ))
+        );
+        assert_eq!(backend.calls, ["replay"]);
+    }
+
+    #[test]
+    fn replay_rejects_a_catalog_for_another_campaign() {
+        let mut backend = FakeBackend::default();
+        let mut state = state(WorkloadScope::All);
+        state.selected_cassette_sha256 = Some("a".repeat(64));
+        state.authenticated_catalog = Some(crate::benchmark_route::AuthenticatedCassetteCatalog {
+            runner_instance_id: "runner".into(),
+            generation: Revision(2),
+            campaign_id: "other-campaign".into(),
+            entries: vec![crate::benchmark_route::AuthenticatedCassetteEntry {
+                cassette_id: "cassette".into(),
+                cassette_sha256: "a".repeat(64),
+                provider_profile_sha256: "b".repeat(64),
+                agent_id: "agent".into(),
+                workload_id: "workload".into(),
+                scorer_revision: "scorer".into(),
+            }],
+        });
+        let mut projection = projection("complete", 2, true);
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ReplaySelected,
+                &mut state,
+                &mut backend,
+                &mut projection,
+                "replay".into(),
+            ),
+            Err(RecordingDispatchError::InvalidWorkloadScope)
+        );
+        assert!(backend.calls.is_empty());
     }
 
     #[test]
