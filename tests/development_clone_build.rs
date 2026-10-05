@@ -4,6 +4,7 @@
 use serde_json::Value;
 use std::{
     env, fs,
+    os::unix::fs::MetadataExt,
     path::PathBuf,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
@@ -61,6 +62,34 @@ fn trusted_tool(name: &str) -> String {
         .to_owned()
 }
 
+fn private_toolchain_tool(name: &str) -> String {
+    let candidate = trusted_tool(name);
+    let metadata = fs::symlink_metadata(&candidate).expect("tool metadata");
+    if !metadata.file_type().is_symlink() {
+        return candidate;
+    }
+    let output = Command::new("rustup")
+        .args(["which", name])
+        .output()
+        .expect("resolve rustup toolchain tool");
+    assert!(
+        output.status.success(),
+        "rustup which {name} failed: {output:?}"
+    );
+    let resolved = String::from_utf8(output.stdout)
+        .expect("rustup tool path is utf-8")
+        .trim()
+        .to_owned();
+    let resolved_metadata = fs::symlink_metadata(&resolved).expect("resolved tool metadata");
+    assert!(
+        resolved_metadata.is_file()
+            && !resolved_metadata.file_type().is_symlink()
+            && resolved_metadata.mode() & 0o022 == 0,
+        "rustup resolved an unsafe tool: {resolved}"
+    );
+    resolved
+}
+
 #[test]
 fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
     let nonce = SystemTime::now()
@@ -69,7 +98,8 @@ fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
         .as_nanos();
     let root = env::temp_dir().join(format!("asb-tui-clone-build-{nonce}"));
     let (repository, expected_commit) = local_source_fixture();
-    let cargo = trusted_tool("cargo");
+    let cargo = private_toolchain_tool("cargo");
+    let rustc = private_toolchain_tool("rustc");
     let cc = trusted_tool("cc");
     let ar = trusted_tool("ar");
     let ld = trusted_tool("ld");
@@ -82,6 +112,7 @@ fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
             .env("ASB_TUI_DEV_GIT", "/usr/bin/git")
             .env("ASB_TUI_DEV_SETSID", "/usr/bin/setsid")
             .env("ASB_TUI_DEV_CARGO", &cargo)
+            .env("ASB_TUI_DEV_RUSTC", &rustc)
             .env("ASB_TUI_DEV_CC", &cc)
             .env("ASB_TUI_DEV_AR", &ar)
             .env("ASB_TUI_DEV_LD", &ld)
