@@ -219,6 +219,7 @@ fn status(root: &Path) -> Response {
                 "dev_channel_manifest_digest_mismatch"
             }
         }
+        None if state.channel_manifest_sha256.is_some() => "dev_channel_manifest_unavailable",
         _ if valid => "development_installed",
         _ => "development_installation_invalid",
     };
@@ -1020,8 +1021,19 @@ mod tests {
         assert!(result.verified);
         assert_eq!(result.asb_source_commit, Some("c".repeat(40)));
         assert_eq!(result.channel_manifest_sha256, Some(manifest_digest));
+        fs::write(executable_path(&root), b"tampered-executable").unwrap();
+        assert_eq!(status(&root).code, "dev_channel_manifest_digest_mismatch");
+        fs::write(executable_path(&root), bytes).unwrap();
         fs::write(root.join("channel-manifest.json"), b"tampered").unwrap();
         assert_eq!(status(&root).code, "dev_channel_manifest_invalid");
+        fs::write(root.join("channel-manifest.json"), &manifest_bytes).unwrap();
+        let mut stale = state;
+        stale.source_commit = "e".repeat(40);
+        fs::write(state_path(&root), serde_json::to_vec(&stale).unwrap()).unwrap();
+        assert_eq!(status(&root).code, "dev_channel_manifest_stale");
+        fs::write(state_path(&root), serde_json::to_vec(&stale).unwrap()).unwrap();
+        fs::remove_file(root.join("channel-manifest.json")).unwrap();
+        assert_eq!(status(&root).code, "dev_channel_manifest_unavailable");
         fs::remove_dir_all(root).unwrap();
     }
 
