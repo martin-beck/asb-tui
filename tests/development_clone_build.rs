@@ -69,7 +69,6 @@ fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
         .as_nanos();
     let root = env::temp_dir().join(format!("asb-tui-clone-build-{nonce}"));
     let (repository, expected_commit) = local_source_fixture();
-    let rustup_home = env::var_os("RUSTUP_HOME").expect("test needs an explicit rustup home");
     let cargo = trusted_tool("cargo");
     let cc = trusted_tool("cc");
     let ar = trusted_tool("ar");
@@ -80,7 +79,6 @@ fn local_clone_build_records_exact_provenance_and_cleans_workspace() {
         command
             .env("ASB_TUI_DEV_REPOSITORY", &repository)
             .env("ASB_TUI_DEV_REF", "fixture")
-            .env("ASB_TUI_DEV_RUSTUP_HOME", &rustup_home)
             .env("ASB_TUI_DEV_GIT", "/usr/bin/git")
             .env("ASB_TUI_DEV_SETSID", "/usr/bin/setsid")
             .env("ASB_TUI_DEV_CARGO", &cargo)
