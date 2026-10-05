@@ -321,6 +321,44 @@ impl WorkspaceState {
             .collect();
         (selected, comparison)
     }
+
+    /// Return the explicit workload scope selected on the benchmark screen.
+    ///
+    /// When no measures or every available measure is selected, the scope is
+    /// `All`. Otherwise the scope is reduced to the corresponding benchmark
+    /// IDs and remains generation-bound through the catalog handoff.
+    pub(crate) fn recording_workload_scope(
+        &self,
+    ) -> Result<crate::recording_campaign::WorkloadScope, String> {
+        let Some(selection) = self.benchmark_selection.as_ref() else {
+            return Ok(crate::recording_campaign::WorkloadScope::All);
+        };
+        let selected = selection.selected_measure_ids();
+        let available = selection
+            .catalog()
+            .pools()
+            .iter()
+            .find(|pool| pool.id() == selection.pool_id())
+            .map(|pool| {
+                pool.groups()
+                    .iter()
+                    .flat_map(|group| group.benchmarks())
+                    .flat_map(|benchmark| benchmark.measures())
+                    .filter(|measure| measure.available())
+                    .count()
+            })
+            .unwrap_or_default();
+        if selected.is_empty() || selected.len() == available {
+            return Ok(crate::recording_campaign::WorkloadScope::All);
+        }
+        let handoff = selection
+            .campaign_handoff(selection.catalog().generation())
+            .map_err(|error| format!("workload selection is no longer valid: {error:?}"))?;
+        Ok(crate::recording_campaign::WorkloadScope::Selected(
+            handoff.benchmark_ids,
+        ))
+    }
+
     /// Keep run-control key handling coupled to the executable state model.
     /// The runtime owns the durable launch state; this bounded check ensures a
     /// UI action is only emitted when its documented route transition exists.
@@ -503,6 +541,7 @@ impl WorkspaceState {
                     Some(value["credential_reference:".len()..].to_owned()),
                 )
             }
+
             value
                 if value
                     .strip_prefix("credential_helper:")
@@ -2681,6 +2720,28 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("Pool > Group > Benchmark > Measure"));
+    }
+
+    #[test]
+    fn recording_scope_defaults_to_all_and_tracks_selected_workloads() {
+        let mut state = WorkspaceState::default();
+        assert_eq!(
+            state.recording_workload_scope().unwrap(),
+            crate::recording_campaign::WorkloadScope::Selected(vec![
+                "efficiency".into(),
+                "quality".into(),
+            ])
+        );
+
+        state.screen = Screen::Measures;
+        // Select only the quality benchmark. The dispatcher must receive the
+        // benchmark identity, not a display label or the whole catalog.
+        state.handle_key(key(KeyCode::Char('b')));
+        let scope = state.recording_workload_scope().unwrap();
+        assert_eq!(
+            scope,
+            crate::recording_campaign::WorkloadScope::Selected(vec!["efficiency".into()])
+        );
     }
 
     #[test]
