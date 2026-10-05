@@ -70,6 +70,21 @@ fn main() -> ExitCode {
             }
         }
     }
+    if arguments == ["preflight", "--format", "json"] || arguments == ["preflight", "--json"] {
+        let report = asb_tui::development_preflight::run();
+        println!(
+            "{}",
+            serde_json::to_string(&report).expect("serialize preflight report")
+        );
+        return ExitCode::from(if report.ok { 0 } else { 3 });
+    }
+    if arguments == ["preflight"] {
+        let report = asb_tui::development_preflight::run();
+        for line in report.human_lines() {
+            println!("{line}");
+        }
+        return ExitCode::from(if report.ok { 0 } else { 3 });
+    }
     if let Some(route) = arguments
         .first()
         .and_then(|value| OutputRoute::parse(value))
@@ -342,6 +357,15 @@ fn launch_broker_entry(development_mode: bool) -> ExitCode {
                 return ExitCode::from(2);
             }
         };
+    if development_mode {
+        let preflight = asb_tui::development_preflight::run_for_launch();
+        if !preflight.ok {
+            for line in preflight.human_lines() {
+                eprintln!("{line}");
+            }
+            return ExitCode::from(2);
+        }
+    }
     match run_interactive_with_control_context(&mut state, policy, &mut control, development_mode) {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => {

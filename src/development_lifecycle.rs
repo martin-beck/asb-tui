@@ -759,11 +759,16 @@ pub fn execute_with_cancel(operation: &str, cancelled: &AtomicBool) -> Response 
     };
     match operation {
         "install" => {
+            if !crate::development_preflight::run().ok {
+                return response("development_host_preflight_failed", false);
+            }
             materialize(&root, false, Some(cancelled)).unwrap_or_else(|code| response(code, false))
         }
         "upgrade" => {
             if read_state(&root).ok().flatten().is_none() {
                 response("development_not_installed", false)
+            } else if !crate::development_preflight::run().ok {
+                response("development_host_preflight_failed", false)
             } else {
                 materialize(&root, true, Some(cancelled))
                     .unwrap_or_else(|code| response(code, false))
