@@ -32,18 +32,18 @@ def sanitized_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if not any(marker in key.upper() for marker in markers)}
 
 
-def run_asb_tui_parity(binary: Path) -> dict:
+def run_asb_tui_parity(asb_binary: Path, tui_binary: Path) -> dict:
     """Exercise the parent command in both network policies and its installed route."""
     base = sanitized_environment()
     base["ASB_TUI_NETWORK_POLICY"] = "allow"
     online = subprocess.run(
-        [str(binary), "tui", "install", "--dry-run"], env=base,
+        [str(asb_binary), "tui", "install", "--dry-run"], env=base,
         text=True, capture_output=True, check=False,
     )
     offline_env = dict(base)
     offline_env["ASB_TUI_NETWORK_POLICY"] = "deny"
     offline = subprocess.run(
-        [str(binary), "tui", "install", "--offline", "--dry-run"], env=offline_env,
+        [str(asb_binary), "tui", "install", "--offline", "--dry-run"], env=offline_env,
         text=True, capture_output=True, check=False,
     )
     def document(process: subprocess.CompletedProcess[str]) -> dict:
@@ -62,24 +62,33 @@ def run_asb_tui_parity(binary: Path) -> dict:
     if not online_result.get("ok"):
         raise SystemExit(f"ASB tui install did not produce an installed frontend: {online_result}")
     installed = subprocess.run(
-        [str(binary), "tui", "status"], env=offline_env,
+        [str(asb_binary), "tui", "status"], env=offline_env,
         text=True, capture_output=True, check=False,
     )
     installed_result = document(installed)
     if not installed_result.get("ok"):
         raise SystemExit(f"installed asb tui status is not ready: {installed_result}")
     launch = subprocess.run(
-        [str(binary), "tui"], env=offline_env,
+        [str(asb_binary), "tui"], env=offline_env,
         text=True, capture_output=True, check=False, timeout=15,
     )
     launch_result = document(launch)
     if launch_result.get("operation") != "launch":
         raise SystemExit("installed asb tui did not report the launch operation")
+    installed_tui = subprocess.run(
+        [str(tui_binary), "tui", "status", "--development", "--format", "json"],
+        env=offline_env, text=True, capture_output=True, check=False,
+    )
+    installed_tui_result = document(installed_tui)
+    if not installed_tui_result.get("ok"):
+        raise SystemExit(f"installed asb-tui status is not ready: {installed_tui_result}")
     return {
         "online_install": online_result,
         "offline_install": offline_result,
         "installed_asb_tui_status": installed_result,
         "installed_asb_tui_launch": launch_result,
+        "installed_asb_tui_direct_status": installed_tui_result,
+        "installed_asb_tui_sha256": hashlib.sha256(tui_binary.read_bytes()).hexdigest(),
         "parity": online_result.get("operation") == offline_result.get("operation") == "install",
     }
 
@@ -88,6 +97,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run the offline AR-1657 compatibility matrix.")
     parser.add_argument("--checkout", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--asb-binary", type=Path, required=True, help="paired ASB binary for parent-command acceptance")
+    parser.add_argument("--tui-binary", type=Path, required=True, help="installed asb-tui executable for direct parity acceptance")
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -118,7 +128,7 @@ def main() -> int:
         raise SystemExit("ASB/TUI compatibility catalog drifted from the reviewed fixture")
     if not all(entry.get("supported") and entry.get("reason") is None for entry in catalog):
         raise SystemExit("development catalog contains an unexpected unavailable tuple")
-    parent_command = run_asb_tui_parity(args.asb_binary.resolve())
+    parent_command = run_asb_tui_parity(args.asb_binary.resolve(), args.tui_binary.resolve())
     receipt = {
         "schema_version": 1, "ar": "AR-1657", "classification": "development/mock",
         "network": "denied", "credentials": "none",
