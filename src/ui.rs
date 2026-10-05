@@ -324,32 +324,20 @@ impl WorkspaceState {
 
     /// Return the explicit workload scope selected on the benchmark screen.
     ///
-    /// When no measures or every available measure is selected, the scope is
-    /// `All`. Otherwise the scope is reduced to the corresponding benchmark
-    /// IDs and remains generation-bound through the catalog handoff.
+    /// `All` is available only through the explicit all-workloads toggle.
+    /// Empty or partially selected scopes remain distinct and fail closed.
     pub(crate) fn recording_workload_scope(
         &self,
     ) -> Result<crate::recording_campaign::WorkloadScope, String> {
         let Some(selection) = self.benchmark_selection.as_ref() else {
-            return Ok(crate::recording_campaign::WorkloadScope::All);
+            return Err("workload selection is unavailable".to_owned());
         };
-        let selected = selection.selected_measure_ids();
-        let available = selection
-            .catalog()
-            .pools()
-            .iter()
-            .find(|pool| pool.id() == selection.pool_id())
-            .map(|pool| {
-                pool.groups()
-                    .iter()
-                    .flat_map(|group| group.benchmarks())
-                    .flat_map(|benchmark| benchmark.measures())
-                    .filter(|measure| measure.available())
-                    .count()
-            })
-            .unwrap_or_default();
-        if selected.is_empty() || selected.len() == available {
+        if selection.explicit_all() {
             return Ok(crate::recording_campaign::WorkloadScope::All);
+        }
+        let selected = selection.selected_measure_ids();
+        if selected.is_empty() {
+            return Err("workload selection is empty; choose measures or explicit all".to_owned());
         }
         let handoff = selection
             .campaign_handoff(selection.catalog().generation())
@@ -1517,6 +1505,10 @@ impl WorkspaceState {
                 self.toggle_visible_group();
                 UiAction::None
             }
+            KeyCode::Char('a') if self.screen == Screen::Measures && self.search.is_empty() => {
+                self.toggle_all_measures();
+                UiAction::None
+            }
             KeyCode::Char('/') if self.screen == Screen::Measures => UiAction::None,
             KeyCode::Char(c) if self.screen == Screen::Measures && !c.is_control() => {
                 let mut candidate = self.search.clone();
@@ -1693,6 +1685,13 @@ impl WorkspaceState {
         let select = members.iter().any(|index| !self.measures[*index].selected);
         for index in members {
             self.measures[index].selected = select;
+        }
+    }
+
+    fn toggle_all_measures(&mut self) {
+        if let Some(selection) = self.benchmark_selection.as_mut() {
+            selection.set_explicit_all(!selection.explicit_all());
+            self.sync_measure_projection();
         }
     }
 
@@ -2742,6 +2741,13 @@ mod tests {
             scope,
             crate::recording_campaign::WorkloadScope::Selected(vec!["efficiency".into()])
         );
+        state.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            state.recording_workload_scope().unwrap(),
+            crate::recording_campaign::WorkloadScope::All
+        );
+        state.handle_key(key(KeyCode::Char('a')));
+        assert!(state.recording_workload_scope().is_err());
     }
 
     #[test]

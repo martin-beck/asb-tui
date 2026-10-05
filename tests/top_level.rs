@@ -281,7 +281,7 @@ fn cli_dispatch_surface_is_closed_and_renderer_neutral() {
 }
 
 #[test]
-fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
+fn installed_entrypoint_accepts_install_then_tui_launch_without_auth() {
     let (source, _repository, _commit) = local_source_fixture("top-level");
     let git = trusted_tool("git");
     let setsid = trusted_tool("setsid");
@@ -330,6 +330,8 @@ fn dev_channel_materializes_status_launch_upgrade_and_remove_without_auth() {
     assert_eq!(installed_json["code"], "development_installed");
     assert_eq!(installed_json["development_only"], true);
     assert!(root.join("provenance.json").is_file());
+    // Exercise the installed entrypoint as a user does: `asb tui install`
+    // followed by `asb tui launch`, both through the executable command path.
     assert_eq!(run("status").status.code(), Some(0));
     assert_eq!(run("launch").status.code(), Some(0));
     assert_eq!(run("upgrade").status.code(), Some(0));

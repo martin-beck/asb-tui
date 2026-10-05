@@ -366,6 +366,7 @@ pub struct BenchmarkSelection {
     pool_id: String,
     selected_benchmarks: BTreeSet<String>,
     selected_measures: BTreeSet<String>,
+    explicit_all: bool,
     query: String,
 }
 
@@ -381,6 +382,7 @@ impl BenchmarkSelection {
             pool_id,
             selected_benchmarks: BTreeSet::new(),
             selected_measures: BTreeSet::new(),
+            explicit_all: false,
             query: String::new(),
         })
     }
@@ -414,13 +416,37 @@ impl BenchmarkSelection {
         self.pool_id = id.to_owned();
         self.selected_benchmarks.clear();
         self.selected_measures.clear();
+        self.explicit_all = false;
         Ok(())
+    }
+
+    /// Toggle the explicit all-workloads choice. An empty selection is never
+    /// interpreted as all; callers must use this reviewed choice instead.
+    pub fn set_explicit_all(&mut self, enabled: bool) {
+        self.explicit_all = enabled;
+        if enabled {
+            self.selected_measures = self
+                .active_measure_ids()
+                .filter(|id| self.measure(id).is_some_and(BenchmarkMeasure::available))
+                .map(str::to_owned)
+                .collect();
+            self.refresh_benchmark_flags();
+        } else {
+            self.selected_measures.clear();
+            self.selected_benchmarks.clear();
+        }
+    }
+
+    #[must_use]
+    pub const fn explicit_all(&self) -> bool {
+        self.explicit_all
     }
     pub fn set_benchmark_selected(
         &mut self,
         id: &str,
         selected: bool,
     ) -> Result<(), SelectionError> {
+        self.explicit_all = false;
         let measure_ids = self
             .catalog
             .benchmark(id)
@@ -462,6 +488,7 @@ impl BenchmarkSelection {
         Ok(())
     }
     pub fn set_measure_selected(&mut self, id: &str, selected: bool) -> Result<(), SelectionError> {
+        self.explicit_all = false;
         if !self.measure_in_active_pool(id) {
             return Err(SelectionError::UnknownMeasure);
         }
@@ -522,6 +549,7 @@ impl BenchmarkSelection {
     }
 
     pub fn set_group_selected(&mut self, id: &str, selected: bool) -> Result<(), SelectionError> {
+        self.explicit_all = false;
         let measure_ids = self
             .catalog
             .pools
