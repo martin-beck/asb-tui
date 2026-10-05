@@ -91,6 +91,49 @@ fn wizard_projects_connected_provider_choices_without_erasing_draft() {
 }
 
 #[test]
+fn wizard_projects_all_dynamic_openrouter_models_and_preserves_unavailable_reasons() {
+    let mut catalog = catalog("openrouter", "provider/free-alpha:free");
+    catalog.providers[0].models.extend([
+        ProviderModel {
+            model_id: "provider/free-beta:free".into(),
+            revision: "catalog-2".into(),
+            availability: ProviderAvailability::Available,
+        },
+        ProviderModel {
+            model_id: "provider/free-router".into(),
+            revision: "catalog-3".into(),
+            availability: ProviderAvailability::Unavailable(
+                "quota metadata unavailable".into(),
+            ),
+        },
+    ]);
+
+    let mut wizard = Wizard::default();
+    wizard.set_provider_catalog(catalog.clone());
+    let (_, models) = wizard.connected_provider_options().unwrap();
+    assert_eq!(
+        models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+        [
+            "provider/free-alpha:free",
+            "provider/free-beta:free",
+            "provider/free-router",
+        ]
+    );
+
+    let mut registry = ConnectedProviderRegistry::new(None, None).unwrap();
+    registry.begin_add(profile()).unwrap();
+    registry.refresh(|_| Ok(catalog)).unwrap();
+    assert_eq!(
+        registry
+            .available_models()
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect::<Vec<_>>(),
+        ["provider/free-alpha:free", "provider/free-beta:free"]
+    );
+}
+
+#[test]
 fn compatibility_matrix_supports_defaults_overrides_restart_and_offline_validation() {
     let mut matrix = CompatibilityMatrix::development();
     let default = AdapterSelection {
