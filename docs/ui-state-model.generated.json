@@ -5,6 +5,15 @@
   "fanout_live_admission_contract": "Explicit live fan-out requires a configured 64-character hexadecimal credential reference and rejects missing or malformed references before backend submission; diagnostics remain typed, bounded, and secret-free.",
   "recording_capture_contract": "Recording actions carry the benchmark picker's explicit selected or all-workloads scope, rebuild after provider/model/agent changes, and retain typed live capture or replay failures in the interactive session without silently switching to mock execution.",
   "run_error_projection_contract": "Live control failures are retained as bounded privacy-safe run-error state and can be cleared before the next action.",
+  "revision_contract": "Revision handoff is typed across the complete catalog/channel/provider/model/source tuple: provisional drafts can be cancelled or restarted, only the current committed revision can be admitted, older identities are stale, replaced commits are superseded, and missing identity is unavailable without fallback.",
+  "revision_states": [
+    "provisional",
+    "committed",
+    "stale",
+    "superseded",
+    "unavailable"
+  ],
+  "top_level_command_boundary": "Formal qualification starts with `asb tui install` and then launches the installed bundle through bare `asb tui`; direct invocation of an internal TUI binary is not equivalent.",
   "model": "asb-tui.ui-state",
   "authentication_handoff": "Provider secrets are enrolled through an approved external keychain/helper; the wizard accepts only credential_helper:<endpoint_sha256>:<locator_sha256>.",
   "auth_status_after_enrollment": "After helper enrollment or invocation, the wizard reads runner-authored status and projects only digest metadata before applying provider/model configuration.",
@@ -26,6 +35,7 @@
     "benchmark_selection",
     "benchmark_catalog_generation",
     "benchmark_control_revision",
+    "revision_lifecycle",
     "measurement_catalog",
     "connection",
     "capabilities",

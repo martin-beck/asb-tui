@@ -49,6 +49,7 @@ pub mod recording_dispatch;
 pub mod release_channel;
 pub mod renderer;
 pub mod reports;
+pub mod revision;
 pub mod runtime;
 pub mod selection;
 mod sha256;
