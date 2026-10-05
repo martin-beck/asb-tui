@@ -102,9 +102,7 @@ fn wizard_projects_all_dynamic_openrouter_models_and_preserves_unavailable_reaso
         ProviderModel {
             model_id: "provider/free-router".into(),
             revision: "catalog-3".into(),
-            availability: ProviderAvailability::Unavailable(
-                "quota metadata unavailable".into(),
-            ),
+            availability: ProviderAvailability::Unavailable("quota metadata unavailable".into()),
         },
     ]);
 
@@ -112,7 +110,10 @@ fn wizard_projects_all_dynamic_openrouter_models_and_preserves_unavailable_reaso
     wizard.set_provider_catalog(catalog.clone());
     let (_, models) = wizard.connected_provider_options().unwrap();
     assert_eq!(
-        models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+        models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
         [
             "provider/free-alpha:free",
             "provider/free-beta:free",
