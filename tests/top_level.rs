@@ -4,6 +4,7 @@
 use std::process::Command;
 use std::{
     env, fs,
+    os::unix::fs::MetadataExt,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -58,6 +59,31 @@ fn trusted_tool(name: &str) -> String {
         .unwrap()
         .trim()
         .to_owned()
+}
+
+fn private_toolchain_tool(name: &str) -> String {
+    let candidate = trusted_tool(name);
+    let metadata = fs::symlink_metadata(&candidate).expect("tool metadata");
+    if !metadata.file_type().is_symlink() {
+        return candidate;
+    }
+    let output = Command::new("rustup")
+        .args(["which", name])
+        .output()
+        .expect("rustup must resolve the test tool");
+    assert!(output.status.success(), "cannot resolve test tool {name}");
+    let resolved = String::from_utf8(output.stdout)
+        .expect("rustup tool path is utf-8")
+        .trim()
+        .to_owned();
+    let resolved_metadata = fs::symlink_metadata(&resolved).expect("resolved tool metadata");
+    assert!(
+        resolved_metadata.is_file()
+            && !resolved_metadata.file_type().is_symlink()
+            && resolved_metadata.mode() & 0o022 == 0,
+        "rustup resolved an unsafe tool: {resolved}"
+    );
+    resolved
 }
 
 fn isolated_channel_state(label: &str) -> PathBuf {
@@ -285,8 +311,8 @@ fn installed_entrypoint_accepts_install_then_tui_launch_without_auth() {
     let (source, _repository, _commit) = local_source_fixture("top-level");
     let git = trusted_tool("git");
     let setsid = trusted_tool("setsid");
-    let cargo = trusted_tool("cargo");
-    let rustc = trusted_tool("rustc");
+    let cargo = private_toolchain_tool("cargo");
+    let rustc = private_toolchain_tool("rustc");
     let cc = trusted_tool("cc");
     let ar = trusted_tool("ar");
     let ld = trusted_tool("ld");
