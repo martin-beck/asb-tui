@@ -335,6 +335,7 @@ fn fanout_behavior_coverage_is_bound_to_the_formal_ui_contract() {
     assert!(model.contains("fanout_request_contract"));
     assert!(model.contains("fanout_live_admission_contract"));
     assert!(model.contains("recording_capture_contract"));
+    assert!(model.contains("run_error_projection_contract"));
     assert!(model.contains("64-character hexadecimal credential reference"));
     assert!(model.contains("applied-configuration gates are behavior-covered"));
     let inventory = std::fs::read_to_string("docs/ui-module-inventory.json").unwrap();

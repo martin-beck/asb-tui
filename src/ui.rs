@@ -3939,6 +3939,15 @@ mod tests {
     }
 
     #[test]
+    fn run_error_projection_is_bounded_and_clearable() {
+        let mut state = WorkspaceState::default();
+        state.set_run_error("x".repeat(1024));
+        assert_eq!(state.run_error.as_ref().map(String::len), Some(512));
+        state.clear_run_error();
+        assert!(state.run_error.is_none());
+    }
+
+    #[test]
     fn wizard_completion_is_consumed_once() {
         let mut state = WorkspaceState {
             wizard_completion: Some(Default::default()),
