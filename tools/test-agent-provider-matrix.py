@@ -22,6 +22,9 @@ class AgentProviderMatrixTests(unittest.TestCase):
     def test_matrix_rejects_catalog_drift(self):
         self.assertIn("catalog drifted from the reviewed fixture", SOURCE)
         self.assertIn("actual != expected", SOURCE)
+        self.assertIn("authoritative_asb_catalog", SOURCE)
+        self.assertIn("provider-catalog", SOURCE)
+        self.assertIn("does not cover paired ASB catalog choices", SOURCE)
 
     def test_matrix_has_parent_installed_command_parity_acceptance(self):
         for value in ("tui", "install", "--offline", "installed_asb_tui_status", "installed_asb_tui_launch", "installed_asb_tui_direct_status", "--tui-binary", "parity"):

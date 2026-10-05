@@ -27,4 +27,7 @@ installed-executable digest, preventing accidental reuse of the ASB binary for
 TUI assertions.
 
 Network access and credentials are denied. The receipt binds the result to the
-exact TUI commit and source tree.
+exact TUI commit and source tree. The runner also queries the paired ASB
+`provider-catalog` and fails closed unless every selectable ASB provider/model
+choice is represented by the TUI matrix; the local development fixture is
+never treated as a substitute for that authoritative catalog.

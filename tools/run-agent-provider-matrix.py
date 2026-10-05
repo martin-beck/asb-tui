@@ -87,6 +87,38 @@ def run_asb_tui_parity(asb_binary: Path, tui_binary: Path) -> dict:
     }
 
 
+def authoritative_asb_catalog(binary: Path) -> dict:
+    """Read the paired ASB catalog; never substitute the local TUI fixture."""
+    result = subprocess.run(
+        [str(binary), "provider-catalog"],
+        env=sanitized_environment(), text=True, capture_output=True, check=False,
+    )
+    for line in reversed(result.stdout.splitlines()):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            if not value.get("ok") or not value.get("catalog_sha256"):
+                raise SystemExit(f"paired ASB provider catalog is unavailable: {value}")
+            profiles = value.get("profiles")
+            if not isinstance(profiles, list) or not profiles:
+                raise SystemExit("paired ASB provider catalog has no profiles")
+            choices = [
+                {"provider": profile.get("id"), "model": profile.get("model")}
+                for profile in profiles
+                if profile.get("selectable") and profile.get("id") and profile.get("model")
+            ]
+            if not choices:
+                raise SystemExit("paired ASB provider catalog has no selectable choices")
+            return {
+                "catalog_sha256": value["catalog_sha256"],
+                "catalog_version": value.get("catalog_version"),
+                "choices": choices,
+            }
+    raise SystemExit("paired ASB provider-catalog emitted no structured result")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the offline AR-1657 compatibility matrix.")
     parser.add_argument("--checkout", type=Path, default=Path(__file__).resolve().parents[1])
@@ -112,6 +144,7 @@ def main() -> int:
     if marker is None:
         raise SystemExit("matrix test did not emit the Rust catalog")
     catalog = json.loads(marker)
+    asb_catalog = authoritative_asb_catalog(args.asb_binary.resolve())
     fixture = json.loads((checkout / "tests/fixtures/agent-provider-matrix.json").read_text(encoding="utf-8"))
     expected = sorted(fixture["tuples"], key=lambda value: (value["agent"], value["provider"], value["model"]))
     actual = sorted(
@@ -122,6 +155,11 @@ def main() -> int:
         raise SystemExit("ASB/TUI compatibility catalog drifted from the reviewed fixture")
     if not all(entry.get("supported") and entry.get("reason") is None for entry in catalog):
         raise SystemExit("development catalog contains an unexpected unavailable tuple")
+    tui_choices = {(entry["provider"], entry["model"]) for entry in catalog}
+    asb_choices = {(entry["provider"], entry["model"]) for entry in asb_catalog["choices"]}
+    if not asb_choices.issubset(tui_choices):
+        missing = sorted(asb_choices - tui_choices)
+        raise SystemExit(f"TUI compatibility matrix does not cover paired ASB catalog choices: {missing}")
     parent_command = run_asb_tui_parity(args.asb_binary.resolve(), args.tui_binary.resolve())
     receipt = {
         "schema_version": 1, "ar": "AR-1657", "classification": "development/mock",
@@ -140,6 +178,7 @@ def main() -> int:
             "positive": "provider_lifecycle_1656 passed",
             "negative": "typed unavailable provider/model remains visible and unselectable",
             "installed_asb_tui": parent_command,
+            "authoritative_asb_catalog": asb_catalog,
         },
         "provenance": {
             "tui_commit": git(checkout), "tui_tree": git(checkout, "HEAD^{tree}"),
