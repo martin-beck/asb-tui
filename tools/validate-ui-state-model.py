@@ -21,7 +21,7 @@ UI_OWNERS = {
     # intentionally excluded to avoid requiring model churn for unrelated
     # implementation changes.
     "src/actions.rs", "src/adapter_catalog.rs", "src/app.rs", "src/configuration.rs", "src/formal_state.rs", "src/help.rs",
-    "src/landing.rs", "src/live_projection.rs", "src/renderer.rs",
+    "src/landing.rs", "src/live_projection.rs", "src/renderer.rs", "src/revision.rs",
     "src/reports.rs", "src/runtime.rs", "src/selection.rs", "src/shell.rs",
     "src/startup.rs", "src/terminal.rs", "src/ui.rs", "src/visual.rs",
     "src/wizard.rs", "src/wizard_catalog.rs", "src/development_auth.rs", "src/fanout_dispatch.rs",

@@ -134,6 +134,44 @@ fn provisional_control_revision_is_separate_from_local_picker_generation() {
 }
 
 #[test]
+fn revision_lifecycle_is_explicit_and_complete_in_the_formal_model() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    assert_eq!(
+        model["revision_states"],
+        serde_json::json!([
+            "provisional",
+            "committed",
+            "stale",
+            "superseded",
+            "unavailable"
+        ])
+    );
+    assert!(
+        model["state_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "revision_lifecycle")
+    );
+    let contract = model["revision_contract"].as_str().unwrap();
+    for phrase in [
+        "complete catalog/channel/provider/model/source tuple",
+        "only the current committed revision",
+        "without fallback",
+    ] {
+        assert!(
+            contract.contains(phrase),
+            "missing revision contract phrase: {phrase}"
+        );
+    }
+    assert_eq!(
+        model["top_level_command_boundary"],
+        "Formal qualification starts with `asb tui install` and then launches the installed bundle through bare `asb tui`; direct invocation of an internal TUI binary is not equivalent."
+    );
+}
+
+#[test]
 fn auth_unavailability_provenance_is_declared_in_the_formal_model() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
