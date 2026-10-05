@@ -26,10 +26,11 @@ class AgentProviderMatrixTests(unittest.TestCase):
     def test_matrix_has_parent_installed_command_parity_acceptance(self):
         for value in ("tui", "install", "--offline", "installed_asb_tui_status", "installed_asb_tui_launch", "installed_asb_tui_direct_status", "--tui-binary", "parity"):
             self.assertIn(value, SOURCE)
-        self.assertIn("did not produce an installed frontend", SOURCE)
-        self.assertIn("installed asb tui status is not ready", SOURCE)
-        self.assertIn('"installed asb-tui status is not ready', SOURCE)
+        self.assertIn("asb-tui install did not produce an installed frontend", SOURCE)
+        self.assertIn("installed asb-tui status is not ready", SOURCE)
         self.assertIn('str(tui_binary), "tui", "status"', SOURCE)
+        lifecycle = SOURCE.split("def run_asb_tui_parity", 1)[1].split("def main", 1)[0]
+        self.assertNotIn('[str(asb_binary), "tui"', lifecycle)
 
     def test_matrix_is_offline_and_credential_free(self):
         self.assertIn('"--offline"', SOURCE)

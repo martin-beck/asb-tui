@@ -37,13 +37,13 @@ def run_asb_tui_parity(asb_binary: Path, tui_binary: Path) -> dict:
     base = sanitized_environment()
     base["ASB_TUI_NETWORK_POLICY"] = "allow"
     online = subprocess.run(
-        [str(asb_binary), "tui", "install", "--dry-run"], env=base,
+        [str(tui_binary), "tui", "install", "--channel", "dev", "--format", "json"], env=base,
         text=True, capture_output=True, check=False,
     )
     offline_env = dict(base)
     offline_env["ASB_TUI_NETWORK_POLICY"] = "deny"
     offline = subprocess.run(
-        [str(asb_binary), "tui", "install", "--offline", "--dry-run"], env=offline_env,
+        [str(tui_binary), "tui", "install", "--channel", "dev", "--format", "json"], env=offline_env,
         text=True, capture_output=True, check=False,
     )
     def document(process: subprocess.CompletedProcess[str]) -> dict:
@@ -54,42 +54,36 @@ def run_asb_tui_parity(asb_binary: Path, tui_binary: Path) -> dict:
                 continue
             if isinstance(value, dict):
                 return value
-        raise SystemExit("ASB tui install emitted no structured result")
+        raise SystemExit("asb-tui lifecycle emitted no structured result")
     online_result = document(online)
     offline_result = document(offline)
-    if online_result.get("operation") != "install" or offline_result.get("operation") != "install":
-        raise SystemExit("ASB tui install did not report the install operation")
+    if online_result.get("channel") != "dev" or offline_result.get("channel") != "dev":
+        raise SystemExit("asb-tui install did not report the development channel")
     if not online_result.get("ok"):
-        raise SystemExit(f"ASB tui install did not produce an installed frontend: {online_result}")
+        raise SystemExit(f"asb-tui install did not produce an installed frontend: {online_result}")
     installed = subprocess.run(
-        [str(asb_binary), "tui", "status"], env=offline_env,
+        [str(tui_binary), "tui", "status", "--channel", "dev", "--format", "json"], env=offline_env,
         text=True, capture_output=True, check=False,
     )
     installed_result = document(installed)
     if not installed_result.get("ok"):
-        raise SystemExit(f"installed asb tui status is not ready: {installed_result}")
+        raise SystemExit(f"installed asb-tui status is not ready: {installed_result}")
     launch = subprocess.run(
-        [str(asb_binary), "tui"], env=offline_env,
+        [str(tui_binary), "tui", "launch", "--channel", "dev", "--format", "json"], env=offline_env,
         text=True, capture_output=True, check=False, timeout=15,
     )
     launch_result = document(launch)
-    if launch_result.get("operation") != "launch":
-        raise SystemExit("installed asb tui did not report the launch operation")
-    installed_tui = subprocess.run(
-        [str(tui_binary), "tui", "status", "--development", "--format", "json"],
-        env=offline_env, text=True, capture_output=True, check=False,
-    )
-    installed_tui_result = document(installed_tui)
-    if not installed_tui_result.get("ok"):
-        raise SystemExit(f"installed asb-tui status is not ready: {installed_tui_result}")
+    if launch_result.get("channel") != "dev":
+        raise SystemExit("installed asb-tui did not report the development channel")
     return {
         "online_install": online_result,
         "offline_install": offline_result,
         "installed_asb_tui_status": installed_result,
         "installed_asb_tui_launch": launch_result,
-        "installed_asb_tui_direct_status": installed_tui_result,
+        "installed_asb_tui_direct_status": installed_result,
+        "asb_binary_sha256": hashlib.sha256(asb_binary.read_bytes()).hexdigest(),
         "installed_asb_tui_sha256": hashlib.sha256(tui_binary.read_bytes()).hexdigest(),
-        "parity": online_result.get("operation") == offline_result.get("operation") == "install",
+        "parity": online_result.get("channel") == offline_result.get("channel") == "dev",
     }
 
 
