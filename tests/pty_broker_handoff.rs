@@ -22,6 +22,20 @@ use asb_tui::control_codec::{
     ControlResult, ControlSuccess, Negotiated, Page, Revision, V1_0,
 };
 
+fn retryable_pty_read(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+}
+
+#[test]
+fn transient_pty_would_block_is_retryable_but_terminal_errors_are_not() {
+    assert!(retryable_pty_read(&std::io::Error::from(
+        std::io::ErrorKind::WouldBlock,
+    )));
+    assert!(!retryable_pty_read(&std::io::Error::from(
+        std::io::ErrorKind::BrokenPipe,
+    )));
+}
+
 fn packet() -> [u8; BROKER_PACKET_BYTES] {
     let mut bytes = [0; BROKER_PACKET_BYTES];
     bytes[..8].copy_from_slice(b"ASBHND01");
@@ -45,13 +59,33 @@ fn send_rights(sender: &OwnedFd, offered: &OwnedFd, payload: &[u8]) {
 
 fn read_request(stream: &mut UnixStream) -> ControlRequest {
     let mut length = [0; 4];
-    stream.read_exact(&mut length).unwrap();
+    read_exact_retry(stream, &mut length);
     let size = u32::from_be_bytes(length) as usize;
     let mut body = vec![0; size];
-    stream.read_exact(&mut body).unwrap();
+    read_exact_retry(stream, &mut body);
     let mut frame = length.to_vec();
     frame.extend(body);
     asb_tui::control_codec::decode(&frame, 256 * 1024).unwrap()
+}
+
+fn read_exact_retry(stream: &mut UnixStream, target: &mut [u8]) {
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut offset = 0;
+    while offset < target.len() {
+        match stream.read(&mut target[offset..]) {
+            Ok(0) => panic!("control fixture closed before frame completed"),
+            Ok(count) => offset += count,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("control fixture read failed: {error}"),
+        }
+    }
 }
 
 fn write_result(stream: &mut UnixStream, request: &ControlRequest, result: ControlResult) {
@@ -136,6 +170,13 @@ fn pty_inherited_fd_negotiates_scm_rights_and_exits_cleanly() {
         match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => output.extend_from_slice(&chunk[..n]),
+            Err(error) if retryable_pty_read(&error) => {
+                // PTY masters can transiently report EAGAIN before the child
+                // has flushed its first bytes. Keep the bounded deadline and
+                // retry instead of turning readiness jitter into a failure.
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
             Err(_) => break,
         }
     }
@@ -252,6 +293,10 @@ fn real_asb_tui_socket_consumer_negotiates_bootstrap_and_exits_from_pty() {
         .args(["run", "--socket", socket_path.to_str().unwrap()])
         .env_clear()
         .env("TERM", "xterm-256color")
+        .env(
+            "PATH",
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned()),
+        )
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
         .stderr(Stdio::from(slave))
@@ -373,6 +418,10 @@ fn real_asb_tui_broker_handoff_uses_fd0_and_attached_output_pty() {
         .args(["run", "--broker", "--development"])
         .env_clear()
         .env("TERM", "xterm-256color")
+        .env(
+            "PATH",
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned()),
+        )
         // Exercise the production startup path: stdin is the inherited broker
         // stream, while stdout/stderr are the attached PTY used as the
         // development terminal fallback.
