@@ -50,9 +50,14 @@ The development install performs a shallow clone of the selected TUI source
 (`ASB_TUI_DEV_REPOSITORY`, defaulting to the public asb-tui repository, and
 `ASB_TUI_DEV_REF`, defaulting to `main`) into a private temporary workspace,
 then runs a locked release Cargo build with private Cargo-home and target
-directories. When Cargo is a rustup proxy, its trusted toolchain home must be
-provided explicitly through `ASB_TUI_DEV_RUSTUP_HOME`; host `RUSTUP_HOME`,
-Cargo configuration, proxy, flags, and credentials are never inherited. The
+directories. When Cargo is the conventional user-owned rustup shim
+(`$HOME/.cargo/bin/cargo`), the selected default toolchain is resolved to a
+private regular `cargo` executable under `$HOME/.rustup/toolchains`; no shim or
+outside target is trusted. A non-conventional rustup home may be supplied
+explicitly through `ASB_TUI_DEV_RUSTUP_HOME`. Host `RUSTUP_HOME`, Cargo
+configuration, proxy, flags, and credentials are never inherited. If an
+explicit `rustc` override is also a rustup shim, it is resolved to the same
+validated toolchain instead of being allowed to consult ambient state. The
 source commit and tree are read from the clone itself and
 written with the executable digest to `provenance.json`; `ASB_TUI_DEV_INSTALL_ROOT`
 may select an existing owner-private absolute root. Clone/build output is
