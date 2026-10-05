@@ -331,7 +331,27 @@ fn installed_entrypoint_accepts_install_then_tui_launch_without_auth() {
     assert_eq!(installed_json["development_only"], true);
     assert!(root.join("provenance.json").is_file());
     // Exercise the installed entrypoint as a user does: `asb tui install`
-    // followed by `asb tui launch`, both through the executable command path.
+    // followed by the bare installed `asb tui` command, then restart it and
+    // inspect the same channel state. The installed binary is independent of
+    // the test runner executable, so this catches a broken materialization.
+    let installed_binary = root.join("asb-tui");
+    let bare = Command::new(&installed_binary)
+        .args(["tui"])
+        .env("ASB_TUI_DEV_INSTALL_ROOT", &root)
+        .env("ASB_TUI_CHANNEL_STATE", &state)
+        .output()
+        .expect("run installed bare asb tui");
+    assert_eq!(bare.status.code(), Some(0));
+    let restarted = Command::new(&installed_binary)
+        .args(["tui", "status", "--channel", "dev", "--format", "json"])
+        .env("ASB_TUI_DEV_INSTALL_ROOT", &root)
+        .env("ASB_TUI_CHANNEL_STATE", &state)
+        .env("ASB_TUI_DEV_REPOSITORY", &source)
+        .output()
+        .expect("restart installed asb tui");
+    assert_eq!(restarted.status.code(), Some(0));
+    let restarted_json: serde_json::Value = serde_json::from_slice(&restarted.stdout).unwrap();
+    assert_eq!(restarted_json["code"], "development_installed");
     assert_eq!(run("status").status.code(), Some(0));
     assert_eq!(run("launch").status.code(), Some(0));
     assert_eq!(run("upgrade").status.code(), Some(0));

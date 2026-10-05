@@ -389,6 +389,8 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["wizard_auth_changed", "focus_reset"].as_slice()
         } else if transition.event == "go_back" {
             ["route_restored", "focus_reset"].as_slice()
+        } else if transition.event == "toggle_all_measures" {
+            ["explicit_all_changed", "selection_changed"].as_slice()
         } else if transition.event == "open_help" {
             ["return_route_saved", "route_changed", "focus_reset"].as_slice()
         } else if transition.event == "cancel_wizard" {

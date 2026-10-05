@@ -446,7 +446,6 @@ impl BenchmarkSelection {
         id: &str,
         selected: bool,
     ) -> Result<(), SelectionError> {
-        self.explicit_all = false;
         let measure_ids = self
             .catalog
             .benchmark(id)
@@ -473,6 +472,7 @@ impl BenchmarkSelection {
         {
             return Err(SelectionError::UnavailableMeasure);
         }
+        self.explicit_all = false;
         for measure_id in &measure_ids {
             if selected {
                 self.selected_measures.insert(measure_id.clone());
@@ -488,7 +488,6 @@ impl BenchmarkSelection {
         Ok(())
     }
     pub fn set_measure_selected(&mut self, id: &str, selected: bool) -> Result<(), SelectionError> {
-        self.explicit_all = false;
         if !self.measure_in_active_pool(id) {
             return Err(SelectionError::UnknownMeasure);
         }
@@ -496,6 +495,7 @@ impl BenchmarkSelection {
         if !measure.available() && selected {
             return Err(SelectionError::UnavailableMeasure);
         }
+        self.explicit_all = false;
         if selected {
             self.selected_measures.insert(id.to_owned());
         } else {
@@ -549,7 +549,6 @@ impl BenchmarkSelection {
     }
 
     pub fn set_group_selected(&mut self, id: &str, selected: bool) -> Result<(), SelectionError> {
-        self.explicit_all = false;
         let measure_ids = self
             .catalog
             .pools
@@ -563,6 +562,7 @@ impl BenchmarkSelection {
             .filter(|measure| measure.available() && self.measure_matches(measure.id()))
             .map(|measure| measure.id().to_owned())
             .collect::<Vec<_>>();
+        self.explicit_all = false;
         for measure_id in measure_ids {
             if selected {
                 self.selected_measures.insert(measure_id);
@@ -768,6 +768,7 @@ impl BenchmarkSelection {
             return Err(SelectionError::StaleCatalog);
         }
         let previous = self.selected_measures.clone();
+        let explicit_all = self.explicit_all;
         let valid = catalog
             .all_measure_ids()
             .map(str::to_owned)
@@ -785,6 +786,9 @@ impl BenchmarkSelection {
             .cloned()
             .collect();
         self.selected_benchmarks.clear();
+        if explicit_all {
+            self.set_explicit_all(true);
+        }
         Ok(previous
             .into_iter()
             .filter(|id| !valid.contains(id.as_str()))

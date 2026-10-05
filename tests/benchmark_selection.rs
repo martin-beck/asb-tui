@@ -167,3 +167,32 @@ fn empty_and_unavailable_choices_fail_closed() {
         Err(SelectionError::NoSelection)
     );
 }
+
+#[test]
+fn explicit_all_survives_catalog_refresh_and_rejected_actions_are_atomic() {
+    let mut selection = BenchmarkSelection::new(catalog(4)).unwrap();
+    selection.set_explicit_all(true);
+    assert!(selection.explicit_all());
+    assert_eq!(
+        selection.replace_catalog(catalog(5)).unwrap(),
+        Vec::<String>::new()
+    );
+    assert!(selection.explicit_all());
+    assert_eq!(selection.selected_measure_ids().len(), 2);
+
+    assert_eq!(
+        selection.set_measure_selected("missing", true),
+        Err(SelectionError::UnknownMeasure)
+    );
+    assert!(selection.explicit_all());
+    assert_eq!(
+        selection.set_benchmark_selected("missing", true),
+        Err(SelectionError::UnknownBenchmark)
+    );
+    assert!(selection.explicit_all());
+    assert_eq!(
+        selection.set_group_selected("missing", true),
+        Err(SelectionError::UnknownGroup)
+    );
+    assert!(selection.explicit_all());
+}

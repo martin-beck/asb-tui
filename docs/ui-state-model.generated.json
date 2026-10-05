@@ -21,6 +21,7 @@
     "hover",
     "query",
     "selection",
+    "explicit_all",
     "benchmark_catalog",
     "benchmark_selection",
     "benchmark_catalog_generation",
@@ -1044,6 +1045,15 @@
       "effects": [
         "route_changed",
         "focus_reset"
+      ]
+    },
+    {
+      "event": "toggle_all_measures",
+      "from": "measurement_selection",
+      "to": "measurement_selection",
+      "effects": [
+        "explicit_all_changed",
+        "selection_changed"
       ]
     },
     {
