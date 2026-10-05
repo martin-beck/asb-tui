@@ -329,6 +329,20 @@ fn explicit_workload_selection_is_declared_as_a_formal_state_transition() {
                     })
             })
     );
+    let capabilities = capabilities();
+    let mut state = FormalUiState::new(100, 30).unwrap();
+    state
+        .apply(FormalEvent::OpenMeasurementSelection, Some(&capabilities))
+        .unwrap();
+    assert!(!state.explicit_all());
+    state
+        .apply(FormalEvent::ToggleAllMeasures, Some(&capabilities))
+        .unwrap();
+    assert!(state.explicit_all());
+    state
+        .apply(FormalEvent::ToggleAllMeasures, Some(&capabilities))
+        .unwrap();
+    assert!(!state.explicit_all());
 }
 
 #[test]

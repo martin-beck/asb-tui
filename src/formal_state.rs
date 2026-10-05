@@ -66,6 +66,7 @@ pub enum FormalEvent {
     OpenLanding,
     OpenConfiguration,
     OpenMeasurementSelection,
+    ToggleAllMeasures,
     OpenRunControl,
     OpenRecentRuns,
     OpenReports,
@@ -91,6 +92,7 @@ impl FormalEvent {
             Self::OpenLanding => Some("open_landing"),
             Self::OpenConfiguration => Some("open_configuration"),
             Self::OpenMeasurementSelection => Some("open_measurement_selection"),
+            Self::ToggleAllMeasures => Some("toggle_all_measures"),
             Self::OpenRunControl => Some("open_run_control"),
             Self::OpenRecentRuns => Some("open_recent_runs"),
             Self::OpenReports => Some("open_reports"),
@@ -131,6 +133,7 @@ pub struct FormalUiState {
     columns: u16,
     lines: u16,
     connection: ConnectionState,
+    explicit_all: bool,
 }
 
 impl FormalUiState {
@@ -144,6 +147,7 @@ impl FormalUiState {
             columns,
             lines,
             connection: ConnectionState::Disconnected,
+            explicit_all: false,
         })
     }
 
@@ -223,6 +227,8 @@ impl FormalUiState {
                     &["development_handoff_changed", "focus_reset"]
                 } else if event == FormalEvent::GoBack {
                     &["route_restored", "focus_reset"]
+                } else if event == FormalEvent::ToggleAllMeasures {
+                    &["explicit_all_changed", "selection_changed"]
                 } else if event == FormalEvent::OpenHelp {
                     &["return_route_saved", "route_changed", "focus_reset"]
                 } else if matches!(
@@ -259,6 +265,9 @@ impl FormalUiState {
                 } else {
                     destination
                 };
+                if event == FormalEvent::ToggleAllMeasures {
+                    self.explicit_all = !self.explicit_all;
+                }
                 self.focus = None;
             }
         }
@@ -280,6 +289,11 @@ impl FormalUiState {
     #[must_use]
     pub const fn connection(&self) -> ConnectionState {
         self.connection
+    }
+
+    #[must_use]
+    pub const fn explicit_all(&self) -> bool {
+        self.explicit_all
     }
 }
 
