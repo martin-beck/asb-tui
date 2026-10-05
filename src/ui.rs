@@ -75,6 +75,13 @@ pub struct WorkspaceState {
     /// Generation-bound nested benchmark catalog used by the production
     /// picker; the flat rows are a rendering projection only.
     benchmark_selection: Option<BenchmarkSelection>,
+    /// Raw control revision associated with the benchmark catalog projection.
+    ///
+    /// The renderer-neutral picker requires a non-zero local generation, so a
+    /// provisional control revision zero is normalized in the selection. Keep
+    /// the wire revision separately for stale-catalog checks; otherwise zero
+    /// and the first durable revision one would alias.
+    benchmark_control_revision: Option<crate::control_codec::Revision>,
     pub config_cursor: usize,
     /// Secret-free materialization preflight shown before configuration apply.
     pub preflight: Option<crate::configuration_materialization::PreflightSummary>,
@@ -216,6 +223,7 @@ impl Default for WorkspaceState {
             live: None,
             selection: None,
             benchmark_selection: Some(benchmark_selection),
+            benchmark_control_revision: None,
             layout: ResponsiveLayout::from_dimensions(None, None),
         }
     }
@@ -257,12 +265,11 @@ impl WorkspaceState {
             .model_id
             .clone()
             .ok_or_else(|| "fan-out requires a selected model".to_owned())?;
-        let benchmark_selection = self
-            .benchmark_selection
-            .as_ref()
-            .ok_or_else(|| "fan-out requires a benchmark catalog".to_owned())?;
-        let campaign = benchmark_selection
-            .campaign_handoff(benchmark_selection.catalog().generation())
+        if self.benchmark_selection.is_none() {
+            return Err("fan-out requires a benchmark catalog".to_owned());
+        }
+        let campaign = self
+            .current_benchmark_campaign_handoff()
             .map_err(|error| format!("fan-out workload selection invalid: {error:?}"))?;
         let catalog_digest = live
             .provider_catalog
@@ -773,8 +780,8 @@ impl WorkspaceState {
             .benchmark_selection
             .as_ref()
             .ok_or_else(|| "benchmark catalog unavailable".to_owned())?;
-        let campaign = benchmark_selection
-            .campaign_handoff(benchmark_selection.catalog().generation())
+        let campaign = self
+            .current_benchmark_campaign_handoff()
             .map_err(|error| format!("benchmark selection invalid: {error:?}"))?;
         let input = crate::configuration_materialization::MaterializationInput {
             provider: selection,
@@ -969,12 +976,34 @@ impl WorkspaceState {
     /// a campaign between review and dispatch.
     pub fn benchmark_campaign_handoff(
         &self,
-        expected_generation: crate::control_codec::Revision,
+        expected_control_revision: crate::control_codec::Revision,
     ) -> Result<crate::selection::CampaignSelection, crate::selection::SelectionError> {
-        self.benchmark_selection
+        if let Some(actual) = self.benchmark_control_revision
+            && actual != expected_control_revision
+        {
+            return Err(crate::selection::SelectionError::StaleCatalog);
+        }
+        let selection = self
+            .benchmark_selection
             .as_ref()
-            .ok_or(crate::selection::SelectionError::NoSelection)?
-            .campaign_handoff(expected_generation)
+            .ok_or(crate::selection::SelectionError::NoSelection)?;
+        // BenchmarkSelection carries a non-zero renderer-local generation;
+        // the raw control revision above is the authoritative stale fence.
+        selection.campaign_handoff(selection.catalog().generation())
+    }
+
+    fn current_benchmark_campaign_handoff(
+        &self,
+    ) -> Result<crate::selection::CampaignSelection, crate::selection::SelectionError> {
+        let expected = self
+            .benchmark_control_revision
+            .or_else(|| {
+                self.benchmark_selection
+                    .as_ref()
+                    .map(|selection| selection.catalog().generation())
+            })
+            .unwrap_or(crate::control_codec::Revision(1));
+        self.benchmark_campaign_handoff(expected)
     }
 
     /// Replace presentation data only after it has passed the typed control
@@ -993,6 +1022,7 @@ impl WorkspaceState {
                     .latest_revision
                     .unwrap_or(crate::control_codec::Revision(1)),
             );
+            self.benchmark_control_revision = snapshot.latest_revision;
             self.sync_measure_projection();
         }
         // Populate a first-run wizard from the authenticated control-plane
@@ -1878,8 +1908,19 @@ fn nested_selection_from_catalog(
         })
         .collect::<Option<Vec<_>>>()?;
     let pool = BenchmarkPool::new("authoritative", "Authoritative benchmark pool", groups).ok()?;
+    // A freshly negotiated control stream legitimately has revision zero
+    // until its first durable event. The renderer-neutral selection model
+    // uses a non-zero generation as its local catalog identity, so normalize
+    // only at this UI/model boundary. Control revisions remain unchanged in
+    // the live projection and transport.
+    let catalog_generation = crate::control_codec::Revision(generation.0.max(1));
     let mut next = BenchmarkSelection::new(
-        BenchmarkCatalog::new(generation, catalog.catalog_sha256.clone(), vec![pool]).ok()?,
+        BenchmarkCatalog::new(
+            catalog_generation,
+            catalog.catalog_sha256.clone(),
+            vec![pool],
+        )
+        .ok()?,
     )
     .ok()?;
     if let Some(previous) = previous {
@@ -2873,12 +2914,14 @@ mod tests {
     }
 
     #[test]
-    fn live_catalog_keeps_nested_picker_and_generation_bound_handoff() {
+    fn live_catalog_keeps_nested_picker_when_control_revision_is_zero() {
         let mut state = WorkspaceState::default();
         let snapshot = LiveSnapshot {
             connection: Connection::Negotiated,
             runner_instance_id: Some("runner-nested".into()),
-            latest_revision: Some(Revision(9)),
+            // Initial negotiation can expose control revision zero before
+            // the runner has emitted its first durable event.
+            latest_revision: Some(Revision(0)),
             capabilities: None,
             measurement_catalog: Some(MeasurementCatalog {
                 schema_version: 1,
@@ -2937,14 +2980,88 @@ mod tests {
         assert_eq!(state.measures[0].group, "Quality Reliability");
         state.handle_key(key(KeyCode::Char('g')));
         let handoff = state
-            .benchmark_campaign_handoff(Revision(9))
+            .benchmark_campaign_handoff(Revision(0))
             .expect("live catalog remains nested and handoffable");
         assert_eq!(handoff.catalog_digest, "live-digest");
         assert_eq!(handoff.measure_ids, ["quality.reliability"]);
         assert_eq!(
-            state.benchmark_campaign_handoff(Revision(8)),
+            state.benchmark_campaign_handoff(Revision(1)),
             Err(crate::selection::SelectionError::StaleCatalog)
         );
+    }
+
+    #[test]
+    fn provisional_zero_revision_cannot_alias_first_durable_revision() {
+        let mut state = WorkspaceState::default();
+        let catalog = MeasurementCatalog {
+            schema_version: 1,
+            catalog_sha256: "zero-digest".into(),
+            groups: vec![crate::control_codec::MeasurementGroup {
+                id: crate::control_codec::MeasurementGroupId::QualityReliability,
+                label: "Quality Reliability".into(),
+                description: "quality".into(),
+            }],
+            measurements: vec![crate::control_codec::MeasurementDefinition {
+                id: "quality.reliability".into(),
+                name: "Reliability".into(),
+                description: "reliability score".into(),
+                group: crate::control_codec::MeasurementGroupId::QualityReliability,
+                quantity: crate::control_codec::MeasurementQuantity::Ratio,
+                unit: "ratio".into(),
+                aggregation: crate::control_codec::MeasurementAggregation::Gauge,
+                scope: crate::control_codec::MeasurementScope::Attempt,
+                provenance: crate::control_codec::MeasurementProvenance {
+                    source: crate::control_codec::MeasurementSource::AsbRunnerJournal,
+                    qualification: crate::control_codec::MeasurementQualification::Implemented,
+                },
+                source_identity: crate::control_codec::MeasurementSourceIdentity::ProcfsProcessStat,
+                resolution_ns: 1,
+                overhead: crate::control_codec::MeasurementOverhead {
+                    class: crate::control_codec::MeasurementOverheadClass::Low,
+                    minimum_interval_ns: 1,
+                    requires_privilege: false,
+                },
+                live: crate::control_codec::MeasurementModeSupport::Supported,
+                replay: crate::control_codec::MeasurementModeSupport::Supported,
+                platforms: vec![],
+                evidence_limits: vec![],
+            }],
+        };
+        let snapshot = |revision: Revision, digest: &str| LiveSnapshot {
+            connection: Connection::Negotiated,
+            runner_instance_id: Some("runner-revision-fence".into()),
+            latest_revision: Some(revision),
+            capabilities: None,
+            measurement_catalog: Some(MeasurementCatalog {
+                catalog_sha256: digest.into(),
+                ..catalog.clone()
+            }),
+            benchmark_catalog: None,
+            auth_status: None,
+            auth_unavailable: false,
+            auth_development_only: false,
+            auth_unavailable_reason: None,
+            agent_catalog: None,
+            agent_lifecycle: None,
+            provider_catalog: None,
+            configuration: None,
+            recording_campaign: None,
+            recording_estimate: None,
+            recording_campaign_lifecycle: None,
+            fanout: None,
+            runs: Vec::new(),
+            analysis: None,
+        };
+        state.apply_live_snapshot(snapshot(Revision(0), "zero-digest"));
+        state.screen = Screen::Measures;
+        state.handle_key(key(KeyCode::Char('g')));
+        assert!(state.benchmark_campaign_handoff(Revision(0)).is_ok());
+        state.apply_live_snapshot(snapshot(Revision(1), "one-digest"));
+        assert_eq!(
+            state.benchmark_campaign_handoff(Revision(0)),
+            Err(crate::selection::SelectionError::StaleCatalog)
+        );
+        assert!(state.benchmark_campaign_handoff(Revision(1)).is_ok());
     }
 
     #[test]

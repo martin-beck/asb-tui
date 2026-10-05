@@ -115,6 +115,25 @@ fn stale_live_catalog_publications_are_declared_in_the_formal_model() {
 }
 
 #[test]
+fn provisional_control_revision_is_separate_from_local_picker_generation() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    let fields = model["state_fields"].as_array().unwrap();
+    assert!(
+        fields
+            .iter()
+            .any(|field| field == "benchmark_catalog_generation")
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|field| field == "benchmark_control_revision")
+    );
+    let contract = model["catalog_contract"].as_str().unwrap();
+    assert!(contract.contains("generation-fenced"));
+}
+
+#[test]
 fn auth_unavailability_provenance_is_declared_in_the_formal_model() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
