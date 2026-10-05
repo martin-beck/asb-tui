@@ -166,31 +166,33 @@ fn terminal(required: bool) -> Check {
     )
 }
 
-fn run_with_terminal_requirement(require_terminal: bool) -> Report {
-    let checks = vec![
-        executable(
-            "git",
-            "ASB_TUI_DEV_GIT",
-            "install git and retry development setup",
-        ),
-        executable(
-            "cargo",
-            "ASB_TUI_DEV_CARGO",
-            "install a supported Rust toolchain and retry",
-        ),
-        executable(
-            "setsid",
-            "ASB_TUI_DEV_SETSID",
-            "install util-linux setsid and retry launch",
-        ),
-        executable(
-            "cc",
-            "ASB_TUI_DEV_CC",
-            "install a C linker and retry development build",
-        ),
-        private_root(),
-        terminal(require_terminal),
-    ];
+fn run_with_terminal_requirement(require_terminal: bool, require_build_tools: bool) -> Report {
+    let mut checks = Vec::new();
+    if require_build_tools {
+        checks.extend([
+            executable(
+                "git",
+                "ASB_TUI_DEV_GIT",
+                "install git and retry development setup",
+            ),
+            executable(
+                "cargo",
+                "ASB_TUI_DEV_CARGO",
+                "install a supported Rust toolchain and retry",
+            ),
+            executable(
+                "setsid",
+                "ASB_TUI_DEV_SETSID",
+                "install util-linux setsid and retry launch",
+            ),
+            executable(
+                "cc",
+                "ASB_TUI_DEV_CC",
+                "install a C linker and retry development build",
+            ),
+        ]);
+    }
+    checks.extend([private_root(), terminal(require_terminal)]);
     let ok = checks
         .iter()
         .all(|check| check.status == CheckStatus::Passed);
@@ -209,11 +211,11 @@ fn run_with_terminal_requirement(require_terminal: bool) -> Report {
 }
 
 pub fn run() -> Report {
-    run_with_terminal_requirement(false)
+    run_with_terminal_requirement(false, true)
 }
 
 pub fn run_for_launch() -> Report {
-    run_with_terminal_requirement(true)
+    run_with_terminal_requirement(true, false)
 }
 
 #[cfg(test)]
@@ -336,5 +338,23 @@ mod tests {
             CheckStatus::Passed
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn launch_preflight_does_not_require_build_tools() {
+        let report = run_for_launch();
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|check| { !matches!(check.id, "git" | "cargo" | "setsid" | "cc") })
+        );
+        assert!(report.checks.iter().any(|check| check.id == "pty"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.id == "private_state_root")
+        );
     }
 }

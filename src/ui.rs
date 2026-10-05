@@ -986,13 +986,16 @@ impl WorkspaceState {
             && let Some(selection) = selection_from_catalog(catalog, self.selection.as_ref())
         {
             self.selection = Some(selection);
-            self.benchmark_selection = nested_selection_from_catalog(
+            let generation = snapshot
+                .latest_revision
+                .filter(|revision| revision.0 != 0)
+                .unwrap_or(crate::control_codec::Revision(1));
+            let nested = nested_selection_from_catalog(
                 catalog,
                 self.benchmark_selection.as_ref(),
-                snapshot
-                    .latest_revision
-                    .unwrap_or(crate::control_codec::Revision(1)),
+                generation,
             );
+            self.benchmark_selection = nested;
             self.sync_measure_projection();
         }
         // Populate a first-run wizard from the authenticated control-plane
@@ -1852,7 +1855,7 @@ fn nested_selection_from_catalog(
     let groups = catalog
         .groups
         .iter()
-        .map(|group| {
+        .filter_map(|group| {
             let group_id = measurement_group_id(group.id);
             let measures = catalog
                 .measurements
@@ -1863,28 +1866,62 @@ fn nested_selection_from_catalog(
                         definition.live,
                         crate::control_codec::MeasurementModeSupport::Supported
                     );
-                    BenchmarkMeasure::new(
+                    match BenchmarkMeasure::new(
                         definition.id.clone(),
                         definition.name.clone(),
                         definition.unit.clone(),
                         available,
-                    )
+                    ) {
+                        Ok(measure) => Ok(measure),
+                        Err(error) => Err(error),
+                    }
                 })
                 .collect::<Result<Vec<_>, _>>()
                 .ok()?;
+            // Catalogs may advertise a group whose measures are unavailable
+            // for this backend/platform. It is not a selectable benchmark
+            // group, but it must not invalidate the other authoritative
+            // groups or erase the current workload selection.
+            if measures.is_empty() {
+                return None;
+            }
             let benchmark =
                 BenchmarkDefinition::new(group_id.clone(), group.label.clone(), measures).ok()?;
             BenchmarkGroup::new(group_id, group.label.clone(), vec![benchmark]).ok()
         })
-        .collect::<Option<Vec<_>>>()?;
+        .collect::<Vec<_>>();
+    if groups.is_empty() {
+        return None;
+    }
     let pool = BenchmarkPool::new("authoritative", "Authoritative benchmark pool", groups).ok()?;
-    let mut next = BenchmarkSelection::new(
-        BenchmarkCatalog::new(generation, catalog.catalog_sha256.clone(), vec![pool]).ok()?,
-    )
-    .ok()?;
+    let benchmark_catalog =
+        BenchmarkCatalog::new(generation, catalog.catalog_sha256.clone(), vec![pool]).ok()?;
+    let mut next = BenchmarkSelection::new(benchmark_catalog).ok()?;
+    let mut restored = 0;
     if let Some(previous) = previous {
         for id in previous.selected_measure_ids() {
-            let _ = next.set_measure_selected(id, true);
+            if next.set_measure_selected(id, true).is_ok() {
+                restored += 1;
+            }
+        }
+    }
+    // A backend can publish a different authoritative catalog from the
+    // authored development defaults. Start that first live snapshot with its
+    // available measures selected, rather than leaving an unusable empty
+    // campaign after the old identifiers fail to restore.
+    if restored == 0 {
+        let available = next
+            .catalog()
+            .pools()
+            .iter()
+            .flat_map(|pool| pool.groups())
+            .flat_map(|group| group.benchmarks())
+            .flat_map(|benchmark| benchmark.measures())
+            .filter(|measure| measure.available())
+            .map(|measure| measure.id().to_owned())
+            .collect::<Vec<_>>();
+        for id in available {
+            let _ = next.set_measure_selected(&id, true);
         }
     }
     Some(next)
@@ -2878,16 +2915,26 @@ mod tests {
         let snapshot = LiveSnapshot {
             connection: Connection::Negotiated,
             runner_instance_id: Some("runner-nested".into()),
-            latest_revision: Some(Revision(9)),
+            // A bootstrap publication may carry the protocol's zero
+            // revision until the backend has assigned a campaign revision.
+            // The UI must retain a bounded initial generation for selection.
+            latest_revision: Some(Revision(0)),
             capabilities: None,
             measurement_catalog: Some(MeasurementCatalog {
                 schema_version: 1,
                 catalog_sha256: "live-digest".into(),
-                groups: vec![crate::control_codec::MeasurementGroup {
-                    id: crate::control_codec::MeasurementGroupId::QualityReliability,
-                    label: "Quality Reliability".into(),
-                    description: "quality".into(),
-                }],
+                groups: vec![
+                    crate::control_codec::MeasurementGroup {
+                        id: crate::control_codec::MeasurementGroupId::SystemResources,
+                        label: "System Resources".into(),
+                        description: "not available in this fixture".into(),
+                    },
+                    crate::control_codec::MeasurementGroup {
+                        id: crate::control_codec::MeasurementGroupId::QualityReliability,
+                        label: "Quality Reliability".into(),
+                        description: "quality".into(),
+                    },
+                ],
                 measurements: vec![crate::control_codec::MeasurementDefinition {
                     id: "quality.reliability".into(),
                     name: "Reliability".into(),
@@ -2935,9 +2982,8 @@ mod tests {
         state.screen = Screen::Measures;
         assert_eq!(state.measures[0].group_id, "quality_reliability");
         assert_eq!(state.measures[0].group, "Quality Reliability");
-        state.handle_key(key(KeyCode::Char('g')));
         let handoff = state
-            .benchmark_campaign_handoff(Revision(9))
+            .benchmark_campaign_handoff(Revision(1))
             .expect("live catalog remains nested and handoffable");
         assert_eq!(handoff.catalog_digest, "live-digest");
         assert_eq!(handoff.measure_ids, ["quality.reliability"]);
