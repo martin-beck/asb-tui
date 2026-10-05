@@ -55,10 +55,19 @@ fn local_source_fixture() -> (PathBuf, String) {
 }
 
 fn trusted_tool(name: &str) -> String {
-    String::from_utf8(Command::new("which").arg(name).output().unwrap().stdout)
-        .unwrap()
-        .trim()
-        .to_owned()
+    let output = if name == "cargo" {
+        Command::new("rustup")
+            .args(["which", "cargo"])
+            .output()
+            .expect("rustup must resolve the test cargo")
+    } else {
+        Command::new("which")
+            .arg(name)
+            .output()
+            .expect("tool must be discoverable")
+    };
+    assert!(output.status.success(), "cannot resolve test tool {name}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[test]
