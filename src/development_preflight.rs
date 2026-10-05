@@ -67,10 +67,15 @@ fn trusted(path: &Path) -> bool {
         && target.mode() & 0o022 == 0
 }
 
-fn executable(name: &'static str, variable: &'static str, remediation: &'static str) -> Check {
-    let found = env::var_os(variable).is_some_and(|path| trusted(Path::new(&path)))
-        || env::var_os(variable).is_none()
-            && env::var_os("PATH").is_some_and(|path| {
+fn executable_with(
+    name: &'static str,
+    explicit: Option<&std::ffi::OsStr>,
+    search_path: Option<&std::ffi::OsStr>,
+    remediation: &'static str,
+) -> Check {
+    let found = explicit.is_some_and(|path| trusted(Path::new(path)))
+        || explicit.is_none()
+            && search_path.is_some_and(|path| {
                 path.to_string_lossy()
                     .split(':')
                     .filter(|p| !p.is_empty())
@@ -90,8 +95,17 @@ fn executable(name: &'static str, variable: &'static str, remediation: &'static 
     }
 }
 
-fn private_root() -> Check {
-    let status = match env::var_os("ASB_TUI_DEV_INSTALL_ROOT") {
+fn executable(name: &'static str, variable: &'static str, remediation: &'static str) -> Check {
+    executable_with(
+        name,
+        env::var_os(variable).as_deref(),
+        env::var_os("PATH").as_deref(),
+        remediation,
+    )
+}
+
+fn private_root_with(value: Option<&std::ffi::OsStr>) -> Check {
+    let status = match value {
         None => CheckStatus::Passed,
         Some(value) if value.len() > MAX_PATH => CheckStatus::Failed,
         Some(value) => match fs::symlink_metadata(value) {
@@ -115,11 +129,18 @@ fn private_root() -> Check {
     }
 }
 
-fn terminal(required: bool) -> Check {
-    let configured = env::var_os("ASB_TUI_DEVELOPMENT_TERMINAL_PATH");
+fn private_root() -> Check {
+    private_root_with(env::var_os("ASB_TUI_DEV_INSTALL_ROOT").as_deref())
+}
+
+fn terminal_with(
+    required: bool,
+    configured: Option<&std::ffi::OsStr>,
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+) -> Check {
     let configured_none = configured.is_none();
-    let valid = configured_none
-        && (std::io::stdin().is_terminal() || std::io::stdout().is_terminal())
+    let valid = configured_none && (stdin_is_terminal || stdout_is_terminal)
         || configured.is_some_and(|path| {
             let path = Path::new(&path);
             path.to_string_lossy().starts_with("/dev/pts/")
@@ -134,6 +155,15 @@ fn terminal(required: bool) -> Check {
         },
         remediation: "run launch from a terminal-capable session and retry",
     }
+}
+
+fn terminal(required: bool) -> Check {
+    terminal_with(
+        required,
+        env::var_os("ASB_TUI_DEVELOPMENT_TERMINAL_PATH").as_deref(),
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    )
 }
 
 fn run_with_terminal_requirement(require_terminal: bool) -> Report {
@@ -189,6 +219,7 @@ pub fn run_for_launch() -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[test]
     fn report_is_bounded_and_secret_free() {
@@ -223,5 +254,87 @@ mod tests {
         );
         assert_eq!(check.status, CheckStatus::Failed);
         assert!(check.remediation.contains("retry"));
+    }
+
+    #[test]
+    fn trusted_and_executable_cover_missing_untrusted_and_override_paths() {
+        let root = env::temp_dir().join(format!("asb-tui-preflight-trust-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let regular = root.join("tool");
+        fs::write(&regular, b"tool").unwrap();
+        fs::set_permissions(&regular, fs::Permissions::from_mode(0o755)).unwrap();
+        let link = root.join("tool-link");
+        symlink(&regular, &link).unwrap();
+        assert!(trusted(&regular));
+        assert!(trusted(&link));
+        assert!(!trusted(&root.join("missing")));
+        assert!(!trusted(&root));
+
+        assert_eq!(
+            executable_with("tool", Some(regular.as_os_str()), None, "retry").status,
+            CheckStatus::Passed
+        );
+        let invalid = root.join("not-a-tool");
+        assert_eq!(
+            executable_with("tool", Some(invalid.as_os_str()), None, "retry").status,
+            CheckStatus::Failed
+        );
+        assert_eq!(
+            executable_with("sh", None, Some(std::ffi::OsStr::new("/usr/bin")), "retry").status,
+            CheckStatus::Passed
+        );
+        assert_eq!(
+            executable_with("sh", None, None, "retry").status,
+            CheckStatus::Failed
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn private_root_and_terminal_cover_configured_failure_and_recovery() {
+        let root = env::temp_dir().join(format!("asb-tui-preflight-root-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let missing = root.join("missing");
+        assert_eq!(
+            private_root_with(Some(missing.as_os_str())).status,
+            CheckStatus::Passed
+        );
+        let oversized = "x".repeat(MAX_PATH + 1);
+        assert_eq!(
+            private_root_with(Some(std::ffi::OsStr::new(&oversized))).status,
+            CheckStatus::Failed
+        );
+
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            private_root_with(Some(root.as_os_str())).status,
+            CheckStatus::Failed
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            private_root_with(Some(root.as_os_str())).status,
+            CheckStatus::Passed
+        );
+
+        let invalid_terminal = std::ffi::OsStr::new("/dev/pts/asb-tui-invalid");
+        assert_eq!(
+            terminal_with(false, Some(invalid_terminal), false, false).status,
+            CheckStatus::Passed
+        );
+        assert_eq!(
+            terminal_with(true, Some(invalid_terminal), false, false).status,
+            CheckStatus::Failed
+        );
+        assert_eq!(
+            terminal_with(false, None, false, false).status,
+            CheckStatus::Passed
+        );
+        assert_eq!(
+            terminal_with(true, None, true, false).status,
+            CheckStatus::Passed
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }
