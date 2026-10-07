@@ -117,6 +117,7 @@ jobs:
           python3 tools/validate-publication.py
           python3 tools/validate-ui-help.py
           python3 tools/test-ui-help.py
+          python3 tools/test-operator-quickstart.py
           python3 tools/test-release-verifier.py
           python3 tools/test-dev-bundle.py
           tools/test-promoted-self-test.sh
