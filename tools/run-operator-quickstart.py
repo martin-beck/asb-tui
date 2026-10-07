@@ -4,6 +4,7 @@
 """Qualify the operator journey through the public ASB command boundary."""
 from __future__ import annotations
 import argparse
+import ctypes
 import errno
 import fcntl
 import hashlib
@@ -24,6 +25,10 @@ SECRET_MARKERS = ("API_KEY", "APIKEY", "ACCESS_TOKEN", "AUTH_TOKEN", "CREDENTIAL
 PTY_ROWS = 24
 PTY_COLUMNS = 80
 MAX_COMMAND_OUTPUT = 2 * 1024 * 1024
+PTY_READINESS_TIMEOUT = 10.0
+PTY_EXIT_TIMEOUT = 10.0
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
 
 def safe_environment() -> dict[str, str]:
     environment = {k: v for k, v in os.environ.items() if not any(m in k.upper() for m in SECRET_MARKERS)}
@@ -35,26 +40,80 @@ def _wait_nohang(pid: int) -> int | None:
     return None if waited == 0 else os.waitstatus_to_exitcode(status)
 
 
-def _terminate_session(pid: int) -> None:
-    if _wait_nohang(pid) is not None:
+def _child_subreaper(enable: bool) -> bool:
+    """Set Linux child-subreaper state and return its previous value."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    if libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(previous), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if bool(previous.value) != enable:
+        if libc.prctl(PR_SET_CHILD_SUBREAPER, int(enable), 0, 0, 0) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+    return bool(previous.value)
+
+
+def _process_group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _reap_process_group(pgid: int) -> None:
+    while True:
+        try:
+            waited, _ = os.waitpid(-pgid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if waited == 0:
+            return
+
+
+def _wait_for_process_group_exit(pgid: int, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        _reap_process_group(pgid)
+        if not _process_group_alive(pgid):
+            _reap_process_group(pgid)
+            return True
+        time.sleep(0.01)
+    _reap_process_group(pgid)
+    return not _process_group_alive(pgid)
+
+
+def _terminate_session(pgid: int) -> None:
+    _reap_process_group(pgid)
+    if not _process_group_alive(pgid):
         return
     try:
-        os.killpg(pid, signal.SIGTERM)
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         pass
-    deadline = time.monotonic() + 0.5
-    while time.monotonic() < deadline:
-        if _wait_nohang(pid) is not None:
-            return
-        time.sleep(0.01)
+    if _wait_for_process_group_exit(pgid, 0.5):
+        return
     try:
-        os.killpg(pid, signal.SIGKILL)
+        os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    if not _wait_for_process_group_exit(pgid, 1.0):
+        raise AssertionError("fixture process group survived SIGKILL")
+
+
+def _pty_is_interactive_ready(master: int, session_id: int) -> bool:
+    """Prove input will be delivered to a foreground raw-mode consumer."""
     try:
-        os.waitpid(pid, 0)
-    except ChildProcessError:
-        pass
+        foreground_group = os.tcgetpgrp(master)
+        if foreground_group <= 0 or os.getsid(foreground_group) != session_id:
+            return False
+        local_flags = termios.tcgetattr(master)[3]
+    except (OSError, ProcessLookupError):
+        return False
+    return not (local_flags & termios.ICANON) and not (local_flags & termios.ECHO)
 
 
 def _spawn_controlling_pty(
@@ -109,18 +168,32 @@ def run_asb(
     interactive_quit: bool = False,
     timeout_seconds: float = 60.0,
     output_limit: int = MAX_COMMAND_OUTPUT,
+    readiness_timeout_seconds: float = PTY_READINESS_TIMEOUT,
+    exit_timeout_seconds: float = PTY_EXIT_TIMEOUT,
 ) -> tuple[int, str]:
     command = [str(asb), *arguments]
-    pid, master = _spawn_controlling_pty(command, environment)
+    previous_subreaper = _child_subreaper(True)
+    try:
+        pid, master = _spawn_controlling_pty(command, environment)
+    except BaseException:
+        _child_subreaper(previous_subreaper)
+        raise
     chunks = bytearray()
     selector = selectors.DefaultSelector()
     selector.register(master, selectors.EVENT_READ)
     deadline = time.monotonic() + timeout_seconds
+    readiness_deadline = min(deadline, time.monotonic() + readiness_timeout_seconds)
+    exit_deadline: float | None = None
     result_code: int | None = None
     quit_sent = False
     try:
         while result_code is None:
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if interactive_quit and not quit_sent and now >= readiness_deadline:
+                raise AssertionError(f"ASB command did not become interactive-ready: {' '.join(command)}")
+            if exit_deadline is not None and now >= exit_deadline:
+                raise AssertionError(f"ASB command did not exit after quit: {' '.join(command)}")
+            if now >= deadline:
                 raise AssertionError(f"ASB command timed out: {' '.join(command)}")
             for _, _ in selector.select(timeout=0.05):
                 try:
@@ -135,12 +208,14 @@ def run_asb(
                     chunks.extend(chunk)
                     if len(chunks) > output_limit:
                         raise AssertionError(f"ASB command exceeded output limit: {' '.join(command)}")
-            if interactive_quit and chunks and not quit_sent:
+            if interactive_quit and not quit_sent and _pty_is_interactive_ready(master, pid):
                 try:
-                    os.write(master, b"q")
+                    written = os.write(master, b"q")
                 except BlockingIOError:
                     continue
-                quit_sent = True
+                if written == 1:
+                    quit_sent = True
+                    exit_deadline = min(deadline, time.monotonic() + exit_timeout_seconds)
             result_code = _wait_nohang(pid)
         while True:
             try:
@@ -158,9 +233,11 @@ def run_asb(
                 raise AssertionError(f"ASB command exceeded output limit: {' '.join(command)}")
     finally:
         selector.close()
-        if result_code is None:
+        try:
             _terminate_session(pid)
-        os.close(master)
+        finally:
+            os.close(master)
+            _child_subreaper(previous_subreaper)
     output = chunks.decode("utf-8", "replace").strip()
     if not output:
         raise AssertionError(f"ASB command emitted no output: {' '.join(command)}")
