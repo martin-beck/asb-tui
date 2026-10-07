@@ -20,6 +20,7 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 SECRET_MARKERS = ("API_KEY", "APIKEY", "ACCESS_TOKEN", "AUTH_TOKEN", "CREDENTIAL", "PASSWORD", "PRIVATE_KEY", "SECRET", "TOKEN")
 PTY_ROWS = 24
@@ -35,73 +36,167 @@ def safe_environment() -> dict[str, str]:
     environment.update({"ASB_TUI_NETWORK_POLICY": "deny", "HTTP_PROXY": "http://127.0.0.1:1", "HTTPS_PROXY": "http://127.0.0.1:1", "ALL_PROXY": "http://127.0.0.1:1", "NO_PROXY": "*"})
     return environment
 
-def _wait_nohang(pid: int) -> int | None:
-    waited, status = os.waitpid(pid, os.WNOHANG)
-    return None if waited == 0 else os.waitstatus_to_exitcode(status)
-
-
-def _child_subreaper(enable: bool) -> bool:
-    """Set Linux child-subreaper state and return its previous value."""
+def _get_child_subreaper() -> bool:
     libc = ctypes.CDLL(None, use_errno=True)
     previous = ctypes.c_int()
     if libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(previous), 0, 0, 0) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
-    if bool(previous.value) != enable:
-        if libc.prctl(PR_SET_CHILD_SUBREAPER, int(enable), 0, 0, 0) != 0:
-            error = ctypes.get_errno()
-            raise OSError(error, os.strerror(error))
     return bool(previous.value)
 
 
-def _process_group_alive(pgid: int) -> bool:
+def _child_subreaper(enable: bool) -> bool:
+    """Set Linux child-subreaper state and return its previous value."""
+    previous = _get_child_subreaper()
+    if previous != enable:
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(PR_SET_CHILD_SUBREAPER, int(enable), 0, 0, 0) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+    return previous
+
+
+class _ProcessIdentity(NamedTuple):
+    pid: int
+    session_id: int
+    start_time: int
+    pidfd: int
+
+
+def _read_process_identity(pid: int) -> tuple[int, int]:
+    """Return (session, start time) from one procfs identity snapshot."""
+    value = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    fields = value[value.rfind(")") + 2 :].split()
+    return int(fields[3]), int(fields[19])
+
+
+def _open_process_identity(pid: int, expected_session: int) -> _ProcessIdentity | None:
+    """Pin a matching process identity before it can be signalled."""
+    pidfd: int | None = None
     try:
-        os.killpg(pgid, 0)
+        session_id, start_time = _read_process_identity(pid)
+        if session_id != expected_session:
+            return None
+        pidfd = os.pidfd_open(pid)
+        confirmed_session, confirmed_start = _read_process_identity(pid)
+        if (confirmed_session, confirmed_start) != (session_id, start_time):
+            os.close(pidfd)
+            return None
+        return _ProcessIdentity(pid, session_id, start_time, pidfd)
+    except (FileNotFoundError, ProcessLookupError):
+        if pidfd is not None:
+            os.close(pidfd)
+        return None
+
+
+def _identity_alive(identity: _ProcessIdentity) -> bool:
+    try:
+        signal.pidfd_send_signal(identity.pidfd, 0)
         return True
     except ProcessLookupError:
         return False
-    except PermissionError:
-        return True
 
 
-def _reap_process_group(pgid: int) -> None:
-    while True:
-        try:
-            waited, _ = os.waitpid(-pgid, os.WNOHANG)
-        except ChildProcessError:
-            return
-        if waited == 0:
-            return
+def _signal_identity(identity: _ProcessIdentity, signum: int) -> None:
+    try:
+        signal.pidfd_send_signal(identity.pidfd, signum)
+    except ProcessLookupError:
+        pass
 
 
-def _wait_for_process_group_exit(pgid: int, timeout_seconds: float) -> bool:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        _reap_process_group(pgid)
-        if not _process_group_alive(pgid):
-            _reap_process_group(pgid)
+def _reap_identity(identity: _ProcessIdentity) -> None:
+    try:
+        os.waitpid(identity.pid, os.WNOHANG)
+    except ChildProcessError:
+        pass
+
+
+def _discover_session_members(
+    session_id: int, tracked: dict[int, _ProcessIdentity]
+) -> None:
+    """Discover only members of the spawn-created authenticated session."""
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        pid = int(entry.name)
+        if pid in tracked:
+            continue
+        identity = _open_process_identity(pid, session_id)
+        if identity is not None:
+            tracked[pid] = identity
+
+
+def _session_alive(
+    session_id: int, tracked: dict[int, _ProcessIdentity]
+) -> bool:
+    for observation in range(2):
+        _discover_session_members(session_id, tracked)
+        for identity in tracked.values():
+            _reap_identity(identity)
+        if any(_identity_alive(identity) for identity in tracked.values()):
             return True
-        time.sleep(0.01)
-    _reap_process_group(pgid)
-    return not _process_group_alive(pgid)
+        if observation == 0:
+            # A just-terminated parent can expose an adopted child after the
+            # procfs directory sweep that observed the parent.  Require a
+            # second quiescent observation before declaring the session gone.
+            time.sleep(0.01)
+    return False
 
 
-def _terminate_session(pgid: int) -> None:
-    _reap_process_group(pgid)
-    if not _process_group_alive(pgid):
-        return
+def _terminate_session(leader: _ProcessIdentity) -> None:
+    """Terminate and reap every process in the authenticated spawned session.
+
+    A pidfd pins each discovered process identity.  Signals are never sent to a
+    bare numeric PID or PGID, so concurrent PID/PGID reuse cannot redirect
+    teardown at an unrelated process.
+    """
+    tracked = {leader.pid: leader}
     try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    if _wait_for_process_group_exit(pgid, 0.5):
-        return
+        _discover_session_members(leader.session_id, tracked)
+        for identity in tracked.values():
+            _signal_identity(identity, signal.SIGTERM)
+        term_deadline = time.monotonic() + 0.5
+        while time.monotonic() < term_deadline:
+            known = set(tracked)
+            if not _session_alive(leader.session_id, tracked):
+                return
+            for pid in set(tracked) - known:
+                _signal_identity(tracked[pid], signal.SIGTERM)
+            time.sleep(0.01)
+
+        kill_deadline = time.monotonic() + 1.0
+        while time.monotonic() < kill_deadline:
+            known = set(tracked)
+            _discover_session_members(leader.session_id, tracked)
+            for pid, identity in tracked.items():
+                if pid not in known or _identity_alive(identity):
+                    _signal_identity(identity, signal.SIGKILL)
+            if not _session_alive(leader.session_id, tracked):
+                return
+            time.sleep(0.01)
+        if _session_alive(leader.session_id, tracked):
+            raise AssertionError("authenticated fixture session survived SIGKILL")
+    finally:
+        for identity in tracked.values():
+            _reap_identity(identity)
+            os.close(identity.pidfd)
+
+
+def _wait_nohang(pid: int) -> int | None:
     try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    if not _wait_for_process_group_exit(pgid, 1.0):
-        raise AssertionError("fixture process group survived SIGKILL")
+        waited, status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return None
+    return None if waited == 0 else os.waitstatus_to_exitcode(status)
+
+
+def _close_fd(fd: int | None) -> None:
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError as error:
+            if error.errno != errno.EBADF:
+                raise
 
 
 def _pty_is_interactive_ready(master: int, session_id: int) -> bool:
@@ -118,7 +213,7 @@ def _pty_is_interactive_ready(master: int, session_id: int) -> bool:
 
 def _spawn_controlling_pty(
     command: list[str], environment: dict[str, str]
-) -> tuple[int, int]:
+) -> tuple[_ProcessIdentity, int]:
     master, slave = pty.openpty()
     slave_name = os.ttyname(slave)
     requested = struct.pack("HHHH", PTY_ROWS, PTY_COLUMNS, 0, 0)
@@ -144,19 +239,26 @@ def _spawn_controlling_pty(
         raise
     finally:
         os.close(slave)
+    leader: _ProcessIdentity | None = None
     try:
+        leader = _open_process_identity(pid, pid)
+        if leader is None:
+            raise AssertionError("could not authenticate PTY child session identity")
         if os.tcgetpgrp(master) != pid:
             raise AssertionError("PTY child is not its controlling foreground group")
         actual = fcntl.ioctl(master, termios.TIOCGWINSZ, b"\0" * len(requested))
         rows, columns, _, _ = struct.unpack("HHHH", actual)
         if rows <= 0 or columns <= 0:
             raise AssertionError("PTY child received a zero-size terminal")
+        os.set_blocking(master, False)
     except BaseException:
-        _terminate_session(pid)
+        if leader is None:
+            leader = _open_process_identity(pid, pid)
+        if leader is not None:
+            _terminate_session(leader)
         os.close(master)
         raise
-    os.set_blocking(master, False)
-    return pid, master
+    return leader, master
 
 
 def run_asb(
@@ -173,20 +275,19 @@ def run_asb(
 ) -> tuple[int, str]:
     command = [str(asb), *arguments]
     previous_subreaper = _child_subreaper(True)
-    try:
-        pid, master = _spawn_controlling_pty(command, environment)
-    except BaseException:
-        _child_subreaper(previous_subreaper)
-        raise
+    leader: _ProcessIdentity | None = None
+    master: int | None = None
+    selector: selectors.BaseSelector | None = None
     chunks = bytearray()
-    selector = selectors.DefaultSelector()
-    selector.register(master, selectors.EVENT_READ)
-    deadline = time.monotonic() + timeout_seconds
-    readiness_deadline = min(deadline, time.monotonic() + readiness_timeout_seconds)
-    exit_deadline: float | None = None
     result_code: int | None = None
-    quit_sent = False
     try:
+        leader, master = _spawn_controlling_pty(command, environment)
+        selector = selectors.DefaultSelector()
+        selector.register(master, selectors.EVENT_READ)
+        deadline = time.monotonic() + timeout_seconds
+        readiness_deadline = min(deadline, time.monotonic() + readiness_timeout_seconds)
+        exit_deadline: float | None = None
+        quit_sent = False
         while result_code is None:
             now = time.monotonic()
             if interactive_quit and not quit_sent and now >= readiness_deadline:
@@ -208,7 +309,7 @@ def run_asb(
                     chunks.extend(chunk)
                     if len(chunks) > output_limit:
                         raise AssertionError(f"ASB command exceeded output limit: {' '.join(command)}")
-            if interactive_quit and not quit_sent and _pty_is_interactive_ready(master, pid):
+            if interactive_quit and not quit_sent and _pty_is_interactive_ready(master, leader.session_id):
                 try:
                     written = os.write(master, b"q")
                 except BlockingIOError:
@@ -216,7 +317,7 @@ def run_asb(
                 if written == 1:
                     quit_sent = True
                     exit_deadline = min(deadline, time.monotonic() + exit_timeout_seconds)
-            result_code = _wait_nohang(pid)
+            result_code = _wait_nohang(leader.pid)
         while True:
             try:
                 chunk = os.read(master, min(65536, output_limit + 1 - len(chunks)))
@@ -232,12 +333,18 @@ def run_asb(
             if len(chunks) > output_limit:
                 raise AssertionError(f"ASB command exceeded output limit: {' '.join(command)}")
     finally:
-        selector.close()
         try:
-            _terminate_session(pid)
+            if selector is not None:
+                selector.close()
         finally:
-            os.close(master)
-            _child_subreaper(previous_subreaper)
+            try:
+                if leader is not None:
+                    _terminate_session(leader)
+            finally:
+                try:
+                    _close_fd(master)
+                finally:
+                    _child_subreaper(previous_subreaper)
     output = chunks.decode("utf-8", "replace").strip()
     if not output:
         raise AssertionError(f"ASB command emitted no output: {' '.join(command)}")

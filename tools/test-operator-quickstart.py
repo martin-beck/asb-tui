@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 RUNNER = Path(__file__).with_name("run-operator-quickstart.py")
 SOURCE = RUNNER.read_text(encoding="utf-8")
@@ -181,6 +182,118 @@ while True:
                     except ProcessLookupError:
                         pass
 
+    def test_timeout_kills_term_resistant_descendant_in_separate_group(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "descendant-pid"
+            child = """
+import os, signal, time
+os.setpgid(0, 0)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+open(os.environ["DESCENDANT_PID_FILE"], "w").write(str(os.getpid()))
+while True:
+    time.sleep(1)
+"""
+            leader = (
+                "import os, subprocess, time; "
+                f"os.environ[\"DESCENDANT_PID_FILE\"] = {str(marker)!r}; "
+                f"subprocess.Popen([{sys.executable!r}, \"-c\", {child!r}]); "
+                "time.sleep(30)"
+            )
+            descendant_pid = None
+            try:
+                with self.assertRaisesRegex(AssertionError, "timed out"):
+                    MODULE.run_asb(
+                        Path(sys.executable),
+                        ["-c", leader],
+                        os.environ.copy(),
+                        json_output=False,
+                        timeout_seconds=0.2,
+                    )
+                descendant_pid = int(marker.read_text(encoding="utf-8"))
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(descendant_pid, 0)
+            finally:
+                if descendant_pid is not None:
+                    try:
+                        os.kill(descendant_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_selector_construction_failure_restores_every_resource(self):
+        self._assert_selector_failure_is_clean("construct")
+
+    def test_selector_registration_failure_restores_every_resource(self):
+        self._assert_selector_failure_is_clean("register")
+
+    def _assert_selector_failure_is_clean(self, failure: str):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "pid"
+            fixture = (
+                "import os, pathlib, time; "
+                f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); "
+                "time.sleep(30)"
+            )
+            selector_fd = None
+            spawned_fd = None
+            real_spawn = MODULE._spawn_controlling_pty
+
+            def tracked_spawn(*args, **kwargs):
+                nonlocal spawned_fd
+                leader, spawned_fd = real_spawn(*args, **kwargs)
+                return leader, spawned_fd
+
+            class FailingSelector:
+                def __init__(self):
+                    if failure == "construct":
+                        deadline = time.monotonic() + 2
+                        while not marker.exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        raise RuntimeError("injected selector construction failure")
+
+                def register(self, fd, _events):
+                    nonlocal selector_fd
+                    selector_fd = fd
+                    deadline = time.monotonic() + 2
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    raise RuntimeError("injected selector registration failure")
+
+                def close(self):
+                    pass
+
+            original_subreaper = MODULE._get_child_subreaper()
+            try:
+                for initial_subreaper in (False, True):
+                    selector_fd = None
+                    spawned_fd = None
+                    MODULE._child_subreaper(initial_subreaper)
+                    with mock.patch.object(MODULE, "_spawn_controlling_pty", tracked_spawn), mock.patch.object(
+                        MODULE.selectors, "DefaultSelector", FailingSelector
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, "injected selector"):
+                            MODULE.run_asb(
+                                Path(sys.executable),
+                                ["-c", fixture],
+                                os.environ.copy(),
+                                json_output=False,
+                            )
+                    self.assertEqual(
+                        MODULE._get_child_subreaper(), initial_subreaper
+                    )
+                    self.assertTrue(marker.exists(), "child did not start before injection")
+                    pid = int(marker.read_text(encoding="utf-8"))
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+                    marker.unlink()
+                    self.assertIsNotNone(spawned_fd)
+                    with self.assertRaises(OSError):
+                        os.fstat(spawned_fd)
+                    if failure == "register":
+                        self.assertEqual(selector_fd, spawned_fd)
+            finally:
+                MODULE._child_subreaper(original_subreaper)
+
     def test_output_limit_and_missing_json_fail_closed(self):
         with self.assertRaisesRegex(AssertionError, "output limit"):
             MODULE.run_asb(
@@ -212,6 +325,8 @@ while True:
 
     def test_runner_avoids_thread_unsafe_preexec(self):
         self.assertNotIn("preexec_fn", SOURCE)
+        self.assertNotIn("killpg", SOURCE)
+        self.assertIn("pidfd_send_signal", SOURCE)
         self.assertIn("setsid=True", SOURCE)
         self.assertIn("POSIX_SPAWN_OPEN", SOURCE)
 
