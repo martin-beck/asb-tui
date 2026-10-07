@@ -46,6 +46,21 @@ def branch(checkout: Path, requested: str | None) -> str:
         ) from error
 
 
+def require_exact_ref(checkout: Path, reference: str, head: str) -> None:
+    """Reject a materializer ref that cannot produce the tested checkout."""
+    try:
+        resolved = git(checkout, reference)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"AR-1622 materializer ref does not exist: {reference}"
+        ) from error
+    if resolved != head:
+        raise SystemExit(
+            "AR-1622 --tui-ref must resolve to the tested TUI checkout HEAD "
+            f"({head}); {reference} resolves to {resolved}"
+        )
+
+
 def safe_environment() -> dict[str, str]:
     return {
         key: value
@@ -86,6 +101,7 @@ def main() -> int:
     tui_head = git(tui_checkout)
     asb_head = git(asb_checkout)
     tui_ref = branch(tui_checkout, args.tui_ref)
+    require_exact_ref(tui_checkout, tui_ref, tui_head)
     environment = safe_environment()
     environment.update(
         {

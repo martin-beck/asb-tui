@@ -20,6 +20,8 @@ class CurrentMainQuickstartTests(unittest.TestCase):
             '"tui_ref": tui_ref',
             "quickstart receipt is not bound to the requested ASB head",
             "quickstart receipt is not bound to the requested TUI head",
+            "require_exact_ref(tui_checkout, tui_ref, tui_head)",
+            "--tui-ref must resolve to the tested TUI checkout HEAD",
         ):
             self.assertIn(value, SOURCE)
 
