@@ -1,0 +1,45 @@
+AR: AR-1596
+Qualification: exact-head ASB/asb-tui fault and recovery matrix
+
+ASB exact-main commit: f535e3cb327b99b35bae2ddae9f0086b3c211303
+ASB exact-main tree: f57b308d2849d63252e5d65e1cbdb6463b5be783
+TUI exact-main commit: 8474c4c9d0a2ac7c4523f477065716d4968d8b2a
+TUI exact-main tree: 683c5e047c2dfd82d3ceabd24f04393429c5751b
+Fault-matrix manifest SHA-256: cb976336f79c9f73fbafa919419a9834e476b189680a73e93ad474afc22b7091
+
+Isolation backend: bubblewrap-network, selected explicitly with:
+python3 tools/fault-matrix/run.py --manifest tools/fault-matrix/manifest-v1.json \
+  --binary target/debug/asb --backend bubblewrap-network --json
+Preflight: available=true; loopback=true; external_denied=true; classification=ready.
+The selected backend uses a private network namespace. Host-network fallback is forbidden.
+
+Default selector limitation at the recorded ASB exact-main commit:
+- The same invocation with --backend auto returns the typed runner_unavailable outcome on this
+  host. Its systemd-private-network preflight cannot access the command private root and aborts
+  selection before the available bubblewrap-network backend is reached.
+- This qualification therefore covers the explicit bubblewrap-network selection only. It does
+  not claim that automatic backend selection works on this host.
+- The auto-selector failure remained fail closed: no host-network fallback or fail-open execution
+  occurred.
+
+ASB matrix evidence:
+- The exact-main ASB binary built with the locked workspace.
+- The focused fault-matrix suite passed 13/13.
+- All five manifest cases passed: setup-missing-auth returned the explicit
+  development-only warning; record-invalid-input, replay-invalid-cassette,
+  benchmark-invalid-plan, and recovery-doctor returned their expected typed outcomes.
+- Every explicitly selected bubblewrap-network case reported cleanup_ok=true. Output and
+  workspaces remained bounded.
+
+TUI recovery evidence:
+- cargo test --locked passed at the exact TUI head with zero failed tests.
+- Stale generation and unsupported provider/model selections fail closed before dispatch.
+- Missing development credentials remain an explicit non-blocking warning.
+- Missing, partial, malformed, and mismatched cassettes have typed no-fallback outcomes.
+- Timeout, cancellation, disconnect/crash, retry, and cleanup paths are bounded and preserve
+  the last authoritative state or expose one explicit recovery action.
+- The record, seal, offline replay, and comparison route remains renderer-neutral and
+  requires complete selected coverage.
+
+This receipt contains no credentials, raw host diagnostics, or private filesystem paths.
+It qualifies development fault/recovery behavior only and does not authorize production use.
