@@ -46,8 +46,8 @@ fn main() -> ExitCode {
     if arguments == ["run", "--broker"] {
         return launch_broker_entry(false);
     }
-    if arguments == ["run", "--broker", "--development"] {
-        return launch_development_broker_entry();
+    if let Some(route) = development_broker_route(&arguments) {
+        return launch_development_broker_entry(route);
     }
     if arguments.len() == 3 && arguments[0] == "run" && arguments[1] == "--socket" {
         return launch_socket_entry(&arguments[2]);
@@ -184,9 +184,37 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: asb-tui [run|run --broker|run --socket PATH] | tui | tui <install|upgrade|status|launch|remove> --channel dev [--json|--format json] | tui <install|upgrade|status|launch|remove> --development [--json|--format json] | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
+        "usage: asb-tui [run|run --broker|run --broker --development [--live-provider|--dynamic-catalog]|run --socket PATH] | tui | tui <install|upgrade|status|launch|remove> --channel dev [--json|--format json] | tui <install|upgrade|status|launch|remove> --development [--json|--format json] | (doctor|compatibility|lifecycle|router|onboarding|journey) --format json | doctor --terminal"
     );
     ExitCode::from(2)
+}
+
+fn development_broker_route(arguments: &[String]) -> Option<Option<&'static str>> {
+    if arguments.len() == 3
+        && arguments[0..3]
+            == [
+                "run".to_owned(),
+                "--broker".to_owned(),
+                "--development".to_owned(),
+            ]
+    {
+        return Some(None);
+    }
+    if arguments.len() != 4
+        || arguments[0..3]
+            != [
+                "run".to_owned(),
+                "--broker".to_owned(),
+                "--development".to_owned(),
+            ]
+    {
+        return None;
+    }
+    match arguments[3].as_str() {
+        "--live-provider" => Some(Some("live-provider")),
+        "--dynamic-catalog" => Some(Some("dynamic-catalog")),
+        _ => None,
+    }
 }
 
 fn print_lifecycle_response<T: serde::Serialize>(response: &T, json: bool) {
@@ -427,11 +455,17 @@ fn launch_authenticated_control(control: &mut AuthenticatedBrokerSession) -> Exi
     }
 }
 
-fn launch_development_broker_entry() -> ExitCode {
+fn launch_development_broker_entry(route: Option<&str>) -> ExitCode {
     if asb_tui::development_broker::DevelopmentBrokerDescriptor::from_env().is_err() {
         eprintln!("development broker descriptor rejected");
         return ExitCode::from(3);
     }
+    // The paired ASB router uses these route markers to distinguish its
+    // lifecycle variants. Both variants intentionally enter the same
+    // authenticated broker startup: the first projection refresh requests
+    // the authoritative provider catalog and the existing readiness logic
+    // selects the appropriate wizard/live handoff without a fallback.
+    let _ = route;
     launch_broker_entry(true)
 }
 
@@ -472,7 +506,7 @@ fn launch() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{DIAGNOSTIC, development_terminal_path};
+    use super::{DIAGNOSTIC, development_broker_route, development_terminal_path};
     use asb_tui::terminal_handoff::preflight_terminal_path;
     use std::ffi::OsString;
 
@@ -509,5 +543,38 @@ mod tests {
                 Err("environment_path_invalid")
             );
         }
+    }
+
+    #[test]
+    fn development_broker_accepts_paired_frontend_routes() {
+        let args = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_owned()).collect()
+        };
+        assert_eq!(
+            development_broker_route(&args(&["run", "--broker", "--development"])),
+            Some(None)
+        );
+        assert_eq!(
+            development_broker_route(&args(&[
+                "run",
+                "--broker",
+                "--development",
+                "--live-provider"
+            ])),
+            Some(Some("live-provider"))
+        );
+        assert_eq!(
+            development_broker_route(&args(&[
+                "run",
+                "--broker",
+                "--development",
+                "--dynamic-catalog"
+            ])),
+            Some(Some("dynamic-catalog"))
+        );
+        assert_eq!(
+            development_broker_route(&args(&["run", "--broker", "--development", "--unexpected"])),
+            None
+        );
     }
 }
