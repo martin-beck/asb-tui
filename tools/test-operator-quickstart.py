@@ -23,6 +23,28 @@ SPEC.loader.exec_module(MODULE)
 
 
 class OperatorQuickstartTests(unittest.TestCase):
+    @staticmethod
+    def _after_child_exit(original, *, expose_identity):
+        """Hold spawn observation until the direct child is a zombie."""
+        def synchronized(pid, expected_session):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    value = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+                except FileNotFoundError:
+                    break
+                state = value[value.rfind(")") + 2 :].split()[0]
+                if state == "Z":
+                    return (
+                        original(pid, expected_session)
+                        if expose_identity
+                        else None
+                    )
+                time.sleep(0.001)
+            raise AssertionError("fixture child did not exit before observation")
+
+        return synchronized
+
     def test_starts_at_top_level_install_then_bare_launch(self):
         for value in ('["tui", "install", "--json"]', '["tui", "--json"]', '"install": "asb tui install"', '"launch": "asb tui"'):
             self.assertIn(value, SOURCE)
@@ -1446,6 +1468,208 @@ time.sleep(30)
             )
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(encoded)["code"], "fast")
+
+    def test_synchronized_exit_before_identity_observation_is_classified(self):
+        fixture = "import json; print(json.dumps({\"ok\": True, \"code\": \"fast\"}))"
+        barrier = self._after_child_exit(
+            MODULE._open_process_identity, expose_identity=False
+        )
+        with mock.patch.object(MODULE, "_open_process_identity", barrier):
+            code, encoded = MODULE.run_asb(
+                Path(sys.executable),
+                ["-c", fixture],
+                os.environ.copy(),
+                json_output=True,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(encoded), {"ok": True, "code": "fast"})
+
+    def test_synchronized_fast_human_and_nonzero_exit_are_preserved(self):
+        barrier = self._after_child_exit(
+            MODULE._open_process_identity, expose_identity=False
+        )
+        with mock.patch.object(MODULE, "_open_process_identity", barrier):
+            code, output = MODULE.run_asb(
+                Path(sys.executable),
+                ["-c", "print(\"fast human\"); raise SystemExit(7)"],
+                os.environ.copy(),
+                json_output=False,
+            )
+        self.assertEqual((code, output), (7, "fast human"))
+
+    def test_synchronized_fast_malformed_and_empty_output_fail_closed(self):
+        for fixture, message in (
+            ("print(\"not-json\")", "emitted no JSON"),
+            ("raise SystemExit(0)", "emitted no output"),
+        ):
+            with self.subTest(message=message):
+                barrier = self._after_child_exit(
+                    MODULE._open_process_identity, expose_identity=False
+                )
+                with mock.patch.object(MODULE, "_open_process_identity", barrier):
+                    with self.assertRaisesRegex(AssertionError, message):
+                        MODULE.run_asb(
+                            Path(sys.executable),
+                            ["-c", fixture],
+                            os.environ.copy(),
+                            json_output=True,
+                        )
+
+    def test_live_noninteractive_wrong_foreground_group_is_rejected(self):
+        real_tcgetpgrp = MODULE.os.tcgetpgrp
+
+        def wrong_foreground(fd):
+            return real_tcgetpgrp(fd) + 1
+
+        fixture = "import time; print(\"READY\", flush=True); time.sleep(30)"
+        with mock.patch.object(
+            MODULE.os, "tcgetpgrp", side_effect=wrong_foreground
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "live PTY child is not its controlling foreground group"
+            ):
+                MODULE.run_asb(
+                    Path(sys.executable),
+                    ["-c", fixture],
+                    os.environ.copy(),
+                    json_output=False,
+                    timeout_seconds=2,
+                )
+
+    def test_interactive_fast_exit_does_not_bypass_live_pty_proof(self):
+        barrier = self._after_child_exit(
+            MODULE._open_process_identity, expose_identity=True
+        )
+        with mock.patch.object(MODULE, "_open_process_identity", barrier):
+            with self.assertRaisesRegex(
+                RuntimeError, "interactive PTY child exited before live foreground proof"
+            ):
+                MODULE.run_asb(
+                    Path(sys.executable),
+                    ["-c", "print(\"not interactive\")"],
+                    os.environ.copy(),
+                    json_output=False,
+                    interactive_quit=True,
+                )
+
+    def test_reused_pid_identity_is_rejected_and_pidfd_closed(self):
+        read_fd, write_fd = os.pipe()
+        first = MODULE._ProcessSnapshot(os.getpid(), 400, 10)
+        changed = MODULE._ProcessSnapshot(os.getpid(), 400, 11)
+        try:
+            with mock.patch.object(
+                MODULE, "_read_process_identity", side_effect=(first, changed)
+            ), mock.patch.object(MODULE.os, "pidfd_open", return_value=read_fd):
+                self.assertIsNone(MODULE._open_process_identity(12345, 400))
+            with self.assertRaises(OSError):
+                os.fstat(read_fd)
+        finally:
+            os.close(write_fd)
+
+    def test_synchronized_fast_exit_status_property_matrix(self):
+        for expected in (0, 1, 2, 3, 7, 64, 126, 127, 255):
+            with self.subTest(exit_code=expected):
+                barrier = self._after_child_exit(
+                    MODULE._open_process_identity, expose_identity=False
+                )
+                fixture = f"print(\"status {expected}\"); raise SystemExit({expected})"
+                with mock.patch.object(MODULE, "_open_process_identity", barrier):
+                    code, output = MODULE.run_asb(
+                        Path(sys.executable),
+                        ["-c", fixture],
+                        os.environ.copy(),
+                        json_output=False,
+                    )
+                self.assertEqual((code, output), (expected, f"status {expected}"))
+
+    def test_synchronized_fast_exit_closes_received_master_once(self):
+        real_start = MODULE._start_fixture_supervisor
+        real_close = MODULE.os.close
+        master = None
+        close_count = 0
+
+        def tracked_start(*args, **kwargs):
+            nonlocal master
+            supervisor = real_start(*args, **kwargs)
+            master = supervisor.master
+            return supervisor
+
+        def tracked_close(fd):
+            nonlocal close_count
+            if fd == master:
+                close_count += 1
+            return real_close(fd)
+
+        barrier = self._after_child_exit(
+            MODULE._open_process_identity, expose_identity=False
+        )
+        with mock.patch.object(
+            MODULE, "_open_process_identity", barrier
+        ), mock.patch.object(
+            MODULE, "_start_fixture_supervisor", tracked_start
+        ), mock.patch.object(MODULE.os, "close", tracked_close):
+            code, output = MODULE.run_asb(
+                Path(sys.executable),
+                ["-c", "print(\"closed\")"],
+                os.environ.copy(),
+                json_output=False,
+            )
+        self.assertEqual((code, output), (0, "closed"))
+        self.assertIsNotNone(master)
+        self.assertEqual(close_count, 1)
+        with self.assertRaises(OSError):
+            os.fstat(master)
+
+    def test_synchronized_fast_exit_reaps_descendant_and_spares_unrelated_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "descendant"
+            fixture = """
+import json, os, pathlib, signal, time
+child = os.fork()
+if child == 0:
+    os.setsid()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    pathlib.Path(os.environ["FAST_DESCENDANT"]).write_text(str(os.getpid()))
+    while True:
+        time.sleep(1)
+deadline = time.monotonic() + 2
+while not pathlib.Path(os.environ["FAST_DESCENDANT"]).exists():
+    if time.monotonic() >= deadline:
+        raise SystemExit(9)
+    time.sleep(0.001)
+print(json.dumps({"ok": True, "code": "fast"}), flush=True)
+"""
+            environment = os.environ.copy()
+            environment["FAST_DESCENDANT"] = str(marker)
+            ambient = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+            descendant_pid = None
+            try:
+                barrier = self._after_child_exit(
+                    MODULE._open_process_identity, expose_identity=False
+                )
+                with mock.patch.object(MODULE, "_open_process_identity", barrier):
+                    code, encoded = MODULE.run_asb(
+                        Path(sys.executable),
+                        ["-c", fixture],
+                        environment,
+                        json_output=True,
+                    )
+                descendant_pid = int(marker.read_text(encoding="utf-8"))
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(encoded)["code"], "fast")
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(descendant_pid, 0)
+                self.assertIsNone(ambient.poll())
+            finally:
+                ambient.kill()
+                ambient.wait()
+                if descendant_pid is not None:
+                    try:
+                        os.kill(descendant_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     def test_runner_avoids_thread_unsafe_preexec(self):
         self.assertNotIn("preexec_fn", SOURCE)

@@ -29,3 +29,11 @@ The bundle directory must be private (`0700` or stricter) and contain the
 validated `manifest.json` and `asb-tui` executable. Invoke the runner with
 `--asb-binary`, `--asb-checkout`, `--tui-binary`, `--tui-checkout`, `--bundle`,
 and `--receipt`.
+
+Noninteractive lifecycle commands may legitimately finish before the runner
+can observe a live foreground process group. The runner authenticates that
+terminal status as its direct child, drains the bounded PTY output, and keeps
+success, nonzero, malformed, and empty-output outcomes distinct. This does not
+relax launch proof: bare interactive `asb tui` must still be a live,
+identity-pinned session with the controlling foreground PTY, nonzero window,
+raw-mode readiness, bounded quit, and authenticated descendant cleanup.

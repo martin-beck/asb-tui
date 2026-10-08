@@ -273,6 +273,14 @@ class _FixtureSupervisor(NamedTuple):
     master: int
 
 
+class _SpawnedPty(NamedTuple):
+    pid: int
+    session_id: int
+    leader: _ProcessIdentity | None
+    master: int
+    exit_code: int | None
+
+
 def _read_process_identity(pid: int) -> _ProcessSnapshot:
     """Return the ancestry and identity fields from one procfs snapshot."""
     value = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
@@ -485,7 +493,7 @@ def _lineage_alive(
 
 
 def _terminate_session(
-    leader: _ProcessIdentity,
+    leader: _ProcessIdentity | None,
     tracked: dict[int, _ProcessIdentity] | None = None,
 ) -> None:
     """Terminate and reap the authenticated spawned process lineage.
@@ -493,10 +501,16 @@ def _terminate_session(
     Stable parent edges authenticate descendants even after setpgid or setsid.
     A pidfd pins each identity, and signals are never sent to a bare numeric
     PID or PGID, so reuse cannot redirect teardown at an unrelated process.
+    A missing leader is accepted only with an explicit tracked collection in
+    the fixture-exclusive subreaper, where adopted direct children retain the
+    structural lineage boundary after a pre-observation leader exit.
     """
+    if leader is None and tracked is None:
+        raise AssertionError("leaderless cleanup requires a fixture-exclusive lineage")
     if tracked is None:
+        assert leader is not None
         tracked = {leader.pid: leader}
-    elif tracked.get(leader.pid) != leader:
+    elif leader is not None and tracked.get(leader.pid) != leader:
         raise AssertionError("authenticated fixture lineage lost its leader")
     cleanup_errors: list[BaseException] = []
     try:
@@ -544,6 +558,25 @@ def _wait_nohang(pid: int) -> int | None:
     except ChildProcessError:
         return None
     return None if waited == 0 else os.waitstatus_to_exitcode(status)
+
+
+def _exited_child_code(pid: int) -> int | None:
+    """Observe a direct child terminal status without reaping its identity."""
+    try:
+        result = os.waitid(
+            os.P_PID,
+            pid,
+            os.WEXITED | os.WNOHANG | os.WNOWAIT,
+        )
+    except ChildProcessError:
+        return None
+    if result is None or result.si_pid != pid:
+        return None
+    if result.si_code == os.CLD_EXITED:
+        return result.si_status
+    if result.si_code in (os.CLD_KILLED, os.CLD_DUMPED):
+        return -result.si_status
+    raise AssertionError(f"unexpected terminal child status {result.si_code}")
 
 
 def _poll_child_reaped(pid: int, timeout_seconds: float) -> bool:
@@ -733,7 +766,9 @@ def _pty_is_interactive_ready(master: int, session_id: int) -> bool:
 def _spawn_controlling_pty(
     command: list[str],
     environment: dict[str, str],
-) -> tuple[_ProcessIdentity, int]:
+    *,
+    interactive: bool = False,
+) -> _SpawnedPty:
     master, slave = pty.openpty()
     owned_master = _OwnedFd(master)
     owned_slave = _OwnedFd(slave)
@@ -761,10 +796,27 @@ def _spawn_controlling_pty(
         )
         owned_slave.close()
         leader = _open_process_identity(pid, pid)
+        exit_code = _exited_child_code(pid)
+        if interactive and exit_code is not None:
+            raise AssertionError(
+                "interactive PTY child exited before live foreground proof"
+            )
         if leader is None:
-            raise AssertionError("could not authenticate PTY child session identity")
-        if os.tcgetpgrp(owned_master.fd) != pid:
-            raise AssertionError("PTY child is not its controlling foreground group")
+            if interactive or exit_code is None:
+                raise AssertionError(
+                    "could not authenticate live PTY child session identity"
+                )
+        else:
+            try:
+                foreground_matches = os.tcgetpgrp(owned_master.fd) == pid
+            except OSError:
+                foreground_matches = False
+            if not foreground_matches:
+                exit_code = _exited_child_code(pid)
+                if interactive or exit_code is None:
+                    raise AssertionError(
+                        "live PTY child is not its controlling foreground group"
+                    )
         actual = fcntl.ioctl(
             owned_master.fd, termios.TIOCGWINSZ, b"\0" * len(requested)
         )
@@ -772,11 +824,11 @@ def _spawn_controlling_pty(
         if rows <= 0 or columns <= 0:
             raise AssertionError("PTY child received a zero-size terminal")
         os.set_blocking(owned_master.fd, False)
-        return leader, owned_master.detach()
+        return _SpawnedPty(pid, pid, leader, owned_master.detach(), exit_code)
     except BaseException as error:
         primary = error
         if leader is None and pid is not None:
-            leader = _open_process_identity(pid, pid)
+            leader = _open_direct_child_identity(pid, os.getpid())
     cleanup_actions: list[tuple[str, Callable[[], object]]] = []
     if leader is not None:
         cleanup_actions.append(
@@ -839,33 +891,46 @@ def _receive_supervisor_packet(
 
 
 def _fixture_supervisor_child(
-    control: socket.socket, command: list[str], environment: dict[str, str]
+    control: socket.socket,
+    command: list[str],
+    environment: dict[str, str],
+    interactive: bool,
 ) -> None:
     """Own the entire fixture lineage beneath an otherwise childless subreaper."""
     leader: _ProcessIdentity | None = None
     tracked: dict[int, _ProcessIdentity] = {}
     master: int | None = None
+    spawned: _SpawnedPty | None = None
     discovery_errors: list[BaseException] = []
     try:
         _child_subreaper(True)
-        leader, master = _spawn_controlling_pty(command, environment)
-        tracked[leader.pid] = leader
+        spawned = _spawn_controlling_pty(
+            command, environment, interactive=interactive
+        )
+        leader, master = spawned.leader, spawned.master
+        if leader is not None:
+            tracked[leader.pid] = leader
         _send_supervisor_packet(
             control,
             {
                 "kind": "ready",
-                "leader_pid": leader.pid,
-                "session_id": leader.session_id,
+                "leader_pid": spawned.pid,
+                "session_id": spawned.session_id,
             },
             master,
         )
         _close_fd(master)
         master = None
         control.setblocking(False)
-        exit_sent = False
+        exit_sent = spawned.exit_code is not None
+        if spawned.exit_code is not None:
+            _send_supervisor_packet(
+                control, {"kind": "exit", "code": spawned.exit_code}
+            )
         while True:
             _discover_for_cleanup(tracked, discovery_errors)
             if not exit_sent:
+                assert leader is not None
                 result_code = _wait_nohang(leader.pid)
                 if result_code is not None:
                     _send_supervisor_packet(
@@ -896,7 +961,7 @@ def _fixture_supervisor_child(
         )
     except BaseException as error:
         try:
-            if leader is not None:
+            if spawned is not None:
                 _terminate_session(leader, tracked)
         except BaseException as cleanup_error:
             error = BaseExceptionGroup(
@@ -913,7 +978,10 @@ def _fixture_supervisor_child(
 
 
 def _start_fixture_supervisor(
-    command: list[str], environment: dict[str, str]
+    command: list[str],
+    environment: dict[str, str],
+    *,
+    interactive: bool = False,
 ) -> _FixtureSupervisor:
     parent_control, child_control = socket.socketpair(
         socket.AF_UNIX, socket.SOCK_SEQPACKET
@@ -921,7 +989,9 @@ def _start_fixture_supervisor(
     supervisor_pid = os.fork()
     if supervisor_pid == 0:
         parent_control.close()
-        _fixture_supervisor_child(child_control, command, environment)
+        _fixture_supervisor_child(
+            child_control, command, environment, interactive
+        )
         os._exit(0)
     child_control.close()
     parent_control.settimeout(SUPERVISOR_CONTROL_TIMEOUT)
@@ -1013,7 +1083,9 @@ def run_asb(
     result_code: int | None = None
     primary: BaseException | None = None
     try:
-        supervisor = _start_fixture_supervisor(command, environment)
+        supervisor = _start_fixture_supervisor(
+            command, environment, interactive=interactive_quit
+        )
         master = supervisor.master
         selector = selectors.DefaultSelector()
         selector.register(master, selectors.EVENT_READ, "pty")
