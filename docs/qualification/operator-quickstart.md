@@ -18,7 +18,12 @@ authentication, production signing, or public release readiness.
 Launch is strict: a headless environment that returns
 `development_launch_failed` produces a failed qualification rather than a
 passing receipt. Run this gate in a terminal-capable worker when collecting
-the acceptance receipt.
+the acceptance receipt. The runner's isolated PTY declares the fixed
+`xterm-256color` capability instead of inheriting `TERM` from its automation
+parent. On a first run, the bounded quit sequence cancels the automatically
+opened wizard and then quits the landing screen; configured runs quit on the
+first key. The JSON projection is accepted only as the complete output suffix,
+including when terminal teardown and the JSON object share a line.
 
 The bundle directory must be private (`0700` or stricter) and contain the
 validated `manifest.json` and `asb-tui` executable. Invoke the runner with

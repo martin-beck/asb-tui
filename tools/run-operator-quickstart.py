@@ -29,6 +29,7 @@ PTY_COLUMNS = 80
 MAX_COMMAND_OUTPUT = 2 * 1024 * 1024
 PTY_READINESS_TIMEOUT = 10.0
 PTY_EXIT_TIMEOUT = 10.0
+PTY_QUIT_SEQUENCE = b"qq"
 SUPERVISOR_CONTROL_TIMEOUT = 5.0
 SUPERVISOR_TERM_TIMEOUT = 0.5
 SUPERVISOR_KILL_TIMEOUT = 1.0
@@ -37,8 +38,33 @@ PR_GET_CHILD_SUBREAPER = 37
 
 def safe_environment() -> dict[str, str]:
     environment = {k: v for k, v in os.environ.items() if not any(m in k.upper() for m in SECRET_MARKERS)}
-    environment.update({"ASB_TUI_NETWORK_POLICY": "deny", "HTTP_PROXY": "http://127.0.0.1:1", "HTTPS_PROXY": "http://127.0.0.1:1", "ALL_PROXY": "http://127.0.0.1:1", "NO_PROXY": "*"})
+    # The qualification runner creates its own PTY, so its terminal capability
+    # must not depend on whether the parent automation process happened to
+    # inherit TERM.  xterm-256color is the conservative capability contract
+    # used by the fixture; the runner does not claim a real terminal emulator.
+    environment.update({"TERM": "xterm-256color", "ASB_TUI_NETWORK_POLICY": "deny", "HTTP_PROXY": "http://127.0.0.1:1", "HTTPS_PROXY": "http://127.0.0.1:1", "ALL_PROXY": "http://127.0.0.1:1", "NO_PROXY": "*"})
     return environment
+
+
+def trailing_json(output: str) -> str | None:
+    """Return the final complete JSON value after bounded terminal output.
+
+    Alternate-screen teardown does not necessarily end with a newline, so the
+    ASB response may immediately follow a CSI sequence.  Only a JSON object
+    consuming the complete non-whitespace suffix is accepted.
+    """
+    decoder = json.JSONDecoder()
+    offset = output.rfind("{")
+    while offset >= 0:
+        try:
+            value, end = decoder.raw_decode(output, offset)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(value, dict) and not output[end:].strip():
+                return json.dumps(value, sort_keys=True)
+        offset = output.rfind("{", 0, offset)
+    return None
 
 def _get_child_subreaper() -> bool:
     libc = ctypes.CDLL(None, use_errno=True)
@@ -863,10 +889,15 @@ def run_asb(
                         raise AssertionError(f"ASB command exceeded output limit: {' '.join(command)}")
             if interactive_quit and not quit_sent and _pty_is_interactive_ready(master, supervisor.session_id):
                 try:
-                    written = os.write(master, b"q")
+                    # An unconfigured installation opens the first-run wizard.
+                    # Its first q is the documented cancel-to-landing action;
+                    # the second q is the landing-screen quit action.  A
+                    # configured installation exits on the first byte and
+                    # harmlessly leaves the second byte unread.
+                    written = os.write(master, PTY_QUIT_SEQUENCE)
                 except BlockingIOError:
                     continue
-                if written == 1:
+                if written == len(PTY_QUIT_SEQUENCE):
                     quit_sent = True
                     exit_deadline = min(deadline, time.monotonic() + exit_timeout_seconds)
         while True:
@@ -906,11 +937,9 @@ def run_asb(
     if not output:
         raise AssertionError(f"ASB command emitted no output: {' '.join(command)}")
     if json_output:
-        for line in reversed(output.splitlines()):
-            try:
-                return result_code, json.dumps(json.loads(line), sort_keys=True)
-            except json.JSONDecodeError:
-                continue
+        encoded = trailing_json(output)
+        if encoded is not None:
+            return result_code, encoded
         raise AssertionError(f"ASB command emitted no JSON: {command}: {output}")
     return result_code, output
 
@@ -991,7 +1020,7 @@ def main() -> int:
                 raise AssertionError(f"{test_name} failed:\n{completed.stdout[-4000:]}{completed.stderr[-4000:]}")
             test_results[test_name] = "passed"
         journey = {"tests": test_results, "scope": "wizard/benchmark/record-replay/comparison"}
-        receipt = {"schema_version": 1, "ar": "AR-1654", "classification": "development/mock", "credentials": "none", "network": {"install": "local_bundle", "benchmark_and_replay": "denied"}, "terminal": {"controlling": True, "foreground_process_group": True, "rows": PTY_ROWS, "columns": PTY_COLUMNS, "quit": "q", "timeout_seconds": 60}, "operator_commands": {"install": "asb tui install", "launch": "asb tui", "install_json": json.loads(install_json[1]), "launch_json": launch_value, "install_human_nonempty": bool(install_human[1]), "launch_human_nonempty": bool(launch_human[1])}, "journey": journey, "provenance": {"asb_binary_sha256": hashlib.sha256(asb.read_bytes()).hexdigest(), "tui_binary_sha256": hashlib.sha256(tui.read_bytes()).hexdigest(), "asb_checkout_head": asb_commit, "asb_checkout_tree": asb_tree, "tui_checkout_head": tui_commit, "tui_checkout_tree": tui_tree}}
+        receipt = {"schema_version": 1, "ar": "AR-1654", "classification": "development/mock", "credentials": "none", "network": {"install": "local_bundle", "benchmark_and_replay": "denied"}, "terminal": {"controlling": True, "foreground_process_group": True, "rows": PTY_ROWS, "columns": PTY_COLUMNS, "quit": "q; repeated once to cancel an automatically opened first-run wizard", "timeout_seconds": 60}, "operator_commands": {"install": "asb tui install", "launch": "asb tui", "install_json": json.loads(install_json[1]), "launch_json": launch_value, "install_human_nonempty": bool(install_human[1]), "launch_human_nonempty": bool(launch_human[1])}, "journey": journey, "provenance": {"asb_binary_sha256": hashlib.sha256(asb.read_bytes()).hexdigest(), "tui_binary_sha256": hashlib.sha256(tui.read_bytes()).hexdigest(), "asb_checkout_head": asb_commit, "asb_checkout_tree": asb_tree, "tui_checkout_head": tui_commit, "tui_checkout_tree": tui_tree}}
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(receipt, sort_keys=True) if args.json else "AR-1654 operator quickstart passed (development/mock; credentials absent)")
