@@ -12,6 +12,7 @@ import json
 import os
 import pty
 import selectors
+import shutil
 import signal
 import socket
 import struct
@@ -44,6 +45,143 @@ def safe_environment() -> dict[str, str]:
     # used by the fixture; the runner does not claim a real terminal emulator.
     environment.update({"TERM": "xterm-256color", "ASB_TUI_NETWORK_POLICY": "deny", "HTTP_PROXY": "http://127.0.0.1:1", "HTTPS_PROXY": "http://127.0.0.1:1", "ALL_PROXY": "http://127.0.0.1:1", "NO_PROXY": "*"})
     return environment
+
+
+def parent_toolchain_candidates(
+    environment: dict[str, str],
+) -> tuple[str | None, str | None]:
+    """Resolve parent-ASB candidates before the runner replaces ``HOME``.
+
+    These are candidate paths only.  The ASB router remains responsible for
+    checking ownership, modes, symlinks, selected-toolchain consistency, and
+    substitution resistance before using either value.
+    """
+    original_home = environment.get("HOME")
+    cargo = environment.get("ASB_DEV_CARGO")
+    if cargo is None:
+        cargo_home = environment.get("CARGO_HOME")
+        if cargo_home is None and original_home is not None:
+            cargo_home = str(Path(original_home) / ".cargo")
+        if cargo_home is not None:
+            cargo = str(Path(cargo_home) / "bin" / "cargo")
+
+    rustup_home = environment.get("ASB_DEV_RUSTUP_HOME")
+    if rustup_home is None:
+        rustup_home = environment.get("RUSTUP_HOME")
+    if rustup_home is None and original_home is not None:
+        rustup_home = str(Path(original_home) / ".rustup")
+    return cargo, rustup_home
+
+
+def qualification_environment(root: Path) -> dict[str, str]:
+    """Build the isolated journey environment from pre-isolation candidates."""
+    environment = safe_environment()
+    parent_cargo, parent_rustup_home = parent_toolchain_candidates(environment)
+    if parent_cargo is not None:
+        environment["ASB_DEV_CARGO"] = parent_cargo
+    if parent_rustup_home is not None:
+        environment["ASB_DEV_RUSTUP_HOME"] = parent_rustup_home
+        environment["ASB_TUI_DEV_RUSTUP_HOME"] = parent_rustup_home
+    environment.update(
+        {
+            "HOME": str(root / "home"),
+            "XDG_DATA_HOME": str(root / "data"),
+            "XDG_STATE_HOME": str(root / "state"),
+            "XDG_CACHE_HOME": str(root / "cache"),
+            "ASB_TUI_CHANNEL_STATE": str(root / "channel.json"),
+            "ASB_TUI_DEV_INSTALL_ROOT": str(root / "install"),
+            "RUSTUP_TOOLCHAIN": environment.get(
+                "RUSTUP_TOOLCHAIN", "1.93.0-x86_64-unknown-linux-gnu"
+            ),
+        }
+    )
+    return environment
+
+
+def require_toolchain_rejection(
+    asb: Path,
+    environment: dict[str, str],
+    scenario: str,
+) -> str:
+    """Require the exact parent ASB binary to reject a hostile candidate."""
+    code, encoded = run_asb(
+        asb,
+        ["tui", "--json"],
+        environment,
+        json_output=True,
+    )
+    value = json.loads(encoded)
+    reason = value.get("code")
+    expected_exits = {
+        "trusted_tool_invalid": 3,
+        "trusted_tool_unavailable": 4,
+    }
+    if (
+        value.get("ok") is not False
+        or reason not in expected_exits
+        or code != expected_exits[reason]
+    ):
+        raise AssertionError(
+            f"parent ASB accepted hostile toolchain scenario {scenario}: "
+            f"exit={code} reason={reason!r}"
+        )
+    return str(reason)
+
+
+def verify_parent_toolchain_rejections(
+    asb: Path,
+    environment: dict[str, str],
+    root: Path,
+) -> dict[str, str]:
+    """Exercise hostile candidates at the identity-checked parent boundary."""
+    fixture = root / "toolchain-negative-fixtures"
+    fixture.mkdir(mode=0o700)
+    original_cargo = environment.get("ASB_DEV_CARGO")
+    original_rustup = environment.get("ASB_DEV_RUSTUP_HOME")
+    if original_cargo is None or original_rustup is None:
+        raise AssertionError("positive parent toolchain candidates are unavailable")
+
+    scenarios: list[tuple[str, dict[str, str]]] = []
+
+    relative = environment.copy()
+    relative["ASB_DEV_CARGO"] = "relative/cargo"
+    relative["ASB_DEV_RUSTUP_HOME"] = "relative/rustup"
+    scenarios.append(("relative_candidate", relative))
+
+    cargo_link = fixture / "cargo-link"
+    cargo_link.symlink_to(original_cargo)
+    symlinked_cargo = environment.copy()
+    symlinked_cargo["ASB_DEV_CARGO"] = str(cargo_link)
+    scenarios.append(("symlinked_cargo", symlinked_cargo))
+
+    writable_cargo = fixture / "writable-cargo"
+    shutil.copyfile(original_cargo, writable_cargo, follow_symlinks=True)
+    writable_cargo.chmod(0o777)
+    writable = environment.copy()
+    writable["ASB_DEV_CARGO"] = str(writable_cargo)
+    scenarios.append(("writable_cargo", writable))
+
+    rustup_link = fixture / "rustup-link"
+    rustup_link.symlink_to(original_rustup)
+    symlinked_rustup = environment.copy()
+    symlinked_rustup["ASB_DEV_RUSTUP_HOME"] = str(rustup_link)
+    scenarios.append(("symlinked_rustup", symlinked_rustup))
+
+    missing = environment.copy()
+    for name in (
+        "ASB_TUI_DEV_RUSTUP_HOME",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+    ):
+        missing.pop(name, None)
+    missing["ASB_DEV_CARGO"] = str(fixture / "missing-cargo")
+    missing["ASB_DEV_RUSTUP_HOME"] = str(fixture / "missing-rustup")
+    scenarios.append(("missing_candidate", missing))
+
+    return {
+        scenario: require_toolchain_rejection(asb, candidate, scenario)
+        for scenario, candidate in scenarios
+    }
 
 
 def trailing_json(output: str) -> str | None:
@@ -1009,17 +1147,7 @@ def main() -> int:
     tui_commit, tui_tree = verify_binary_identity(tui, tui_checkout, "TUI")
     with tempfile.TemporaryDirectory(prefix="asb-tui-ar1654-") as temporary:
         root = Path(temporary)
-        environment = safe_environment()
-        environment.update({
-            "HOME": str(root / "home"),
-            "XDG_DATA_HOME": str(root / "data"),
-            "XDG_STATE_HOME": str(root / "state"),
-            "XDG_CACHE_HOME": str(root / "cache"),
-            "ASB_TUI_CHANNEL_STATE": str(root / "channel.json"),
-            "ASB_TUI_DEV_INSTALL_ROOT": str(root / "install"),
-            "ASB_TUI_DEV_RUSTUP_HOME": environment.get("RUSTUP_HOME", str(Path.home() / ".rustup")),
-            "RUSTUP_TOOLCHAIN": environment.get("RUSTUP_TOOLCHAIN", "1.93.0-x86_64-unknown-linux-gnu"),
-        })
+        environment = qualification_environment(root)
         bundle = args.bundle.resolve()
         if not bundle.is_dir() or bundle.stat().st_mode & 0o077:
             raise SystemExit("--bundle must be a private directory (mode 0700 or stricter)")
@@ -1027,6 +1155,9 @@ def main() -> int:
         install_json = run_asb(asb, ["tui", "install", "--json"], environment, json_output=True)
         if install_json[0] not in (0, 3):
             raise AssertionError(f"asb tui install failed: {install_json}")
+        toolchain_rejections = verify_parent_toolchain_rejections(
+            asb, environment, root
+        )
         launch_json = run_asb(asb, ["tui", "--json"], environment, json_output=True,
                               interactive_quit=True)
         launch_value = json.loads(launch_json[1])
@@ -1048,7 +1179,7 @@ def main() -> int:
                 raise AssertionError(f"{test_name} failed:\n{completed.stdout[-4000:]}{completed.stderr[-4000:]}")
             test_results[test_name] = "passed"
         journey = {"tests": test_results, "scope": "wizard/benchmark/record-replay/comparison"}
-        receipt = {"schema_version": 1, "ar": "AR-1654", "classification": "development/mock", "credentials": "none", "network": {"install": "local_bundle", "benchmark_and_replay": "denied"}, "terminal": {"controlling": True, "foreground_process_group": True, "rows": PTY_ROWS, "columns": PTY_COLUMNS, "quit": "q; repeated once to cancel an automatically opened first-run wizard", "timeout_seconds": 60}, "operator_commands": {"install": "asb tui install", "launch": "asb tui", "install_json": json.loads(install_json[1]), "launch_json": launch_value, "install_human_nonempty": bool(install_human[1]), "launch_human_nonempty": bool(launch_human[1])}, "journey": journey, "provenance": {"asb_binary_sha256": hashlib.sha256(asb.read_bytes()).hexdigest(), "tui_binary_sha256": hashlib.sha256(tui.read_bytes()).hexdigest(), "asb_checkout_head": asb_commit, "asb_checkout_tree": asb_tree, "tui_checkout_head": tui_commit, "tui_checkout_tree": tui_tree}}
+        receipt = {"schema_version": 1, "ar": "AR-1654", "classification": "development/mock", "credentials": "none", "network": {"install": "local_bundle", "benchmark_and_replay": "denied"}, "terminal": {"controlling": True, "foreground_process_group": True, "rows": PTY_ROWS, "columns": PTY_COLUMNS, "quit": "q; repeated once to cancel an automatically opened first-run wizard", "timeout_seconds": 60}, "operator_commands": {"install": "asb tui install", "launch": "asb tui", "install_json": json.loads(install_json[1]), "launch_json": launch_value, "install_human_nonempty": bool(install_human[1]), "launch_human_nonempty": bool(launch_human[1])}, "parent_toolchain_preflight": toolchain_rejections, "journey": journey, "provenance": {"asb_binary_sha256": hashlib.sha256(asb.read_bytes()).hexdigest(), "tui_binary_sha256": hashlib.sha256(tui.read_bytes()).hexdigest(), "asb_checkout_head": asb_commit, "asb_checkout_tree": asb_tree, "tui_checkout_head": tui_commit, "tui_checkout_tree": tui_tree}}
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(receipt, sort_keys=True) if args.json else "AR-1654 operator quickstart passed (development/mock; credentials absent)")

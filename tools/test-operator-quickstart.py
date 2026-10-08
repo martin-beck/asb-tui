@@ -49,6 +49,226 @@ class OperatorQuickstartTests(unittest.TestCase):
             environment = MODULE.safe_environment()
         self.assertEqual(environment["TERM"], "xterm-256color")
 
+    def test_parent_toolchain_candidates_use_original_home(self):
+        cargo, rustup = MODULE.parent_toolchain_candidates(
+            {"HOME": "/original/home"}
+        )
+        self.assertEqual(cargo, "/original/home/.cargo/bin/cargo")
+        self.assertEqual(rustup, "/original/home/.rustup")
+
+    def test_parent_toolchain_candidates_preserve_explicit_overrides(self):
+        cargo, rustup = MODULE.parent_toolchain_candidates(
+            {
+                "HOME": "/ignored/home",
+                "CARGO_HOME": "/ignored/cargo",
+                "RUSTUP_HOME": "/ignored/rustup",
+                "ASB_DEV_CARGO": "/validated/cargo",
+                "ASB_DEV_RUSTUP_HOME": "/validated/rustup",
+            }
+        )
+        self.assertEqual(cargo, "/validated/cargo")
+        self.assertEqual(rustup, "/validated/rustup")
+
+    def test_parent_toolchain_candidates_use_standard_home_overrides(self):
+        cargo, rustup = MODULE.parent_toolchain_candidates(
+            {
+                "HOME": "/ignored/home",
+                "CARGO_HOME": "/standard/cargo",
+                "RUSTUP_HOME": "/standard/rustup",
+            }
+        )
+        self.assertEqual(cargo, "/standard/cargo/bin/cargo")
+        self.assertEqual(rustup, "/standard/rustup")
+
+    def test_parent_toolchain_candidates_can_remain_missing(self):
+        self.assertEqual(MODULE.parent_toolchain_candidates({}), (None, None))
+
+    def test_candidate_resolution_does_not_bypass_asb_validation(self):
+        cargo, rustup = MODULE.parent_toolchain_candidates(
+            {
+                "ASB_DEV_CARGO": "relative/cargo",
+                "ASB_DEV_RUSTUP_HOME": "relative/rustup",
+            }
+        )
+        self.assertEqual(cargo, "relative/cargo")
+        self.assertEqual(rustup, "relative/rustup")
+
+    def test_safe_environment_drops_secrets_but_keeps_tool_candidates(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "not-retained",
+                "ASB_DEV_CARGO": "/candidate/cargo",
+                "ASB_DEV_RUSTUP_HOME": "/candidate/rustup",
+            },
+            clear=True,
+        ):
+            environment = MODULE.safe_environment()
+        self.assertNotIn("OPENROUTER_API_KEY", environment)
+        self.assertEqual(environment["ASB_DEV_CARGO"], "/candidate/cargo")
+        self.assertEqual(
+            environment["ASB_DEV_RUSTUP_HOME"], "/candidate/rustup"
+        )
+
+    def test_isolated_environment_keeps_pre_isolation_candidates(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ,
+            {"HOME": "/original/home"},
+            clear=True,
+        ):
+            root = Path(temporary)
+            environment = MODULE.qualification_environment(root)
+        self.assertEqual(environment["HOME"], str(root / "home"))
+        self.assertEqual(
+            environment["ASB_DEV_CARGO"],
+            "/original/home/.cargo/bin/cargo",
+        )
+        self.assertEqual(
+            environment["ASB_DEV_RUSTUP_HOME"], "/original/home/.rustup"
+        )
+        self.assertEqual(
+            environment["ASB_TUI_DEV_RUSTUP_HOME"], "/original/home/.rustup"
+        )
+
+    def test_isolated_environment_does_not_invent_missing_candidates(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ,
+            {},
+            clear=True,
+        ):
+            environment = MODULE.qualification_environment(Path(temporary))
+        self.assertNotIn("ASB_DEV_CARGO", environment)
+        self.assertNotIn("ASB_DEV_RUSTUP_HOME", environment)
+        self.assertNotIn("ASB_TUI_DEV_RUSTUP_HOME", environment)
+
+    def test_hostile_candidates_are_forwarded_for_asb_to_reject(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            writable_cargo = root / "cargo"
+            writable_cargo.write_text("not cargo", encoding="utf-8")
+            writable_cargo.chmod(0o777)
+            symlinked_rustup = root / "rustup-link"
+            symlinked_rustup.symlink_to(root / "rustup-target")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ASB_DEV_CARGO": str(writable_cargo),
+                    "ASB_DEV_RUSTUP_HOME": str(symlinked_rustup),
+                },
+                clear=True,
+            ):
+                environment = MODULE.qualification_environment(root / "fixture")
+        self.assertEqual(environment["ASB_DEV_CARGO"], str(writable_cargo))
+        self.assertEqual(
+            environment["ASB_DEV_RUSTUP_HOME"], str(symlinked_rustup)
+        )
+        self.assertEqual(
+            environment["ASB_TUI_DEV_RUSTUP_HOME"], str(symlinked_rustup)
+        )
+
+    def test_parent_rejection_requires_typed_failure(self):
+        rejected = json.dumps(
+            {"ok": False, "code": "trusted_tool_invalid"}
+        )
+        with mock.patch.object(MODULE, "run_asb", return_value=(3, rejected)):
+            self.assertEqual(
+                MODULE.require_toolchain_rejection(
+                    Path("/fixture/asb"), {}, "hostile"
+                ),
+                "trusted_tool_invalid",
+            )
+        accepted = json.dumps({"ok": True, "code": "development_launched"})
+        with mock.patch.object(MODULE, "run_asb", return_value=(0, accepted)):
+            with self.assertRaisesRegex(AssertionError, "accepted hostile"):
+                MODULE.require_toolchain_rejection(
+                    Path("/fixture/asb"), {}, "hostile"
+                )
+        with mock.patch.object(MODULE, "run_asb", return_value=(7, rejected)):
+            with self.assertRaisesRegex(AssertionError, "accepted hostile"):
+                MODULE.require_toolchain_rejection(
+                    Path("/fixture/asb"), {}, "hostile"
+                )
+        with mock.patch.object(MODULE, "run_asb", return_value=(4, rejected)):
+            with self.assertRaisesRegex(AssertionError, "accepted hostile"):
+                MODULE.require_toolchain_rejection(
+                    Path("/fixture/asb"), {}, "hostile"
+                )
+        unavailable = json.dumps(
+            {"ok": False, "code": "trusted_tool_unavailable"}
+        )
+        with mock.patch.object(MODULE, "run_asb", return_value=(4, unavailable)):
+            self.assertEqual(
+                MODULE.require_toolchain_rejection(
+                    Path("/fixture/asb"), {}, "hostile"
+                ),
+                "trusted_tool_unavailable",
+            )
+        with mock.patch.object(MODULE, "run_asb", return_value=(3, unavailable)):
+            with self.assertRaisesRegex(AssertionError, "accepted hostile"):
+                MODULE.require_toolchain_rejection(
+                    Path("/fixture/asb"), {}, "hostile"
+                )
+
+    def test_exact_parent_boundary_receives_all_hostile_scenarios(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cargo = root / "cargo"
+            cargo.write_bytes(b"cargo fixture")
+            cargo.chmod(0o700)
+            rustup = root / "rustup"
+            rustup.mkdir(mode=0o700)
+            observed = {}
+
+            def reject(_asb, candidate, scenario):
+                observed[scenario] = candidate
+                return "trusted_tool_invalid"
+
+            with mock.patch.object(
+                MODULE, "require_toolchain_rejection", side_effect=reject
+            ):
+                result = MODULE.verify_parent_toolchain_rejections(
+                    Path("/fixture/asb"),
+                    {
+                        "ASB_DEV_CARGO": str(cargo),
+                        "ASB_DEV_RUSTUP_HOME": str(rustup),
+                    },
+                    root,
+                )
+            cargo_link_is_symlink = Path(
+                observed["symlinked_cargo"]["ASB_DEV_CARGO"]
+            ).is_symlink()
+            writable_cargo_mode = (
+                Path(observed["writable_cargo"]["ASB_DEV_CARGO"]).stat().st_mode
+                & 0o777
+            )
+            rustup_link_is_symlink = Path(
+                observed["symlinked_rustup"]["ASB_DEV_RUSTUP_HOME"]
+            ).is_symlink()
+
+        self.assertEqual(
+            set(result),
+            {
+                "relative_candidate",
+                "symlinked_cargo",
+                "writable_cargo",
+                "symlinked_rustup",
+                "missing_candidate",
+            },
+        )
+        self.assertEqual(set(observed), set(result))
+        self.assertEqual(
+            observed["relative_candidate"]["ASB_DEV_CARGO"], "relative/cargo"
+        )
+        self.assertTrue(cargo_link_is_symlink)
+        self.assertEqual(writable_cargo_mode, 0o777)
+        self.assertTrue(rustup_link_is_symlink)
+        self.assertFalse(
+            Path(observed["missing_candidate"]["ASB_DEV_CARGO"]).exists()
+        )
+        self.assertFalse(
+            Path(observed["missing_candidate"]["ASB_DEV_RUSTUP_HOME"]).exists()
+        )
+
     def test_real_controlling_pty_has_foreground_group_size_and_bounded_quit(self):
         fixture = """
 import fcntl, json, os, struct, sys, termios, tty
