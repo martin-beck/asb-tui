@@ -17,6 +17,8 @@ class FreshUserQuickstartTests(unittest.TestCase):
             'with_name("run-current-main-quickstart.py")',
             '"--asb-binary", str(asb_binary)',
             '"--tui-checkout", str(tui_checkout)',
+            '"--tui-ref", args.tui_ref',
+            'parser.add_argument(\n        "--tui-ref"',
             'evidence["ar"] = "AR-1643"',
         ):
             self.assertIn(value, SOURCE)
