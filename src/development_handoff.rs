@@ -209,6 +209,7 @@ mod tests {
             asb_source_commit: None,
             asb_source_tree: None,
             channel_manifest_sha256: None,
+            warnings: None,
         };
         handoff.apply_response(&response);
         assert_eq!(handoff.phase, Phase::RolledBack);
@@ -255,6 +256,7 @@ mod tests {
             asb_source_commit: None,
             asb_source_tree: None,
             channel_manifest_sha256: None,
+            warnings: None,
         };
         handoff.apply_response(&response);
         assert_eq!(handoff.phase, Phase::Installed);

@@ -52,8 +52,14 @@ The development install performs a shallow clone of the selected TUI source
 then runs a locked release Cargo build with private Cargo-home and target
 directories. When Cargo is the conventional user-owned rustup shim
 (`$HOME/.cargo/bin/cargo`), the selected default toolchain is resolved to a
-private regular `cargo` executable under `$HOME/.rustup/toolchains`; no shim or
-outside target is trusted. A non-conventional rustup home may be supplied
+regular owner-controlled `cargo`/`rustc` pair under `$HOME/.rustup/toolchains`.
+The development channel accepts group write only on the current user's
+conventional `.cargo`/Rustup directories and `settings.toml`, emits
+`development_user_owned_group_writable_rustup_paths_allowed`, and binds both
+executables to validated open file descriptors before execution. World write,
+wrong ownership, symlinked components, executable group write, mixed
+toolchains, replacement races, and outside targets remain fail-closed. A
+non-conventional rustup home may be supplied
 explicitly through `ASB_TUI_DEV_RUSTUP_HOME`. Host `RUSTUP_HOME`, Cargo
 configuration, proxy, flags, and credentials are never inherited. If an
 explicit `rustc` override is also a rustup shim, it is resolved to the same

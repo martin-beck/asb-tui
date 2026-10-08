@@ -59,6 +59,10 @@ def main() -> int:
     parser.add_argument("--asb-checkout", type=Path, required=True)
     parser.add_argument("--tui-binary", type=Path)
     parser.add_argument("--asb-binary", type=Path)
+    parser.add_argument(
+        "--tui-ref",
+        help="exact TUI ref to materialize (required for detached checkouts)",
+    )
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -80,6 +84,8 @@ def main() -> int:
             "--asb-binary", str(asb_binary), "--asb-checkout", str(asb_checkout),
             "--tui-checkout", str(tui_checkout), "--receipt", str(inner), "--json",
         ]
+        if args.tui_ref:
+            command.extend(["--tui-ref", args.tui_ref])
         completed = subprocess.run(
             command, cwd=tui_checkout, env=safe_environment(),
             text=True, capture_output=True, check=False,
