@@ -1225,10 +1225,9 @@ mod tests {
 
     fn rustup_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf) {
         let root = PathBuf::from(env::var_os("HOME").unwrap())
-            .join(".cache")
             .join(format!("asb-tui-dev-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         let cargo_root = root.join("home/.cargo");
         let shim_bin = cargo_root.join("bin");
