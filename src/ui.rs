@@ -1034,12 +1034,15 @@ impl WorkspaceState {
             let adapter_catalog = snapshot.provider_catalog.as_ref().and_then(|provider| {
                 crate::adapter_catalog::AdapterCatalog::from_provider_catalog(provider).ok()
             });
-            self.wizard = adapter_catalog.map_or_else(
-                || Wizard::with_catalog(catalog.clone()),
-                |adapter| Wizard::stable_with_catalog_and_adapter(catalog.clone(), adapter),
-            );
-            self.wizard_formal = WizardFormalState::new_with_catalog(catalog)
+            self.wizard_formal = adapter_catalog
+                .map_or_else(
+                    || WizardFormalState::new_with_catalog(catalog.clone()),
+                    |adapter| {
+                        WizardFormalState::new_with_catalog_and_adapter(catalog.clone(), adapter)
+                    },
+                )
                 .expect("validated live wizard catalog must satisfy the state model");
+            self.wizard = self.wizard_formal.wizard().clone();
             if let Some(bundle) = self.preflight_bundle.clone() {
                 // A catalog refresh replaces the renderer catalog, but never
                 // the durable provider/model/mode draft selected previously.
