@@ -42,6 +42,23 @@ pub enum TransportError {
     RemoteFailureCode(i32),
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum DynamicCatalogError {
+    ProtocolUnsupported,
+    Unavailable(control_codec::ProviderCatalogDiagnostic),
+    Static,
+    Missing,
+    Transport(TransportError),
+}
+
+impl std::fmt::Display for DynamicCatalogError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for DynamicCatalogError {}
+
 impl TransportError {
     #[must_use]
     pub const fn is_reconciliation_required(&self) -> bool {
@@ -832,9 +849,11 @@ impl AuthenticatedBrokerSession {
     pub fn refresh_dynamic_provider_catalog(
         &mut self,
         projection: &mut ControlProjection,
-    ) -> Result<(), TransportError> {
-        self.require_version(control_codec::CONTROL_DYNAMIC_PROVIDER_CATALOG_V1)?;
-        self.refresh_provider_catalog(projection)?;
+    ) -> Result<(), DynamicCatalogError> {
+        self.require_version(control_codec::CONTROL_DYNAMIC_PROVIDER_CATALOG_V1)
+            .map_err(|_| DynamicCatalogError::ProtocolUnsupported)?;
+        self.refresh_provider_catalog(projection)
+            .map_err(DynamicCatalogError::Transport)?;
         match projection.snapshot().dynamic_provider_catalog {
             Some(crate::live_projection::DynamicProviderCatalogState::Catalog(dynamic))
                 if dynamic.catalog.refreshed
@@ -846,7 +865,26 @@ impl AuthenticatedBrokerSession {
             {
                 Ok(())
             }
-            _ => Err(TransportError::Projection),
+            Some(crate::live_projection::DynamicProviderCatalogState::Catalog(dynamic)) => {
+                match dynamic.openrouter.mode {
+                    control_codec::ProviderCatalogMode::Unavailable => {
+                        Err(DynamicCatalogError::Unavailable(
+                            dynamic
+                                .openrouter
+                                .diagnostic
+                                .unwrap_or(control_codec::ProviderCatalogDiagnostic::Unavailable),
+                        ))
+                    }
+                    control_codec::ProviderCatalogMode::Static => Err(DynamicCatalogError::Static),
+                    control_codec::ProviderCatalogMode::Dynamic => {
+                        Err(DynamicCatalogError::Missing)
+                    }
+                }
+            }
+            Some(crate::live_projection::DynamicProviderCatalogState::UnsupportedVersion) => {
+                Err(DynamicCatalogError::ProtocolUnsupported)
+            }
+            None => Err(DynamicCatalogError::Missing),
         }
     }
 
@@ -2678,7 +2716,7 @@ mod tests {
         let mut projection = ControlProjection::default();
         assert_eq!(
             session.refresh_dynamic_provider_catalog(&mut projection),
-            Err(TransportError::NotNegotiated)
+            Err(DynamicCatalogError::ProtocolUnsupported)
         );
     }
 
@@ -2821,7 +2859,9 @@ mod tests {
         projection.accept_negotiated(negotiated).unwrap();
         assert_eq!(
             session.refresh_dynamic_provider_catalog(&mut projection),
-            Err(TransportError::Projection)
+            Err(DynamicCatalogError::Unavailable(
+                control_codec::ProviderCatalogDiagnostic::Unavailable
+            ))
         );
         assert!(matches!(
             projection.snapshot().dynamic_provider_catalog,

@@ -15,8 +15,8 @@ use asb_tui::{
     lifecycle::{local_self_test_response, run_self_test_supervisor},
     output_contract::{Route as OutputRoute, render as render_output},
     runtime::{
-        DevelopmentBrokerRoute, run_interactive, run_interactive_with_control,
-        run_interactive_with_control_route,
+        DevelopmentBrokerRoute, DevelopmentRouteFailure, run_interactive,
+        run_interactive_with_control, run_interactive_with_control_route,
     },
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
@@ -403,11 +403,23 @@ fn launch_broker_entry(development_mode: bool, route: DevelopmentBrokerRoute) ->
         route,
     ) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.development_route_failure().is_some() => {
+            let failure = error
+                .development_route_failure()
+                .expect("development route failure checked");
+            let (exit, message) = development_route_failure_contract(failure);
+            eprintln!("{message}");
+            ExitCode::from(exit)
+        }
         Err(_) => {
             eprintln!("terminal application failed");
             ExitCode::from(2)
         }
     }
+}
+
+fn development_route_failure_contract(failure: &DevelopmentRouteFailure) -> (u8, String) {
+    (failure.exit_code(), failure.cli_message())
 }
 
 fn development_terminal_path(
@@ -513,8 +525,12 @@ fn launch() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{DIAGNOSTIC, development_broker_route, development_terminal_path};
+    use super::{
+        DIAGNOSTIC, development_broker_route, development_route_failure_contract,
+        development_terminal_path,
+    };
     use asb_tui::terminal_handoff::preflight_terminal_path;
+    use asb_tui::{control_codec::ProviderCatalogDiagnostic, runtime::DevelopmentRouteFailure};
     use std::ffi::OsString;
 
     #[test]
@@ -583,5 +599,54 @@ mod tests {
             development_broker_route(&args(&["run", "--broker", "--development", "--unexpected"])),
             None
         );
+    }
+
+    #[test]
+    fn development_route_failures_have_distinct_actionable_exit_contracts() {
+        let cases = [
+            (
+                DevelopmentRouteFailure::ProtocolUnsupported,
+                3,
+                "dynamic_catalog_protocol_unsupported",
+                "network=not_attempted",
+            ),
+            (
+                DevelopmentRouteFailure::CatalogUnavailable(ProviderCatalogDiagnostic::Unavailable),
+                4,
+                "dynamic_catalog_unavailable",
+                "network=unknown",
+            ),
+            (
+                DevelopmentRouteFailure::CatalogStatic,
+                5,
+                "dynamic_catalog_static_no_fallback",
+                "network=not_used",
+            ),
+            (
+                DevelopmentRouteFailure::CatalogMissing,
+                6,
+                "dynamic_catalog_response_missing",
+                "network=unknown",
+            ),
+            (
+                DevelopmentRouteFailure::ControlTransport,
+                2,
+                "development_control_transport_failed",
+                "network=unknown",
+            ),
+            (
+                DevelopmentRouteFailure::LiveHandoffRejected,
+                7,
+                "live_provider_handoff_rejected",
+                "network=not_used",
+            ),
+        ];
+        for (failure, expected_exit, code, network) in cases {
+            let (exit, message) = development_route_failure_contract(&failure);
+            assert_eq!(exit, expected_exit);
+            assert!(message.contains(code));
+            assert!(message.contains(network));
+            assert!(!message.contains('/'));
+        }
     }
 }

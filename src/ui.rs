@@ -960,12 +960,21 @@ impl WorkspaceState {
     /// choice without selecting a provider/model or starting a run. The user
     /// still reviews the catalog-bound draft and initiates the runner handoff.
     pub fn use_live_provider_context(&mut self) -> Result<(), &'static str> {
+        let mut formal = crate::formal_state::FormalUiState::new(80, 24)
+            .map_err(|_| "live provider route rejected")?;
+        formal
+            .apply(
+                crate::formal_state::FormalEvent::OpenDevelopmentHandoff,
+                None,
+            )
+            .map_err(|_| "live provider route rejected")?;
         let mut values = self.wizard.values();
         values[crate::wizard::Step::Recording as usize] = "live".into();
         self.wizard_formal
             .restore_values(values)
             .map_err(|_| "live provider route rejected")?;
         self.wizard = self.wizard_formal.wizard().clone();
+        self.screen = Screen::DevelopmentHandoff;
         Ok(())
     }
 
@@ -4178,7 +4187,7 @@ mod tests {
             state.wizard.values()[crate::wizard::Step::Recording as usize],
             "live"
         );
-        assert_eq!(state.screen, Screen::Landing);
+        assert_eq!(state.screen, Screen::DevelopmentHandoff);
         assert!(state.launch_state().is_none());
     }
 }
