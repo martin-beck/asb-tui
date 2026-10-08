@@ -17,7 +17,8 @@ ROLES = {"action", "editable", "selectable", "navigation", "status"}
 LAYOUTS = {"wide", "compact", "tiny"}
 UI_OWNERS = {
     # State, projection, interaction, and terminal modules are the complete
-    # standalone UI surface. Backend protocol and lifecycle modules are
+    # standalone UI surface, including wizard.rs ownership of bounded preset
+    # controls. Backend protocol and lifecycle modules are
     # intentionally excluded to avoid requiring model churn for unrelated
     # implementation changes.
     "src/actions.rs", "src/adapter_catalog.rs", "src/app.rs", "src/configuration.rs", "src/formal_state.rs", "src/help.rs",

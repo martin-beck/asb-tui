@@ -287,15 +287,19 @@ impl WorkspaceState {
         })
     }
 
-    pub(crate) fn fanout_execution_mode(&self) -> crate::fanout_dispatch::FanoutExecutionMode {
-        match self.execution_mode_for_values(&self.wizard.values()) {
-            crate::configuration_materialization::ExecutionMode::Live => {
-                crate::fanout_dispatch::FanoutExecutionMode::Live
-            }
-            crate::configuration_materialization::ExecutionMode::LocalMock => {
-                crate::fanout_dispatch::FanoutExecutionMode::LocalMock
-            }
-        }
+    pub(crate) fn fanout_execution_mode(
+        &self,
+    ) -> Result<crate::fanout_dispatch::FanoutExecutionMode, String> {
+        Ok(
+            match self.execution_mode_for_values(&self.wizard.values())? {
+                crate::configuration_materialization::ExecutionMode::Live => {
+                    crate::fanout_dispatch::FanoutExecutionMode::Live
+                }
+                crate::configuration_materialization::ExecutionMode::LocalMock => {
+                    crate::fanout_dispatch::FanoutExecutionMode::LocalMock
+                }
+            },
+        )
     }
 
     pub(crate) fn fanout_credential_reference(&self) -> Option<&str> {
@@ -581,26 +585,30 @@ impl WorkspaceState {
     /// the credential check only when the operator starts the live run.
     pub fn wizard_execution_mode(
         values: &[String; 7],
-    ) -> crate::configuration_materialization::ExecutionMode {
+    ) -> Result<crate::configuration_materialization::ExecutionMode, &'static str> {
         match values[5].trim().to_ascii_lowercase().as_str() {
             "live" | "online" | "live-record" | "live_record" => {
-                crate::configuration_materialization::ExecutionMode::Live
+                Ok(crate::configuration_materialization::ExecutionMode::Live)
             }
-            _ => crate::configuration_materialization::ExecutionMode::LocalMock,
+            "local-mock" | "mock" => {
+                Ok(crate::configuration_materialization::ExecutionMode::LocalMock)
+            }
+            _ => Err("recording mode is not a supported bounded choice"),
         }
     }
 
     fn execution_mode_for_values(
         &self,
         values: &[String; 7],
-    ) -> crate::configuration_materialization::ExecutionMode {
+    ) -> Result<crate::configuration_materialization::ExecutionMode, String> {
         if values[5].trim().is_empty() {
-            self.preflight_bundle
+            Ok(self
+                .preflight_bundle
                 .as_ref()
                 .map(|bundle| bundle.document.provider.execution_mode)
-                .unwrap_or_default()
+                .unwrap_or_default())
         } else {
-            Self::wizard_execution_mode(values)
+            Self::wizard_execution_mode(values).map_err(str::to_owned)
         }
     }
 
@@ -688,7 +696,7 @@ impl WorkspaceState {
             provider.agent_ids.join(","),
             provider.provider_id.clone(),
             provider.model_id.clone(),
-            "restored defaults".into(),
+            "all defaults".into(),
             auth,
             provider.execution_mode.label().into(),
             "strict offline replay".into(),
@@ -790,7 +798,7 @@ impl WorkspaceState {
             benchmark: campaign,
             asb_protocol: "asb-control".into(),
             asb_version: "development".into(),
-            execution_mode: self.execution_mode_for_values(&values),
+            execution_mode: self.execution_mode_for_values(&values)?,
         };
         let bundle = crate::configuration_materialization::MaterializedBundle::build(
             input,
@@ -1182,10 +1190,20 @@ impl WorkspaceState {
                     self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None
                 }
+                KeyCode::Up if self.wizard.has_bounded_choices() => {
+                    let _ = self.wizard_formal.apply(FormalEvent::BoundedChoiceMove(-1));
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
                 KeyCode::Down
                     if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) =>
                 {
                     let _ = self.wizard_formal.apply(FormalEvent::CatalogMove(1));
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Down if self.wizard.has_bounded_choices() => {
+                    let _ = self.wizard_formal.apply(FormalEvent::BoundedChoiceMove(1));
                     self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None
                 }
@@ -1230,6 +1248,7 @@ impl WorkspaceState {
                     self.help = true;
                     UiAction::None
                 }
+                KeyCode::Char(_) if self.wizard.has_bounded_choices() => UiAction::None,
                 KeyCode::Char(c) if !c.is_control() => {
                     if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) {
                         let mut query = self
@@ -1258,6 +1277,9 @@ impl WorkspaceState {
                     UiAction::None
                 }
                 KeyCode::Backspace => {
+                    if self.wizard.has_bounded_choices() {
+                        return UiAction::None;
+                    }
                     if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) {
                         let mut query = self
                             .wizard
@@ -3457,6 +3479,23 @@ mod tests {
     }
 
     #[test]
+    fn bounded_wizard_steps_ignore_free_form_and_use_only_selection_keys() {
+        let mut state = WorkspaceState::for_startup(false);
+        for value in ['a', 'p', 'm'] {
+            state.handle_key(key(KeyCode::Char(value)));
+            state.handle_key(key(KeyCode::Enter));
+        }
+        assert_eq!(state.wizard.step(), crate::wizard::Step::Configuration);
+        let selected = state.wizard.current_value().to_owned();
+        assert_eq!(selected, "all defaults");
+        state.handle_key(key(KeyCode::Char('x')));
+        state.handle_key(key(KeyCode::Backspace));
+        assert_eq!(state.wizard.current_value(), selected);
+        state.handle_key(key(KeyCode::Down));
+        assert_eq!(state.wizard.current_value(), selected);
+    }
+
+    #[test]
     fn failed_formal_completion_does_not_change_wizard_route() {
         let mut state = WorkspaceState {
             screen: Screen::Wizard,
@@ -4041,7 +4080,7 @@ mod tests {
             "offline replay after capture".into(),
         ];
         assert_eq!(
-            WorkspaceState::wizard_execution_mode(&values),
+            WorkspaceState::wizard_execution_mode(&values).unwrap(),
             crate::configuration_materialization::ExecutionMode::Live
         );
         // Setup stays non-blocking: the same live intent can be reviewed even
@@ -4050,9 +4089,11 @@ mod tests {
         assert!(WorkspaceState::wizard_configuration_selection(&values).is_ok());
         values[5] = "mock".into();
         assert_eq!(
-            WorkspaceState::wizard_execution_mode(&values),
+            WorkspaceState::wizard_execution_mode(&values).unwrap(),
             crate::configuration_materialization::ExecutionMode::LocalMock
         );
+        values[5] = "unexpected".into();
+        assert!(WorkspaceState::wizard_execution_mode(&values).is_err());
     }
 
     #[test]

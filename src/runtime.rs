@@ -776,13 +776,17 @@ fn run_interactive_loop(
                                 .fanout_selection()
                                 .map_err(io::Error::other)
                                 .map_err(RuntimeError)?;
+                            let execution_mode = workspace
+                                .fanout_execution_mode()
+                                .map_err(io::Error::other)
+                                .map_err(RuntimeError)?;
                             fanout_state
                                 .admit_selected_with_mode(
                                     control,
                                     projection,
                                     "asb-tui-fanout".into(),
                                     selection,
-                                    workspace.fanout_execution_mode(),
+                                    execution_mode,
                                     workspace.fanout_credential_reference(),
                                 )
                                 .map_err(|error| {

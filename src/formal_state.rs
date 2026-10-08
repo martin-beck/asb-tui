@@ -375,6 +375,13 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["wizard_step_changed", "focus_reset"].as_slice()
         } else if transition.event == "wizard_set_value" {
             ["wizard_draft_changed", "focus_reset"].as_slice()
+        } else if transition.event == "wizard_bounded_choice_move" {
+            [
+                "wizard_bounded_choice_changed",
+                "wizard_draft_changed",
+                "focus_reset",
+            ]
+            .as_slice()
         } else if matches!(
             transition.event.as_str(),
             "wizard_catalog_query" | "wizard_catalog_move"

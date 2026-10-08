@@ -89,6 +89,19 @@ class UiHelpValidationTests(unittest.TestCase):
         for element in model["elements"]:
             self.assertEqual(catalog_routes[element["help_id"]], element["route"])
 
+    def test_bounded_wizard_controls_have_meaningful_selection_help(self) -> None:
+        entries = {entry["id"]: entry for entry in self.document["elements"]}
+        for element_id in (
+            "wizard.configuration",
+            "wizard.authentication",
+            "wizard.recording",
+            "wizard.replay",
+        ):
+            entry = entries[element_id]
+            self.assertEqual(entry["kind"], "selectable")
+            self.assertIn("Up or Down", entry["help"]["usage"])
+            self.assertGreaterEqual(len(entry["help"]["summary"].split()), 8)
+
     def test_action_registry_discovery_fails_closed(self) -> None:
         original = VALIDATOR.ACTION_SOURCE
         with tempfile.TemporaryDirectory() as directory:

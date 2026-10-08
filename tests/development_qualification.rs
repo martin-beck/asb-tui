@@ -126,9 +126,9 @@ fn clean_fixture_composes_install_wizard_benchmark_replay_and_comparison() {
     for value in [
         "development",
         "fixture-model",
-        "development defaults",
-        "development fixture",
-        "mock capture",
+        "all defaults",
+        "none",
+        "local-mock",
         "strict offline replay",
     ] {
         wizard.advance().unwrap();

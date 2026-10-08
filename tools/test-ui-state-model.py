@@ -84,6 +84,35 @@ class UiStateModelTests(unittest.TestCase):
         self.assertIn(("wizard_help", "wizard.agent", "?"), bindings)
         self.assertIn(("complete_wizard", "wizard.review", "Enter"), bindings)
 
+    def test_bounded_wizard_controls_and_changed_owners_are_formally_declared(self):
+        self.assertIn("wizard_bounded_choices", self.model["state_fields"])
+        bindings = {(item["action"], item["element"], item["key"]) for item in self.model["bindings"]}
+        self.assertIn(("wizard_bounded_choice_move", "wizard.controls", "Up/Down"), bindings)
+        transition = next(
+            item for item in self.model["transitions"]
+            if item["event"] == "wizard_bounded_choice_move"
+        )
+        self.assertEqual(
+            transition["effects"],
+            ["wizard_bounded_choice_changed", "wizard_draft_changed", "focus_reset"],
+        )
+        elements = {item["id"]: item for item in self.model["elements"]}
+        for element_id in (
+            "wizard.configuration",
+            "wizard.authentication",
+            "wizard.recording",
+            "wizard.replay",
+        ):
+            self.assertEqual(elements[element_id]["role"], "selectable")
+        for owner in (
+            "src/formal_state.rs",
+            "src/ui.rs",
+            "src/wizard.rs",
+            "src/runtime.rs",
+        ):
+            self.assertIn(owner, MODULE.UI_OWNERS)
+            self.assertIn(owner, self.inventory_paths())
+
     def test_workspace_wizard_route_and_bindings_are_formally_declared(self):
         routes = {route["id"]: route for route in self.model["routes"]}
         self.assertIn("wizard", routes)
