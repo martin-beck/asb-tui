@@ -595,6 +595,165 @@ time.sleep(30)
     def test_selector_registration_failure_restores_every_resource(self):
         self._assert_selector_failure_is_clean("register")
 
+    def test_parent_set_blocking_failure_closes_received_master_once(self):
+        fixture = "import time; print('READY', flush=True); time.sleep(30)"
+        real_receive = MODULE._receive_supervisor_packet
+        real_set_blocking = MODULE.os.set_blocking
+        real_close = MODULE.os.close
+        real_fork = MODULE.os.fork
+        parent_pid = os.getpid()
+        received_master = None
+        supervisor_pid = None
+        close_count = 0
+
+        def tracked_fork():
+            nonlocal supervisor_pid
+            pid = real_fork()
+            if os.getpid() == parent_pid:
+                supervisor_pid = pid
+            return pid
+
+        def tracked_receive(control):
+            nonlocal received_master
+            packet, descriptor = real_receive(control)
+            if os.getpid() == parent_pid and packet.get("kind") == "ready":
+                received_master = descriptor
+            return packet, descriptor
+
+        def injected_set_blocking(fd, blocking):
+            if os.getpid() == parent_pid and fd == received_master:
+                raise OSError("injected parent set_blocking failure")
+            return real_set_blocking(fd, blocking)
+
+        def tracked_close(fd):
+            nonlocal close_count
+            if os.getpid() == parent_pid and fd == received_master:
+                close_count += 1
+            return real_close(fd)
+
+        with mock.patch.object(
+            MODULE, "_receive_supervisor_packet", tracked_receive
+        ), mock.patch.object(
+            MODULE.os, "fork", tracked_fork
+        ), mock.patch.object(
+            MODULE.os, "set_blocking", injected_set_blocking
+        ), mock.patch.object(MODULE.os, "close", tracked_close):
+            with self.assertRaisesRegex(OSError, "injected parent set_blocking"):
+                MODULE._start_fixture_supervisor(
+                    [sys.executable, "-c", fixture], os.environ.copy()
+                )
+        self.assertIsNotNone(received_master)
+        self.assertEqual(close_count, 1)
+        with self.assertRaises(OSError):
+            os.fstat(received_master)
+        self.assertIsNotNone(supervisor_pid)
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(supervisor_pid, os.WNOHANG)
+
+    def test_invalid_supervisor_packet_closes_received_descriptor_once(self):
+        sender, receiver = MODULE.socket.socketpair(
+            MODULE.socket.AF_UNIX, MODULE.socket.SOCK_SEQPACKET
+        )
+        read_fd, write_fd = os.pipe()
+        received_close_count = 0
+        pipe_inode = os.fstat(read_fd).st_ino
+        real_close = MODULE.os.close
+        try:
+            sender.sendmsg(
+                [b"not-json"],
+                [
+                    (
+                        MODULE.socket.SOL_SOCKET,
+                        MODULE.socket.SCM_RIGHTS,
+                        MODULE.struct.pack("i", read_fd),
+                    )
+                ],
+            )
+            os.close(read_fd)
+            read_fd = -1
+
+            def tracked_close(fd):
+                nonlocal received_close_count
+                try:
+                    if os.fstat(fd).st_ino == pipe_inode:
+                        received_close_count += 1
+                except OSError:
+                    pass
+                return real_close(fd)
+
+            with mock.patch.object(MODULE.os, "close", tracked_close):
+                with self.assertRaises(json.JSONDecodeError):
+                    MODULE._receive_supervisor_packet(receiver)
+            self.assertEqual(received_close_count, 1)
+        finally:
+            if read_fd >= 0:
+                os.close(read_fd)
+            os.close(write_fd)
+            sender.close()
+            receiver.close()
+
+    def test_stopped_supervisor_start_and_stop_cleanup_are_bounded(self):
+        fixture = "import time; print('READY', flush=True); time.sleep(30)"
+        real_child = MODULE._fixture_supervisor_child
+        real_fork = MODULE.os.fork
+        parent_pid = os.getpid()
+        startup_supervisor_pid = None
+
+        def tracked_fork():
+            nonlocal startup_supervisor_pid
+            pid = real_fork()
+            if os.getpid() == parent_pid:
+                startup_supervisor_pid = pid
+            return pid
+
+        def stopped_before_startup(control, command, environment):
+            os.kill(os.getpid(), signal.SIGSTOP)
+            real_child(control, command, environment)
+
+        with mock.patch.object(
+            MODULE, "SUPERVISOR_CONTROL_TIMEOUT", 0.1
+        ), mock.patch.object(
+            MODULE, "SUPERVISOR_TERM_TIMEOUT", 0.1
+        ), mock.patch.object(
+            MODULE, "SUPERVISOR_KILL_TIMEOUT", 0.2
+        ), mock.patch.object(
+            MODULE, "_fixture_supervisor_child", stopped_before_startup
+        ), mock.patch.object(
+            MODULE.os, "fork", tracked_fork
+        ):
+            started = time.monotonic()
+            with self.assertRaises((TimeoutError, BaseExceptionGroup)):
+                MODULE._start_fixture_supervisor(
+                    [sys.executable, "-c", fixture], os.environ.copy()
+                )
+            self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIsNotNone(startup_supervisor_pid)
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(startup_supervisor_pid, os.WNOHANG)
+
+        supervisor = MODULE._start_fixture_supervisor(
+            [sys.executable, "-c", fixture], os.environ.copy()
+        )
+        try:
+            os.kill(supervisor.pid, signal.SIGSTOP)
+            started = time.monotonic()
+            with mock.patch.object(
+                MODULE, "SUPERVISOR_CONTROL_TIMEOUT", 0.1
+            ), mock.patch.object(
+                MODULE, "SUPERVISOR_TERM_TIMEOUT", 0.1
+            ), mock.patch.object(MODULE, "SUPERVISOR_KILL_TIMEOUT", 0.2):
+                with self.assertRaises((TimeoutError, BaseExceptionGroup)):
+                    MODULE._stop_fixture_supervisor(supervisor)
+            self.assertLess(time.monotonic() - started, 1.5)
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(supervisor.pid, os.WNOHANG)
+        finally:
+            MODULE._close_fd(supervisor.master)
+            try:
+                os.kill(supervisor.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
     def test_pre_spawn_ttyname_failure_closes_both_descriptors_once(self):
         self._assert_pre_spawn_failure_is_clean("ttyname")
 

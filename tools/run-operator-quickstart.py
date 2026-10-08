@@ -29,6 +29,9 @@ PTY_COLUMNS = 80
 MAX_COMMAND_OUTPUT = 2 * 1024 * 1024
 PTY_READINESS_TIMEOUT = 10.0
 PTY_EXIT_TIMEOUT = 10.0
+SUPERVISOR_CONTROL_TIMEOUT = 5.0
+SUPERVISOR_TERM_TIMEOUT = 0.5
+SUPERVISOR_KILL_TIMEOUT = 1.0
 PR_SET_CHILD_SUBREAPER = 36
 PR_GET_CHILD_SUBREAPER = 37
 
@@ -347,6 +350,57 @@ def _wait_nohang(pid: int) -> int | None:
     return None if waited == 0 else os.waitstatus_to_exitcode(status)
 
 
+def _poll_child_reaped(pid: int, timeout_seconds: float) -> bool:
+    """Boundedly poll one direct child without ever entering blocking waitpid."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            waited, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        if waited == pid:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+
+
+def _terminate_and_reap_supervisor(pid: int) -> None:
+    """Identity-safely terminate and boundedly reap a direct supervisor child."""
+    if _poll_child_reaped(pid, 0.0):
+        return
+    try:
+        pidfd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        if _poll_child_reaped(pid, 0.0):
+            return
+        raise
+    try:
+        try:
+            signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+            # A stopped process cannot act on pending SIGTERM until continued.
+            signal.pidfd_send_signal(pidfd, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+        if _poll_child_reaped(pid, SUPERVISOR_TERM_TIMEOUT):
+            return
+        try:
+            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if _poll_child_reaped(pid, SUPERVISOR_KILL_TIMEOUT):
+            return
+        # One final nonblocking reap closes the race at the deadline without
+        # allowing a stopped or stalled supervisor to block this process.
+        if _poll_child_reaped(pid, 0.0):
+            return
+        raise TimeoutError(
+            "fixture supervisor did not exit after bounded TERM/KILL cleanup"
+        )
+    finally:
+        os.close(pidfd)
+
+
 def _close_fd(fd: int | None) -> None:
     if fd is not None:
         try:
@@ -499,19 +553,34 @@ def _send_supervisor_packet(
 def _receive_supervisor_packet(
     control: socket.socket,
 ) -> tuple[dict[str, object], int | None]:
-    payload, ancillary, _, _ = control.recvmsg(
+    payload, ancillary, flags, _ = control.recvmsg(
         65536, socket.CMSG_SPACE(struct.calcsize("i"))
     )
-    if not payload:
-        raise RuntimeError("fixture supervisor closed its control channel")
-    received_fd = None
-    for level, kind, data in ancillary:
-        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-            received_fd = struct.unpack("i", data[: struct.calcsize("i")])[0]
-    value = json.loads(payload.decode("utf-8"))
-    if not isinstance(value, dict):
-        raise RuntimeError("fixture supervisor sent an invalid control packet")
-    return value, received_fd
+    received_fds: list[int] = []
+    try:
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                if len(data) < struct.calcsize("i"):
+                    raise RuntimeError(
+                        "fixture supervisor sent invalid descriptor data"
+                    )
+                received_fds.append(
+                    struct.unpack("i", data[: struct.calcsize("i")])[0]
+                )
+        if not payload:
+            raise RuntimeError("fixture supervisor closed its control channel")
+        if flags & socket.MSG_CTRUNC:
+            raise RuntimeError("fixture supervisor sent truncated descriptor data")
+        if len(received_fds) > 1:
+            raise RuntimeError("fixture supervisor sent multiple descriptors")
+        value = json.loads(payload.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise RuntimeError("fixture supervisor sent an invalid control packet")
+        return value, received_fds[0] if received_fds else None
+    except BaseException:
+        for received_fd in received_fds:
+            _close_fd(received_fd)
+        raise
 
 
 def _fixture_supervisor_child(
@@ -600,33 +669,48 @@ def _start_fixture_supervisor(
         _fixture_supervisor_child(child_control, command, environment)
         os._exit(0)
     child_control.close()
-    parent_control.settimeout(5.0)
+    parent_control.settimeout(SUPERVISOR_CONTROL_TIMEOUT)
+    owned_master: _OwnedFd | None = None
     try:
         packet, master = _receive_supervisor_packet(parent_control)
+        if master is not None:
+            owned_master = _OwnedFd(master)
         if packet.get("kind") != "ready" or master is None:
             raise RuntimeError(f"fixture supervisor startup failed: {packet}")
-        os.set_blocking(master, False)
+        os.set_blocking(owned_master.fd, False)
         parent_control.setblocking(False)
         return _FixtureSupervisor(
             supervisor_pid,
             parent_control,
             int(packet["leader_pid"]),
             int(packet["session_id"]),
-            master,
+            owned_master.detach(),
         )
-    except BaseException:
-        parent_control.close()
-        try:
-            os.waitpid(supervisor_pid, 0)
-        except ChildProcessError:
-            pass
-        raise
+    except BaseException as primary:
+        cleanup_actions: list[tuple[str, Callable[[], object]]] = [
+            ("supervisor control socket", parent_control.close),
+        ]
+        if owned_master is not None:
+            cleanup_actions.append(
+                ("received PTY master descriptor", owned_master.close)
+            )
+        cleanup_actions.append(
+            (
+                "fixture supervisor process",
+                lambda: _terminate_and_reap_supervisor(supervisor_pid),
+            )
+        )
+        _raise_operation_and_cleanup_errors(
+            primary, _collect_cleanup_errors(cleanup_actions)
+        )
+        raise AssertionError("unreachable fixture supervisor startup cleanup state")
 
 
 def _stop_fixture_supervisor(supervisor: _FixtureSupervisor) -> None:
     errors: list[str] = []
+    primary: BaseException | None = None
     try:
-        supervisor.control.settimeout(5.0)
+        supervisor.control.settimeout(SUPERVISOR_CONTROL_TIMEOUT)
         _send_supervisor_packet(supervisor.control, {"kind": "cleanup"})
         while True:
             packet, received_fd = _receive_supervisor_packet(supervisor.control)
@@ -638,12 +722,18 @@ def _stop_fixture_supervisor(supervisor: _FixtureSupervisor) -> None:
             if kind == "error":
                 errors.append(str(packet.get("message")))
                 break
-    finally:
-        supervisor.control.close()
-        try:
-            os.waitpid(supervisor.pid, 0)
-        except ChildProcessError:
-            pass
+    except BaseException as error:
+        primary = error
+    cleanup_errors = _collect_cleanup_errors(
+        [
+            ("supervisor control socket", supervisor.control.close),
+            (
+                "fixture supervisor process",
+                lambda: _terminate_and_reap_supervisor(supervisor.pid),
+            ),
+        ]
+    )
+    _raise_operation_and_cleanup_errors(primary, cleanup_errors)
     if errors:
         raise AssertionError("; ".join(errors))
 
