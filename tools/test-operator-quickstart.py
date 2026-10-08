@@ -308,6 +308,174 @@ time.sleep(30)
                     except ProcessLookupError:
                         pass
 
+    def test_timeout_reaps_immediate_double_fork_setsid_adoption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "daemon-pid"
+            fixture = """
+import os, pathlib, signal, time
+intermediate = os.fork()
+if intermediate == 0:
+    daemon = os.fork()
+    if daemon != 0:
+        os._exit(0)
+    os.setsid()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    pathlib.Path(os.environ["DAEMON_PID_FILE"]).write_text(str(os.getpid()))
+    while True:
+        time.sleep(1)
+os.waitpid(intermediate, 0)
+deadline = time.monotonic() + 2
+while not pathlib.Path(os.environ["DAEMON_PID_FILE"]).exists() and time.monotonic() < deadline:
+    time.sleep(0.001)
+time.sleep(30)
+"""
+            environment = os.environ.copy()
+            environment["DAEMON_PID_FILE"] = str(marker)
+            original_subreaper = MODULE._get_child_subreaper()
+            daemon_pid = None
+            ambient = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+            try:
+                for initial_subreaper in (False, True):
+                    with self.subTest(initial_subreaper=initial_subreaper):
+                        marker.unlink(missing_ok=True)
+                        MODULE._child_subreaper(initial_subreaper)
+                        with self.assertRaisesRegex(AssertionError, "timed out"):
+                            MODULE.run_asb(
+                                Path(sys.executable),
+                                ["-c", fixture],
+                                environment,
+                                json_output=False,
+                                timeout_seconds=0.2,
+                            )
+                        daemon_pid = int(marker.read_text(encoding="utf-8"))
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(daemon_pid, 0)
+                        self.assertIsNone(ambient.poll())
+                        self.assertEqual(
+                            MODULE._get_child_subreaper(), initial_subreaper
+                        )
+            finally:
+                MODULE._child_subreaper(original_subreaper)
+                ambient.kill()
+                ambient.wait()
+                if daemon_pid is not None:
+                    try:
+                        os.kill(daemon_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_depth_limit_still_cleans_authenticated_lineage(self):
+        self._assert_discovery_limit_is_clean("depth")
+
+    def test_process_limit_still_cleans_authenticated_lineage(self):
+        self._assert_discovery_limit_is_clean("process")
+
+    def _assert_discovery_limit_is_clean(self, limit: str):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker_dir = Path(temporary)
+            fixture = """
+import os, pathlib, signal, time
+root = pathlib.Path(os.environ["LINEAGE_MARKER_DIR"])
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+root.joinpath("leader").write_text(str(os.getpid()))
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    root.joinpath("child").write_text(str(os.getpid()))
+    grandchild = os.fork()
+    if grandchild == 0:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        root.joinpath("grandchild").write_text(str(os.getpid()))
+        while True:
+            time.sleep(1)
+    while not root.joinpath("grandchild").exists():
+        time.sleep(0.001)
+    while True:
+        time.sleep(1)
+while not root.joinpath("grandchild").exists():
+    time.sleep(0.001)
+time.sleep(30)
+"""
+            environment = os.environ.copy()
+            environment["LINEAGE_MARKER_DIR"] = str(marker_dir)
+            real_spawn = MODULE._spawn_controlling_pty
+            real_close = MODULE.os.close
+            master_fd = None
+            master_close_count = 0
+            observed_pids = []
+
+            def tracked_spawn(*args, **kwargs):
+                nonlocal master_fd
+                leader, master_fd = real_spawn(*args, **kwargs)
+                return leader, master_fd
+
+            def tracked_close(fd):
+                nonlocal master_close_count
+                if fd == master_fd:
+                    master_close_count += 1
+                return real_close(fd)
+
+            original_subreaper = MODULE._get_child_subreaper()
+            try:
+                for initial_subreaper in (False, True):
+                    with self.subTest(
+                        limit=limit, initial_subreaper=initial_subreaper
+                    ):
+                        for name in ("leader", "child", "grandchild"):
+                            marker_dir.joinpath(name).unlink(missing_ok=True)
+                        master_fd = None
+                        master_close_count = 0
+                        observed_pids.clear()
+                        MODULE._child_subreaper(initial_subreaper)
+                        limit_patch = (
+                            mock.patch.object(MODULE, "MAX_LINEAGE_DEPTH", 1)
+                            if limit == "depth"
+                            else mock.patch.object(
+                                MODULE, "MAX_LINEAGE_PROCESSES", 2
+                            )
+                        )
+                        with limit_patch, mock.patch.object(
+                            MODULE, "_spawn_controlling_pty", tracked_spawn
+                        ), mock.patch.object(MODULE.os, "close", tracked_close):
+                            with self.assertRaises(BaseException) as caught:
+                                MODULE.run_asb(
+                                    Path(sys.executable),
+                                    ["-c", fixture],
+                                    environment,
+                                    json_output=False,
+                                    timeout_seconds=1,
+                                )
+                        self.assertIn(
+                            f"exceeded {limit} limit", repr(caught.exception)
+                        )
+                        for name in ("leader", "child", "grandchild"):
+                            observed_pids.append(
+                                int(marker_dir.joinpath(name).read_text())
+                            )
+                        for pid in observed_pids:
+                            with self.assertRaises(ProcessLookupError):
+                                os.kill(pid, 0)
+                        self.assertEqual(
+                            MODULE._get_child_subreaper(), initial_subreaper
+                        )
+                        self.assertEqual(master_close_count, 1)
+                        self.assertIsNotNone(master_fd)
+                        with self.assertRaises(OSError):
+                            os.fstat(master_fd)
+            finally:
+                MODULE._child_subreaper(original_subreaper)
+                for pid in observed_pids:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
     def test_selector_construction_failure_restores_every_resource(self):
         self._assert_selector_failure_is_clean("construct")
 
@@ -420,8 +588,8 @@ time.sleep(30)
                 leader, spawned_fd = real_spawn(*args, **kwargs)
                 return leader, spawned_fd
 
-            def terminate_then_report(leader, tracked=None):
-                real_terminate(leader, tracked)
+            def terminate_then_report(leader, tracked=None, ambient=None):
+                real_terminate(leader, tracked, ambient)
                 if cleanup_failure == "terminate":
                     raise RuntimeError("injected teardown report")
 

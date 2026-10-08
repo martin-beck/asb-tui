@@ -135,6 +135,29 @@ def _open_descendant_identity(
         return None
 
 
+def _open_direct_child_identity(
+    pid: int, parent_pid: int
+) -> _ProcessIdentity | None:
+    """Pin a direct child of this runner without trusting a bare PID."""
+    pidfd: int | None = None
+    try:
+        snapshot = _read_process_identity(pid)
+        if snapshot.parent_pid != parent_pid:
+            return None
+        pidfd = os.pidfd_open(pid)
+        confirmed = _read_process_identity(pid)
+        if confirmed != snapshot or confirmed.parent_pid != parent_pid:
+            os.close(pidfd)
+            return None
+        return _ProcessIdentity(
+            pid, snapshot.session_id, snapshot.start_time, pidfd
+        )
+    except (FileNotFoundError, ProcessLookupError):
+        if pidfd is not None:
+            os.close(pidfd)
+        return None
+
+
 def _identity_alive(identity: _ProcessIdentity) -> bool:
     try:
         signal.pidfd_send_signal(identity.pidfd, 0)
@@ -161,14 +184,41 @@ MAX_LINEAGE_DEPTH = 64
 MAX_LINEAGE_PROCESSES = 4096
 
 
-def _discover_descendants(tracked: dict[int, _ProcessIdentity]) -> None:
+def _capture_ambient_children() -> dict[int, _ProcessIdentity]:
+    """Pin children which existed before the fixture execution boundary."""
+    ambient: dict[int, _ProcessIdentity] = {}
+    runner_pid = os.getpid()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        identity = _open_direct_child_identity(int(entry.name), runner_pid)
+        if identity is not None:
+            ambient[identity.pid] = identity
+    return ambient
+
+
+def _is_ambient_identity(
+    identity: _ProcessIdentity, ambient: dict[int, _ProcessIdentity]
+) -> bool:
+    baseline = ambient.get(identity.pid)
+    return baseline is not None and baseline.start_time == identity.start_time
+
+
+def _discover_descendants(
+    tracked: dict[int, _ProcessIdentity],
+    ambient: dict[int, _ProcessIdentity] | None = None,
+) -> None:
     """Pin descendants through stable parent edges, independent of sessions.
 
     Discovery starts only from the authenticated spawn leader and identities
     already proven to descend from it.  It never treats the runner's ambient
     children, a shared session, or a numeric PID/PGID as authority.
     """
-    for _ in range(MAX_LINEAGE_DEPTH):
+    if ambient is None:
+        ambient = {}
+    runner_pid = os.getpid()
+    process_limit_reached = False
+    for depth in range(MAX_LINEAGE_DEPTH):
         added = False
         parents = dict(tracked)
         for entry in Path("/proc").iterdir():
@@ -182,40 +232,81 @@ def _discover_descendants(tracked: dict[int, _ProcessIdentity]) -> None:
             except (FileNotFoundError, ProcessLookupError):
                 continue
             parent = parents.get(parent_pid)
-            if parent is None:
-                continue
-            identity = _open_descendant_identity(pid, parent)
+            if parent is not None:
+                identity = _open_descendant_identity(pid, parent)
+            elif parent_pid == runner_pid:
+                # A rapid double-fork can be adopted by this subreaper before
+                # an intermediate parent edge is sampled.  The pre-spawn
+                # baseline excludes ambient siblings at this boundary.
+                identity = _open_direct_child_identity(pid, runner_pid)
+                if identity is not None and _is_ambient_identity(identity, ambient):
+                    os.close(identity.pidfd)
+                    identity = None
+            else:
+                identity = None
             if identity is None:
+                continue
+            if len(tracked) >= MAX_LINEAGE_PROCESSES:
+                os.close(identity.pidfd)
+                process_limit_reached = True
                 continue
             tracked[pid] = identity
             added = True
-            if len(tracked) > MAX_LINEAGE_PROCESSES:
-                raise AssertionError("authenticated fixture lineage exceeded process limit")
+        if process_limit_reached:
+            raise AssertionError("authenticated fixture lineage exceeded process limit")
         if not added:
             return
-    raise AssertionError(
-        f"authenticated fixture lineage exceeded depth limit {MAX_LINEAGE_DEPTH}"
-    )
+        if depth + 1 == MAX_LINEAGE_DEPTH:
+            raise AssertionError(
+                f"authenticated fixture lineage exceeded depth limit {MAX_LINEAGE_DEPTH}"
+            )
 
 
-def _lineage_alive(tracked: dict[int, _ProcessIdentity]) -> bool:
-    for observation in range(2):
-        _discover_descendants(tracked)
-        for identity in tracked.values():
-            _reap_identity(identity)
-        if any(_identity_alive(identity) for identity in tracked.values()):
-            return True
-        if observation == 0:
-            # A just-terminated parent can expose an adopted child after the
-            # procfs directory sweep that observed the parent.  Require a
-            # second quiescent observation before declaring the session gone.
-            time.sleep(0.01)
-    return False
+def _record_discovery_error(
+    errors: list[BaseException], error: BaseException
+) -> None:
+    if not any(
+        type(existing) is type(error) and str(existing) == str(error)
+        for existing in errors
+    ):
+        error.add_note("cleanup stage: authenticated lineage discovery")
+        errors.append(error)
+
+
+def _discover_for_cleanup(
+    tracked: dict[int, _ProcessIdentity],
+    ambient: dict[int, _ProcessIdentity],
+    errors: list[BaseException],
+) -> None:
+    try:
+        _discover_descendants(tracked, ambient)
+    except BaseException as error:
+        _record_discovery_error(errors, error)
+
+
+def _retire_dead_identities(tracked: dict[int, _ProcessIdentity]) -> None:
+    """Reap and release dead identities so bounded discovery can continue."""
+    for pid, identity in list(tracked.items()):
+        _reap_identity(identity)
+        if not _identity_alive(identity):
+            os.close(identity.pidfd)
+            del tracked[pid]
+
+
+def _lineage_alive(
+    tracked: dict[int, _ProcessIdentity],
+    ambient: dict[int, _ProcessIdentity],
+    errors: list[BaseException],
+) -> bool:
+    _discover_for_cleanup(tracked, ambient, errors)
+    _retire_dead_identities(tracked)
+    return bool(tracked)
 
 
 def _terminate_session(
     leader: _ProcessIdentity,
     tracked: dict[int, _ProcessIdentity] | None = None,
+    ambient: dict[int, _ProcessIdentity] | None = None,
 ) -> None:
     """Terminate and reap the authenticated spawned process lineage.
 
@@ -227,35 +318,52 @@ def _terminate_session(
         tracked = {leader.pid: leader}
     elif tracked.get(leader.pid) != leader:
         raise AssertionError("authenticated fixture lineage lost its leader")
+    if ambient is None:
+        ambient = {}
+    cleanup_errors: list[BaseException] = []
     try:
-        _discover_descendants(tracked)
+        _discover_for_cleanup(tracked, ambient, cleanup_errors)
         for identity in tracked.values():
             _signal_identity(identity, signal.SIGTERM)
         term_deadline = time.monotonic() + 0.5
         while time.monotonic() < term_deadline:
             known = set(tracked)
-            if not _lineage_alive(tracked):
-                return
+            alive = _lineage_alive(tracked, ambient, cleanup_errors)
             for pid in set(tracked) - known:
                 _signal_identity(tracked[pid], signal.SIGTERM)
+            if not alive:
+                time.sleep(0.01)
+                if not _lineage_alive(tracked, ambient, cleanup_errors):
+                    break
             time.sleep(0.01)
 
-        kill_deadline = time.monotonic() + 1.0
-        while time.monotonic() < kill_deadline:
-            known = set(tracked)
-            _discover_descendants(tracked)
-            for pid, identity in tracked.items():
-                if pid not in known or _identity_alive(identity):
+        if tracked:
+            kill_deadline = time.monotonic() + 1.0
+            while time.monotonic() < kill_deadline:
+                _discover_for_cleanup(tracked, ambient, cleanup_errors)
+                for identity in tracked.values():
                     _signal_identity(identity, signal.SIGKILL)
-            if not _lineage_alive(tracked):
-                return
-            time.sleep(0.01)
-        if _lineage_alive(tracked):
-            raise AssertionError("authenticated fixture lineage survived SIGKILL")
+                if not _lineage_alive(tracked, ambient, cleanup_errors):
+                    time.sleep(0.01)
+                    if not _lineage_alive(tracked, ambient, cleanup_errors):
+                        break
+                time.sleep(0.01)
+        if tracked:
+            cleanup_errors.append(
+                AssertionError("authenticated fixture lineage survived SIGKILL")
+            )
     finally:
-        for identity in tracked.values():
+        for identity in list(tracked.values()):
             _reap_identity(identity)
             os.close(identity.pidfd)
+        tracked.clear()
+    _raise_operation_and_cleanup_errors(None, cleanup_errors)
+
+
+def _close_identity_set(identities: dict[int, _ProcessIdentity]) -> None:
+    for identity in identities.values():
+        os.close(identity.pidfd)
+    identities.clear()
 
 
 def _wait_nohang(pid: int) -> int | None:
@@ -341,8 +449,12 @@ def _pty_is_interactive_ready(master: int, session_id: int) -> bool:
 
 
 def _spawn_controlling_pty(
-    command: list[str], environment: dict[str, str]
+    command: list[str],
+    environment: dict[str, str],
+    ambient: dict[int, _ProcessIdentity] | None = None,
 ) -> tuple[_ProcessIdentity, int]:
+    if ambient is None:
+        ambient = {}
     master, slave = pty.openpty()
     owned_master = _OwnedFd(master)
     owned_slave = _OwnedFd(slave)
@@ -389,7 +501,10 @@ def _spawn_controlling_pty(
     cleanup_actions: list[tuple[str, Callable[[], object]]] = []
     if leader is not None:
         cleanup_actions.append(
-            ("authenticated child session", lambda: _terminate_session(leader))
+            (
+                "authenticated child session",
+                lambda: _terminate_session(leader, ambient=ambient),
+            )
         )
     cleanup_actions.extend(
         [
@@ -416,6 +531,7 @@ def run_asb(
 ) -> tuple[int, str]:
     command = [str(asb), *arguments]
     previous_subreaper = _child_subreaper(True)
+    ambient: dict[int, _ProcessIdentity] = {}
     leader: _ProcessIdentity | None = None
     tracked: dict[int, _ProcessIdentity] = {}
     master: int | None = None
@@ -424,7 +540,8 @@ def run_asb(
     result_code: int | None = None
     primary: BaseException | None = None
     try:
-        leader, master = _spawn_controlling_pty(command, environment)
+        ambient = _capture_ambient_children()
+        leader, master = _spawn_controlling_pty(command, environment, ambient)
         tracked[leader.pid] = leader
         selector = selectors.DefaultSelector()
         selector.register(master, selectors.EVENT_READ)
@@ -461,7 +578,7 @@ def run_asb(
                 if written == 1:
                     quit_sent = True
                     exit_deadline = min(deadline, time.monotonic() + exit_timeout_seconds)
-            _discover_descendants(tracked)
+            _discover_descendants(tracked, ambient)
             result_code = _wait_nohang(leader.pid)
         while True:
             try:
@@ -486,12 +603,13 @@ def run_asb(
         cleanup_actions.append(
             (
                 "authenticated child lineage",
-                lambda: _terminate_session(leader, tracked),
+                lambda: _terminate_session(leader, tracked, ambient),
             )
         )
     cleanup_actions.extend(
         [
             ("PTY master descriptor", lambda: _close_fd(master)),
+            ("ambient-child identity baseline", lambda: _close_identity_set(ambient)),
             (
                 "child-subreaper restoration",
                 lambda: _child_subreaper(previous_subreaper),
