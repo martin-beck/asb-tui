@@ -226,6 +226,189 @@ while True:
     def test_selector_registration_failure_restores_every_resource(self):
         self._assert_selector_failure_is_clean("register")
 
+    def test_pre_spawn_ttyname_failure_closes_both_descriptors_once(self):
+        self._assert_pre_spawn_failure_is_clean("ttyname")
+
+    def test_pre_spawn_window_ioctl_failures_close_both_descriptors_once(self):
+        for failure in ("set-window", "get-window"):
+            with self.subTest(failure=failure):
+                self._assert_pre_spawn_failure_is_clean(failure)
+
+    def test_posix_spawn_failure_closes_both_descriptors_once(self):
+        self._assert_pre_spawn_failure_is_clean("spawn")
+
+    def _assert_pre_spawn_failure_is_clean(self, failure: str):
+        real_openpty = MODULE.pty.openpty
+        real_close = MODULE.os.close
+        real_ttyname = MODULE.os.ttyname
+        real_ioctl = MODULE.fcntl.ioctl
+        real_posix_spawn = MODULE.os.posix_spawn
+        acquired = []
+        close_counts = {}
+        spawn_calls = 0
+
+        def tracked_openpty():
+            descriptors = real_openpty()
+            acquired[:] = descriptors
+            close_counts.update({descriptor: 0 for descriptor in descriptors})
+            return descriptors
+
+        def tracked_close(fd):
+            if fd in close_counts:
+                close_counts[fd] += 1
+            return real_close(fd)
+
+        def injected_ttyname(fd):
+            if failure == "ttyname":
+                raise OSError("injected ttyname failure")
+            return real_ttyname(fd)
+
+        def injected_ioctl(fd, operation, argument=0, mutate_flag=True):
+            if failure == "set-window" and operation == MODULE.termios.TIOCSWINSZ:
+                raise OSError("injected window set failure")
+            if failure == "get-window" and operation == MODULE.termios.TIOCGWINSZ:
+                raise OSError("injected window get failure")
+            return real_ioctl(fd, operation, argument, mutate_flag)
+
+        def injected_posix_spawn(*args, **kwargs):
+            nonlocal spawn_calls
+            spawn_calls += 1
+            if failure == "spawn":
+                raise OSError("injected posix_spawn failure")
+            return real_posix_spawn(*args, **kwargs)
+
+        original_subreaper = MODULE._get_child_subreaper()
+        try:
+            for initial_subreaper in (False, True):
+                acquired.clear()
+                close_counts.clear()
+                spawn_calls = 0
+                MODULE._child_subreaper(initial_subreaper)
+                with mock.patch.object(MODULE.pty, "openpty", tracked_openpty), mock.patch.object(
+                    MODULE.os, "close", tracked_close
+                ), mock.patch.object(
+                    MODULE.os, "ttyname", injected_ttyname
+                ), mock.patch.object(
+                    MODULE.fcntl, "ioctl", injected_ioctl
+                ), mock.patch.object(
+                    MODULE.os, "posix_spawn", injected_posix_spawn
+                ):
+                    with self.assertRaisesRegex(OSError, "injected"):
+                        MODULE.run_asb(
+                            Path(sys.executable),
+                            ["-c", "raise SystemExit(0)"],
+                            os.environ.copy(),
+                            json_output=False,
+                        )
+                self.assertEqual(spawn_calls, 1 if failure == "spawn" else 0)
+                self.assertEqual(MODULE._get_child_subreaper(), initial_subreaper)
+                self.assertEqual(len(acquired), 2)
+                for descriptor in acquired:
+                    self.assertEqual(close_counts[descriptor], 1)
+                    with self.assertRaises(OSError):
+                        os.fstat(descriptor)
+        finally:
+            MODULE._child_subreaper(original_subreaper)
+
+    def test_cleanup_errors_keep_primary_close_master_and_restore_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "pid"
+            fixture = (
+                "import os, pathlib, time; "
+                f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); "
+                "time.sleep(30)"
+            )
+            real_spawn = MODULE._spawn_controlling_pty
+            real_terminate = MODULE._terminate_session
+            real_child_subreaper = MODULE._child_subreaper
+            real_close = MODULE.os.close
+            spawned_fd = None
+            close_count = 0
+            subreaper_calls = 0
+            cleanup_failure = ""
+
+            def tracked_spawn(*args, **kwargs):
+                nonlocal spawned_fd
+                leader, spawned_fd = real_spawn(*args, **kwargs)
+                return leader, spawned_fd
+
+            def terminate_then_report(leader):
+                real_terminate(leader)
+                if cleanup_failure == "terminate":
+                    raise RuntimeError("injected teardown report")
+
+            def restore_then_report(enable):
+                nonlocal subreaper_calls
+                subreaper_calls += 1
+                previous = real_child_subreaper(enable)
+                if cleanup_failure == "restore" and subreaper_calls == 2:
+                    raise RuntimeError("injected restoration report")
+                return previous
+
+            def tracked_close(fd):
+                nonlocal close_count
+                if fd == spawned_fd:
+                    close_count += 1
+                return real_close(fd)
+
+            original_subreaper = MODULE._get_child_subreaper()
+            try:
+                for cleanup_failure in ("terminate", "restore"):
+                    for initial_subreaper in (False, True):
+                        with self.subTest(
+                            cleanup_failure=cleanup_failure,
+                            initial_subreaper=initial_subreaper,
+                        ):
+                            spawned_fd = None
+                            close_count = 0
+                            subreaper_calls = 0
+                            MODULE._child_subreaper(initial_subreaper)
+                            with mock.patch.object(
+                                MODULE, "_spawn_controlling_pty", tracked_spawn
+                            ), mock.patch.object(
+                                MODULE, "_terminate_session", terminate_then_report
+                            ), mock.patch.object(
+                                MODULE, "_child_subreaper", restore_then_report
+                            ), mock.patch.object(MODULE.os, "close", tracked_close):
+                                with self.assertRaises(BaseExceptionGroup) as caught:
+                                    MODULE.run_asb(
+                                        Path(sys.executable),
+                                        ["-c", fixture],
+                                        os.environ.copy(),
+                                        json_output=False,
+                                        timeout_seconds=0.2,
+                                    )
+                            self.assertEqual(len(caught.exception.exceptions), 2)
+                            primary, cleanup = caught.exception.exceptions
+                            self.assertIsInstance(primary, AssertionError)
+                            self.assertIn("timed out", str(primary))
+                            self.assertIsInstance(cleanup, RuntimeError)
+                            expected = (
+                                "injected teardown report"
+                                if cleanup_failure == "terminate"
+                                else "injected restoration report"
+                            )
+                            stage = (
+                                "cleanup stage: authenticated child session"
+                                if cleanup_failure == "terminate"
+                                else "cleanup stage: child-subreaper restoration"
+                            )
+                            self.assertIn(expected, str(cleanup))
+                            self.assertIn(stage, getattr(cleanup, "__notes__", []))
+                            self.assertEqual(
+                                MODULE._get_child_subreaper(), initial_subreaper
+                            )
+                            self.assertIsNotNone(spawned_fd)
+                            self.assertEqual(close_count, 1)
+                            with self.assertRaises(OSError):
+                                os.fstat(spawned_fd)
+                            pid = int(marker.read_text(encoding="utf-8"))
+                            with self.assertRaises(ProcessLookupError):
+                                os.kill(pid, 0)
+                            marker.unlink()
+            finally:
+                MODULE._child_subreaper(original_subreaper)
+
     def _assert_selector_failure_is_clean(self, failure: str):
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / "pid"

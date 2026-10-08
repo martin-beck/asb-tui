@@ -20,7 +20,7 @@ import tempfile
 import termios
 import time
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 SECRET_MARKERS = ("API_KEY", "APIKEY", "ACCESS_TOKEN", "AUTH_TOKEN", "CREDENTIAL", "PASSWORD", "PRIVATE_KEY", "SECRET", "TOKEN")
 PTY_ROWS = 24
@@ -199,6 +199,59 @@ def _close_fd(fd: int | None) -> None:
                 raise
 
 
+class _OwnedFd:
+    """An idempotently releasable descriptor acquired by this runner."""
+
+    def __init__(self, fd: int):
+        self._fd: int | None = fd
+
+    @property
+    def fd(self) -> int:
+        if self._fd is None:
+            raise RuntimeError("file descriptor ownership was already released")
+        return self._fd
+
+    def close(self) -> None:
+        fd, self._fd = self._fd, None
+        _close_fd(fd)
+
+    def detach(self) -> int:
+        fd, self._fd = self.fd, None
+        return fd
+
+
+def _collect_cleanup_errors(
+    actions: list[tuple[str, Callable[[], object]]],
+) -> list[BaseException]:
+    """Run every cleanup action and retain its exact failure and stage."""
+    errors: list[BaseException] = []
+    for stage, action in actions:
+        try:
+            action()
+        except BaseException as error:
+            error.add_note(f"cleanup stage: {stage}")
+            errors.append(error)
+    return errors
+
+
+def _raise_operation_and_cleanup_errors(
+    primary: BaseException | None, cleanup_errors: list[BaseException]
+) -> None:
+    """Keep the operation failure first while exposing every cleanup failure."""
+    if primary is None and not cleanup_errors:
+        return
+    if primary is not None and not cleanup_errors:
+        raise primary.with_traceback(primary.__traceback__)
+    if primary is None and len(cleanup_errors) == 1:
+        error = cleanup_errors[0]
+        raise error.with_traceback(error.__traceback__)
+    failures = ([primary] if primary is not None else []) + cleanup_errors
+    raise BaseExceptionGroup(
+        "operator quickstart failed and cleanup also reported errors",
+        failures,
+    )
+
+
 def _pty_is_interactive_ready(master: int, session_id: int) -> bool:
     """Prove input will be delivered to a foreground raw-mode consumer."""
     try:
@@ -215,50 +268,62 @@ def _spawn_controlling_pty(
     command: list[str], environment: dict[str, str]
 ) -> tuple[_ProcessIdentity, int]:
     master, slave = pty.openpty()
-    slave_name = os.ttyname(slave)
-    requested = struct.pack("HHHH", PTY_ROWS, PTY_COLUMNS, 0, 0)
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, requested)
-    observed = fcntl.ioctl(slave, termios.TIOCGWINSZ, b"\0" * len(requested))
-    rows, columns, _, _ = struct.unpack("HHHH", observed)
-    if rows != PTY_ROWS or columns != PTY_COLUMNS:
-        os.close(master)
-        os.close(slave)
-        raise AssertionError(f"failed to establish {PTY_COLUMNS}x{PTY_ROWS} PTY")
-    actions = [
-        (os.POSIX_SPAWN_CLOSE, master),
-        (os.POSIX_SPAWN_OPEN, 0, slave_name, os.O_RDWR, 0),
-        (os.POSIX_SPAWN_DUP2, 0, 1),
-        (os.POSIX_SPAWN_DUP2, 0, 2),
-    ]
+    owned_master = _OwnedFd(master)
+    owned_slave = _OwnedFd(slave)
+    leader: _ProcessIdentity | None = None
+    pid: int | None = None
+    primary: BaseException | None = None
     try:
+        slave_name = os.ttyname(owned_slave.fd)
+        requested = struct.pack("HHHH", PTY_ROWS, PTY_COLUMNS, 0, 0)
+        fcntl.ioctl(owned_slave.fd, termios.TIOCSWINSZ, requested)
+        observed = fcntl.ioctl(
+            owned_slave.fd, termios.TIOCGWINSZ, b"\0" * len(requested)
+        )
+        rows, columns, _, _ = struct.unpack("HHHH", observed)
+        if rows != PTY_ROWS or columns != PTY_COLUMNS:
+            raise AssertionError(f"failed to establish {PTY_COLUMNS}x{PTY_ROWS} PTY")
+        actions = [
+            (os.POSIX_SPAWN_CLOSE, owned_master.fd),
+            (os.POSIX_SPAWN_OPEN, 0, slave_name, os.O_RDWR, 0),
+            (os.POSIX_SPAWN_DUP2, 0, 1),
+            (os.POSIX_SPAWN_DUP2, 0, 2),
+        ]
         pid = os.posix_spawn(
             command[0], command, environment, file_actions=actions, setsid=True
         )
-    except BaseException:
-        os.close(master)
-        raise
-    finally:
-        os.close(slave)
-    leader: _ProcessIdentity | None = None
-    try:
+        owned_slave.close()
         leader = _open_process_identity(pid, pid)
         if leader is None:
             raise AssertionError("could not authenticate PTY child session identity")
-        if os.tcgetpgrp(master) != pid:
+        if os.tcgetpgrp(owned_master.fd) != pid:
             raise AssertionError("PTY child is not its controlling foreground group")
-        actual = fcntl.ioctl(master, termios.TIOCGWINSZ, b"\0" * len(requested))
+        actual = fcntl.ioctl(
+            owned_master.fd, termios.TIOCGWINSZ, b"\0" * len(requested)
+        )
         rows, columns, _, _ = struct.unpack("HHHH", actual)
         if rows <= 0 or columns <= 0:
             raise AssertionError("PTY child received a zero-size terminal")
-        os.set_blocking(master, False)
-    except BaseException:
-        if leader is None:
+        os.set_blocking(owned_master.fd, False)
+        return leader, owned_master.detach()
+    except BaseException as error:
+        primary = error
+        if leader is None and pid is not None:
             leader = _open_process_identity(pid, pid)
-        if leader is not None:
-            _terminate_session(leader)
-        os.close(master)
-        raise
-    return leader, master
+    cleanup_actions: list[tuple[str, Callable[[], object]]] = []
+    if leader is not None:
+        cleanup_actions.append(
+            ("authenticated child session", lambda: _terminate_session(leader))
+        )
+    cleanup_actions.extend(
+        [
+            ("PTY slave descriptor", owned_slave.close),
+            ("PTY master descriptor", owned_master.close),
+        ]
+    )
+    cleanup_errors = _collect_cleanup_errors(cleanup_actions)
+    _raise_operation_and_cleanup_errors(primary, cleanup_errors)
+    raise AssertionError("unreachable PTY spawn cleanup state")
 
 
 def run_asb(
@@ -280,6 +345,7 @@ def run_asb(
     selector: selectors.BaseSelector | None = None
     chunks = bytearray()
     result_code: int | None = None
+    primary: BaseException | None = None
     try:
         leader, master = _spawn_controlling_pty(command, environment)
         selector = selectors.DefaultSelector()
@@ -332,19 +398,26 @@ def run_asb(
             chunks.extend(chunk)
             if len(chunks) > output_limit:
                 raise AssertionError(f"ASB command exceeded output limit: {' '.join(command)}")
-    finally:
-        try:
-            if selector is not None:
-                selector.close()
-        finally:
-            try:
-                if leader is not None:
-                    _terminate_session(leader)
-            finally:
-                try:
-                    _close_fd(master)
-                finally:
-                    _child_subreaper(previous_subreaper)
+    except BaseException as error:
+        primary = error
+    cleanup_actions: list[tuple[str, Callable[[], object]]] = []
+    if selector is not None:
+        cleanup_actions.append(("selector", selector.close))
+    if leader is not None:
+        cleanup_actions.append(
+            ("authenticated child session", lambda: _terminate_session(leader))
+        )
+    cleanup_actions.extend(
+        [
+            ("PTY master descriptor", lambda: _close_fd(master)),
+            (
+                "child-subreaper restoration",
+                lambda: _child_subreaper(previous_subreaper),
+            ),
+        ]
+    )
+    cleanup_errors = _collect_cleanup_errors(cleanup_actions)
+    _raise_operation_and_cleanup_errors(primary, cleanup_errors)
     output = chunks.decode("utf-8", "replace").strip()
     if not output:
         raise AssertionError(f"ASB command emitted no output: {' '.join(command)}")
