@@ -956,6 +956,19 @@ impl WorkspaceState {
         }
     }
 
+    /// Bind the development live-provider route to the explicit live execution
+    /// choice without selecting a provider/model or starting a run. The user
+    /// still reviews the catalog-bound draft and initiates the runner handoff.
+    pub fn use_live_provider_context(&mut self) -> Result<(), &'static str> {
+        let mut values = self.wizard.values();
+        values[crate::wizard::Step::Recording as usize] = "live".into();
+        self.wizard_formal
+            .restore_values(values)
+            .map_err(|_| "live provider route rejected")?;
+        self.wizard = self.wizard_formal.wizard().clone();
+        Ok(())
+    }
+
     /// Apply a live terminal resize without disturbing the current route,
     /// query, selection, or overlay state. Invalid dimensions are rejected
     /// atomically and leave the workspace unchanged.
@@ -4155,5 +4168,17 @@ mod tests {
         };
         assert!(state.take_wizard_completion().is_some());
         assert!(state.take_wizard_completion().is_none());
+    }
+
+    #[test]
+    fn live_provider_context_selects_explicit_live_mode_without_starting_a_run() {
+        let mut state = WorkspaceState::default();
+        state.use_live_provider_context().unwrap();
+        assert_eq!(
+            state.wizard.values()[crate::wizard::Step::Recording as usize],
+            "live"
+        );
+        assert_eq!(state.screen, Screen::Landing);
+        assert!(state.launch_state().is_none());
     }
 }

@@ -826,6 +826,30 @@ impl AuthenticatedBrokerSession {
             .map_err(|_| TransportError::Projection)
     }
 
+    /// Refresh and require the authoritative v1.15 dynamic OpenRouter
+    /// projection. Development launch routes use this stricter seam so an old,
+    /// static, or unavailable peer cannot silently look like a live catalog.
+    pub fn refresh_dynamic_provider_catalog(
+        &mut self,
+        projection: &mut ControlProjection,
+    ) -> Result<(), TransportError> {
+        self.require_version(control_codec::CONTROL_DYNAMIC_PROVIDER_CATALOG_V1)?;
+        self.refresh_provider_catalog(projection)?;
+        match projection.snapshot().dynamic_provider_catalog {
+            Some(crate::live_projection::DynamicProviderCatalogState::Catalog(dynamic))
+                if dynamic.catalog.refreshed
+                    && matches!(
+                        dynamic.openrouter.mode,
+                        control_codec::ProviderCatalogMode::Dynamic
+                    )
+                    && dynamic.openrouter.diagnostic.is_none() =>
+            {
+                Ok(())
+            }
+            _ => Err(TransportError::Projection),
+        }
+    }
+
     /// Enroll a provider through the runner-owned credential resolver. The
     /// frontend accepts only endpoint and locator digests; a raw API key has
     /// no representable type and therefore cannot cross this boundary.
@@ -2644,6 +2668,166 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, TransportError::RemoteFailureCode(-33_008));
         assert!(error.is_reconciliation_required());
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn dynamic_refresh_requires_v115_before_transport_io() {
+        let (_server, client) = UnixStream::pair().unwrap();
+        let mut session = AuthenticatedBrokerSession::test_session(client).unwrap();
+        let mut projection = ControlProjection::default();
+        assert_eq!(
+            session.refresh_dynamic_provider_catalog(&mut projection),
+            Err(TransportError::NotNegotiated)
+        );
+    }
+
+    #[test]
+    fn dynamic_refresh_sends_refresh_and_accepts_only_dynamic_projection() {
+        let limits = ControlLimits::default();
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let join = thread::spawn(move || {
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+            server.read_exact(&mut body).unwrap();
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            let ControlCall::ProviderCatalog(params) = &request.call else {
+                panic!("dynamic route must send provider_catalog");
+            };
+            assert_eq!(params.action, control_codec::ProviderCatalogAction::Refresh);
+            let mut response: ControlResponse = serde_json::from_str(include_str!(
+                "../tests/fixtures/asb-v1.15-dynamic-provider-catalog-response.json"
+            ))
+            .unwrap();
+            let ControlResponse::Success(success) = &mut response else {
+                unreachable!();
+            };
+            success.id = request.id;
+            server
+                .write_all(
+                    &control_codec::encode(&response, limits.max_frame_bytes as usize).unwrap(),
+                )
+                .unwrap();
+        });
+        let mut transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            limits,
+        )
+        .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(control_codec::V1_15);
+        let negotiated = control_codec::Negotiated {
+            version: control_codec::V1_15,
+            limits,
+            runner_instance_id: "runner-v115".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(7),
+        };
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: None,
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated).unwrap();
+        session
+            .refresh_dynamic_provider_catalog(&mut projection)
+            .unwrap();
+        assert!(matches!(
+            projection.snapshot().dynamic_provider_catalog,
+            Some(crate::live_projection::DynamicProviderCatalogState::Catalog(_))
+        ));
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn dynamic_refresh_rejects_typed_unavailable_without_fallback() {
+        let limits = ControlLimits::default();
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let join = thread::spawn(move || {
+            let mut header = [0_u8; 4];
+            server.read_exact(&mut header).unwrap();
+            let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+            server.read_exact(&mut body).unwrap();
+            let request: ControlRequest = serde_json::from_slice(&body).unwrap();
+            let ControlCall::ProviderCatalog(params) = &request.call else {
+                panic!("dynamic route must send provider_catalog");
+            };
+            assert_eq!(params.action, control_codec::ProviderCatalogAction::Refresh);
+            let mut response: ControlResponse = serde_json::from_str(include_str!(
+                "../tests/fixtures/asb-v1.15-dynamic-provider-catalog-response.json"
+            ))
+            .unwrap();
+            let ControlResponse::Success(success) = &mut response else {
+                unreachable!();
+            };
+            success.id = request.id;
+            let ControlSuccess::Operation(bound) = &mut success.result else {
+                unreachable!();
+            };
+            let ControlResult::DynamicProviderCatalog(dynamic) = &mut bound.result else {
+                unreachable!();
+            };
+            dynamic.catalog.providers[0].models.clear();
+            dynamic.catalog.providers[0].availability =
+                control_codec::ProviderAvailability::Unavailable(
+                    "dynamic-catalog-unavailable".into(),
+                );
+            dynamic.catalog.catalog_sha256 = dynamic.catalog.computed_sha256().unwrap();
+            dynamic.openrouter.models.clear();
+            dynamic.openrouter.catalog_sha256 = "0".repeat(64);
+            dynamic.openrouter.mode = control_codec::ProviderCatalogMode::Unavailable;
+            dynamic.openrouter.diagnostic =
+                Some(control_codec::ProviderCatalogDiagnostic::Unavailable);
+            server
+                .write_all(
+                    &control_codec::encode(&response, limits.max_frame_bytes as usize).unwrap(),
+                )
+                .unwrap();
+        });
+        let mut transport = FramedControlStream::adopt_broker(
+            client,
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getpid().as_raw_pid() as u32,
+            limits,
+        )
+        .unwrap();
+        transport.negotiated = true;
+        transport.negotiated_version = Some(control_codec::V1_15);
+        let negotiated = control_codec::Negotiated {
+            version: control_codec::V1_15,
+            limits,
+            runner_instance_id: "runner-v115".into(),
+            oldest_revision: Revision(1),
+            latest_revision: Revision(7),
+        };
+        let mut session = AuthenticatedBrokerSession {
+            transport,
+            negotiated: negotiated.clone(),
+            continuity: None,
+            peer: BrokerPeerCredentials {
+                uid: rustix::process::geteuid().as_raw(),
+                pid: rustix::process::getpid().as_raw_pid() as u32,
+            },
+        };
+        let mut projection = ControlProjection::default();
+        projection.accept_negotiated(negotiated).unwrap();
+        assert_eq!(
+            session.refresh_dynamic_provider_catalog(&mut projection),
+            Err(TransportError::Projection)
+        );
+        assert!(matches!(
+            projection.snapshot().dynamic_provider_catalog,
+            Some(crate::live_projection::DynamicProviderCatalogState::Catalog(dynamic))
+                if dynamic.openrouter.mode == control_codec::ProviderCatalogMode::Unavailable
+        ));
         join.join().unwrap();
     }
 

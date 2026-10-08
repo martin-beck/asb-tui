@@ -370,20 +370,64 @@ pub fn run_interactive_with_control(
     run_interactive_with_control_context(state, policy, session, false)
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DevelopmentBrokerRoute {
+    #[default]
+    Standard,
+    DynamicCatalog,
+    LiveProvider,
+}
+
+impl DevelopmentBrokerRoute {
+    const fn requires_dynamic_catalog(self) -> bool {
+        matches!(self, Self::DynamicCatalog | Self::LiveProvider)
+    }
+
+    const fn selects_live_handoff(self) -> bool {
+        matches!(self, Self::LiveProvider)
+    }
+}
+
 pub fn run_interactive_with_control_context(
     state: &mut AppState,
     policy: RenderPolicy,
     session: &mut AuthenticatedBrokerSession,
     development_mode: bool,
 ) -> Result<(), RuntimeError> {
+    run_interactive_with_control_route(
+        state,
+        policy,
+        session,
+        development_mode,
+        DevelopmentBrokerRoute::Standard,
+    )
+}
+
+pub fn run_interactive_with_control_route(
+    state: &mut AppState,
+    policy: RenderPolicy,
+    session: &mut AuthenticatedBrokerSession,
+    development_mode: bool,
+    route: DevelopmentBrokerRoute,
+) -> Result<(), RuntimeError> {
     let mut projection = ControlProjection::default();
     let mut workspace = ui::WorkspaceState::from_persisted_environment();
     session
         .poll_projection_with_context_for_runtime(&mut projection, development_mode)
         .map_err(|error| RuntimeError(io::Error::other(error)))?;
+    if route.requires_dynamic_catalog() {
+        session
+            .refresh_dynamic_provider_catalog(&mut projection)
+            .map_err(|error| RuntimeError(io::Error::other(error)))?;
+    }
     workspace.apply_live_snapshot(projection.snapshot());
     if development_mode {
         workspace.use_development_context();
+    }
+    if route.selects_live_handoff() {
+        workspace
+            .use_live_provider_context()
+            .map_err(|error| RuntimeError(io::Error::other(error)))?;
     }
     run_interactive_loop(
         state,
@@ -1076,6 +1120,16 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyEventState};
     use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn development_routes_have_distinct_catalog_and_handoff_requirements() {
+        assert!(!DevelopmentBrokerRoute::Standard.requires_dynamic_catalog());
+        assert!(!DevelopmentBrokerRoute::Standard.selects_live_handoff());
+        assert!(DevelopmentBrokerRoute::DynamicCatalog.requires_dynamic_catalog());
+        assert!(!DevelopmentBrokerRoute::DynamicCatalog.selects_live_handoff());
+        assert!(DevelopmentBrokerRoute::LiveProvider.requires_dynamic_catalog());
+        assert!(DevelopmentBrokerRoute::LiveProvider.selects_live_handoff());
+    }
 
     struct FakeOps {
         calls: Rc<RefCell<Vec<&'static str>>>,

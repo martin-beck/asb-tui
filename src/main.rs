@@ -15,7 +15,8 @@ use asb_tui::{
     lifecycle::{local_self_test_response, run_self_test_supervisor},
     output_contract::{Route as OutputRoute, render as render_output},
     runtime::{
-        run_interactive, run_interactive_with_control, run_interactive_with_control_context,
+        DevelopmentBrokerRoute, run_interactive, run_interactive_with_control,
+        run_interactive_with_control_route,
     },
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
@@ -44,7 +45,7 @@ fn main() -> ExitCode {
         });
     }
     if arguments == ["run", "--broker"] {
-        return launch_broker_entry(false);
+        return launch_broker_entry(false, DevelopmentBrokerRoute::Standard);
     }
     if let Some(route) = development_broker_route(&arguments) {
         return launch_development_broker_entry(route);
@@ -313,7 +314,7 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
 /// negotiation still has to be implemented by the control client. Keeping
 /// this path fail-closed also ensures lifecycle JSON remains exclusively on
 /// `lifecycle --format json` and can never be confused with broker traffic.
-fn launch_broker_entry(development_mode: bool) -> ExitCode {
+fn launch_broker_entry(development_mode: bool, route: DevelopmentBrokerRoute) -> ExitCode {
     let received = match receive_from_stdin() {
         Ok(received) => received,
         Err(_) => {
@@ -394,7 +395,13 @@ fn launch_broker_entry(development_mode: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    match run_interactive_with_control_context(&mut state, policy, &mut control, development_mode) {
+    match run_interactive_with_control_route(
+        &mut state,
+        policy,
+        &mut control,
+        development_mode,
+        route,
+    ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => {
             eprintln!("terminal application failed");
@@ -460,13 +467,13 @@ fn launch_development_broker_entry(route: Option<&str>) -> ExitCode {
         eprintln!("development broker descriptor rejected");
         return ExitCode::from(3);
     }
-    // The paired ASB router uses these route markers to distinguish its
-    // lifecycle variants. Both variants intentionally enter the same
-    // authenticated broker startup: the first projection refresh requests
-    // the authoritative provider catalog and the existing readiness logic
-    // selects the appropriate wizard/live handoff without a fallback.
-    let _ = route;
-    launch_broker_entry(true)
+    let route = match route {
+        None => DevelopmentBrokerRoute::Standard,
+        Some("dynamic-catalog") => DevelopmentBrokerRoute::DynamicCatalog,
+        Some("live-provider") => DevelopmentBrokerRoute::LiveProvider,
+        Some(_) => return ExitCode::from(2),
+    };
+    launch_broker_entry(true, route)
 }
 
 fn launch() -> ExitCode {
