@@ -44,6 +44,11 @@ class OperatorQuickstartTests(unittest.TestCase):
         for value in ('SECRET_MARKERS', '"ASB_TUI_NETWORK_POLICY": "deny"', '"NO_PROXY": "*"', '"credentials": "none"'):
             self.assertIn(value, SOURCE)
 
+    def test_synthetic_pty_declares_a_deterministic_terminal_capability(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            environment = MODULE.safe_environment()
+        self.assertEqual(environment["TERM"], "xterm-256color")
+
     def test_real_controlling_pty_has_foreground_group_size_and_bounded_quit(self):
         fixture = """
 import fcntl, json, os, struct, sys, termios, tty
@@ -84,6 +89,27 @@ print('READY', flush=True)
 quit_received = os.read(0, 1) == b'q'
 print(json.dumps({'ok': quit_received, 'code': 'development_launched'}), flush=True)
 raise SystemExit(0 if quit_received else 7)
+"""
+        code, encoded = MODULE.run_asb(
+            Path(sys.executable),
+            ["-c", fixture],
+            os.environ.copy(),
+            json_output=True,
+            interactive_quit=True,
+            timeout_seconds=5,
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(encoded)["ok"])
+
+    def test_quit_sequence_cancels_first_run_wizard_then_exits_landing(self):
+        fixture = """
+import json, os, tty
+tty.setraw(0)
+first_run_cancel = os.read(0, 1) == b'q'
+landing_quit = os.read(0, 1) == b'q'
+ok = first_run_cancel and landing_quit
+print(json.dumps({'ok': ok, 'code': 'development_launched'}), flush=True)
+raise SystemExit(0 if ok else 7)
 """
         code, encoded = MODULE.run_asb(
             Path(sys.executable),
@@ -1166,6 +1192,28 @@ time.sleep(30)
                 os.environ.copy(),
                 json_output=True,
             )
+
+    def test_json_response_may_follow_terminal_teardown_without_newline(self):
+        encoded = MODULE.trailing_json(
+            "screen contents\x1b[?25h\x1b[?1049l"
+            '{"ok":true,"details":{"route":"{wizard}","quote":"\\\""}}\r\n'
+        )
+        self.assertEqual(
+            json.loads(encoded),
+            {"ok": True, "details": {"route": "{wizard}", "quote": '"'}},
+        )
+
+    def test_json_response_rejects_non_whitespace_suffix(self):
+        self.assertIsNone(MODULE.trailing_json('{"ok":true}trailing'))
+
+    def test_json_response_rejects_near_limit_hostile_output_linearly(self):
+        hostile = "}" * (MODULE.MAX_COMMAND_OUTPUT - 1)
+        with mock.patch.object(
+            MODULE.json.JSONDecoder,
+            "raw_decode",
+            side_effect=AssertionError("decoder must not run without an opening object"),
+        ):
+            self.assertIsNone(MODULE.trailing_json(hostile))
 
     def test_fast_exit_json_is_drained_before_the_pty_closes(self):
         fixture = "import json; print(json.dumps({'ok': True, 'code': 'fast'}))"
