@@ -15,7 +15,8 @@ use asb_tui::{
     lifecycle::{local_self_test_response, run_self_test_supervisor},
     output_contract::{Route as OutputRoute, render as render_output},
     runtime::{
-        run_interactive, run_interactive_with_control, run_interactive_with_control_context,
+        DevelopmentBrokerRoute, DevelopmentRouteFailure, run_interactive,
+        run_interactive_with_control, run_interactive_with_control_route,
     },
     system_probe::{LocalSystem, detect},
     terminal::{RenderPolicy, TerminalEvidence},
@@ -44,7 +45,7 @@ fn main() -> ExitCode {
         });
     }
     if arguments == ["run", "--broker"] {
-        return launch_broker_entry(false);
+        return launch_broker_entry(false, DevelopmentBrokerRoute::Standard);
     }
     if let Some(route) = development_broker_route(&arguments) {
         return launch_development_broker_entry(route);
@@ -313,7 +314,7 @@ fn launch_tui_command(arguments: &[String]) -> ExitCode {
 /// negotiation still has to be implemented by the control client. Keeping
 /// this path fail-closed also ensures lifecycle JSON remains exclusively on
 /// `lifecycle --format json` and can never be confused with broker traffic.
-fn launch_broker_entry(development_mode: bool) -> ExitCode {
+fn launch_broker_entry(development_mode: bool, route: DevelopmentBrokerRoute) -> ExitCode {
     let received = match receive_from_stdin() {
         Ok(received) => received,
         Err(_) => {
@@ -394,13 +395,31 @@ fn launch_broker_entry(development_mode: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    match run_interactive_with_control_context(&mut state, policy, &mut control, development_mode) {
+    match run_interactive_with_control_route(
+        &mut state,
+        policy,
+        &mut control,
+        development_mode,
+        route,
+    ) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.development_route_failure().is_some() => {
+            let failure = error
+                .development_route_failure()
+                .expect("development route failure checked");
+            let (exit, message) = development_route_failure_contract(failure);
+            eprintln!("{message}");
+            ExitCode::from(exit)
+        }
         Err(_) => {
             eprintln!("terminal application failed");
             ExitCode::from(2)
         }
     }
+}
+
+fn development_route_failure_contract(failure: &DevelopmentRouteFailure) -> (u8, String) {
+    (failure.exit_code(), failure.cli_message())
 }
 
 fn development_terminal_path(
@@ -460,13 +479,13 @@ fn launch_development_broker_entry(route: Option<&str>) -> ExitCode {
         eprintln!("development broker descriptor rejected");
         return ExitCode::from(3);
     }
-    // The paired ASB router uses these route markers to distinguish its
-    // lifecycle variants. Both variants intentionally enter the same
-    // authenticated broker startup: the first projection refresh requests
-    // the authoritative provider catalog and the existing readiness logic
-    // selects the appropriate wizard/live handoff without a fallback.
-    let _ = route;
-    launch_broker_entry(true)
+    let route = match route {
+        None => DevelopmentBrokerRoute::Standard,
+        Some("dynamic-catalog") => DevelopmentBrokerRoute::DynamicCatalog,
+        Some("live-provider") => DevelopmentBrokerRoute::LiveProvider,
+        Some(_) => return ExitCode::from(2),
+    };
+    launch_broker_entry(true, route)
 }
 
 fn launch() -> ExitCode {
@@ -506,8 +525,12 @@ fn launch() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{DIAGNOSTIC, development_broker_route, development_terminal_path};
+    use super::{
+        DIAGNOSTIC, development_broker_route, development_route_failure_contract,
+        development_terminal_path,
+    };
     use asb_tui::terminal_handoff::preflight_terminal_path;
+    use asb_tui::{control_codec::ProviderCatalogDiagnostic, runtime::DevelopmentRouteFailure};
     use std::ffi::OsString;
 
     #[test]
@@ -576,5 +599,54 @@ mod tests {
             development_broker_route(&args(&["run", "--broker", "--development", "--unexpected"])),
             None
         );
+    }
+
+    #[test]
+    fn development_route_failures_have_distinct_actionable_exit_contracts() {
+        let cases = [
+            (
+                DevelopmentRouteFailure::ProtocolUnsupported,
+                3,
+                "dynamic_catalog_protocol_unsupported",
+                "network=not_attempted",
+            ),
+            (
+                DevelopmentRouteFailure::CatalogUnavailable(ProviderCatalogDiagnostic::Unavailable),
+                4,
+                "dynamic_catalog_unavailable",
+                "network=unknown",
+            ),
+            (
+                DevelopmentRouteFailure::CatalogStatic,
+                5,
+                "dynamic_catalog_static_no_fallback",
+                "network=not_used",
+            ),
+            (
+                DevelopmentRouteFailure::CatalogMissing,
+                6,
+                "dynamic_catalog_response_missing",
+                "network=unknown",
+            ),
+            (
+                DevelopmentRouteFailure::ControlTransport,
+                2,
+                "development_control_transport_failed",
+                "network=unknown",
+            ),
+            (
+                DevelopmentRouteFailure::LiveHandoffRejected,
+                7,
+                "live_provider_handoff_rejected",
+                "network=not_used",
+            ),
+        ];
+        for (failure, expected_exit, code, network) in cases {
+            let (exit, message) = development_route_failure_contract(&failure);
+            assert_eq!(exit, expected_exit);
+            assert!(message.contains(code));
+            assert!(message.contains(network));
+            assert!(!message.contains('/'));
+        }
     }
 }

@@ -106,6 +106,51 @@ fn development_handoff_actions_are_formally_executable_and_bounded() {
 }
 
 #[test]
+fn development_provider_routes_require_refresh_classification_and_formal_handoff() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    let fields = model["state_fields"].as_array().unwrap();
+    for field in [
+        "development_broker_route",
+        "development_route_failure",
+        "development_route_network",
+        "live_provider_handoff_selected",
+    ] {
+        assert!(fields.iter().any(|value| value == field));
+    }
+    let contract = model["development_broker_route_contract"].as_str().unwrap();
+    for phrase in [
+        "authoritative v1.15 Refresh",
+        "truthful network use",
+        "no route falls back",
+        "formal open_development_handoff",
+        "never starts a run automatically",
+    ] {
+        assert!(
+            contract.contains(phrase),
+            "missing route contract: {phrase}"
+        );
+    }
+    let transition = model["transitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|transition| transition["event"] == "open_development_handoff")
+        .unwrap();
+    assert_eq!(transition["from"], "landing");
+    assert_eq!(transition["to"], "landing");
+    assert_eq!(
+        transition["effects"],
+        serde_json::json!(["development_handoff_opened", "focus_reset"])
+    );
+    let mut formal = FormalUiState::new(100, 30).unwrap();
+    formal
+        .apply(FormalEvent::OpenDevelopmentHandoff, None)
+        .unwrap();
+    assert_eq!(formal.route(), Route::Landing);
+}
+
+#[test]
 fn stale_live_catalog_publications_are_declared_in_the_formal_model() {
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
