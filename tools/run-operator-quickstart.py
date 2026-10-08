@@ -198,6 +198,7 @@ MAX_LINEAGE_PROCESSES = 4096
 
 def _discover_descendants(
     tracked: dict[int, _ProcessIdentity],
+    boundary: _ProcessIdentity | None = None,
 ) -> None:
     """Pin descendants through stable parent edges, independent of sessions.
 
@@ -205,7 +206,7 @@ def _discover_descendants(
     already proven to descend from it.  It never treats the runner's ambient
     children, a shared session, or a numeric PID/PGID as authority.
     """
-    supervisor_pid = os.getpid()
+    supervisor_pid = os.getpid() if boundary is None else boundary.pid
     process_limit_reached = False
     for depth in range(MAX_LINEAGE_DEPTH):
         added = False
@@ -223,7 +224,9 @@ def _discover_descendants(
             parent = parents.get(parent_pid)
             if parent is not None:
                 identity = _open_descendant_identity(pid, parent)
-            elif parent_pid == supervisor_pid:
+            elif parent_pid == supervisor_pid and (
+                boundary is None or _identity_matches_proc(boundary)
+            ):
                 # This process is a fixture-exclusive subreaper: its only
                 # possible children are the launch leader and descendants
                 # adopted from that leader.  The structural boundary makes a
@@ -263,9 +266,10 @@ def _record_discovery_error(
 def _discover_for_cleanup(
     tracked: dict[int, _ProcessIdentity],
     errors: list[BaseException],
+    boundary: _ProcessIdentity | None = None,
 ) -> None:
     try:
-        _discover_descendants(tracked)
+        _discover_descendants(tracked, boundary)
     except BaseException as error:
         _record_discovery_error(errors, error)
 
@@ -365,40 +369,99 @@ def _poll_child_reaped(pid: int, timeout_seconds: float) -> bool:
         time.sleep(0.01)
 
 
+def _poll_identity_stopped(
+    identity: _ProcessIdentity, timeout_seconds: float
+) -> bool:
+    """Wait boundedly until a pinned process enters a stopped state."""
+    deadline = time.monotonic() + timeout_seconds
+    while _identity_matches_proc(identity):
+        try:
+            value = Path(f"/proc/{identity.pid}/stat").read_text(encoding="ascii")
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        state = value[value.rfind(")") + 2 :].split()[0]
+        if state in {"T", "t"}:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return False
+
+
 def _terminate_and_reap_supervisor(pid: int) -> None:
-    """Identity-safely terminate and boundedly reap a direct supervisor child."""
+    """Boundedly empty a fixture-only boundary before destroying its supervisor.
+
+    The supervisor is the only subreaper with authority over rapid daemonizing
+    fixture descendants. Freeze and pin that boundary, terminate every child
+    identity proven beneath it, and only then destroy the supervisor. This
+    preserves lineage authority even when its control loop is stopped or
+    otherwise unresponsive, without changing this parent's subreaper state.
+    """
     if _poll_child_reaped(pid, 0.0):
         return
-    try:
-        pidfd = os.pidfd_open(pid)
-    except ProcessLookupError:
+    supervisor = _open_direct_child_identity(pid, os.getpid())
+    if supervisor is None:
         if _poll_child_reaped(pid, 0.0):
             return
-        raise
+        raise RuntimeError("could not authenticate fixture supervisor identity")
+    tracked: dict[int, _ProcessIdentity] = {}
+    cleanup_errors: list[BaseException] = []
     try:
-        try:
-            signal.pidfd_send_signal(pidfd, signal.SIGTERM)
-            # A stopped process cannot act on pending SIGTERM until continued.
-            signal.pidfd_send_signal(pidfd, signal.SIGCONT)
-        except ProcessLookupError:
-            pass
-        if _poll_child_reaped(pid, SUPERVISOR_TERM_TIMEOUT):
-            return
-        try:
-            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        if _poll_child_reaped(pid, SUPERVISOR_KILL_TIMEOUT):
-            return
-        # One final nonblocking reap closes the race at the deadline without
-        # allowing a stopped or stalled supervisor to block this process.
-        if _poll_child_reaped(pid, 0.0):
-            return
-        raise TimeoutError(
-            "fixture supervisor did not exit after bounded TERM/KILL cleanup"
-        )
+        _signal_identity(supervisor, signal.SIGSTOP)
+        if not _poll_identity_stopped(supervisor, SUPERVISOR_TERM_TIMEOUT):
+            if _poll_child_reaped(pid, 0.0):
+                return
+            raise TimeoutError(
+                "fixture supervisor did not stop before lineage cleanup"
+            )
+        _discover_for_cleanup(tracked, cleanup_errors, supervisor)
+        term_deadline = time.monotonic() + SUPERVISOR_TERM_TIMEOUT
+        while time.monotonic() < term_deadline:
+            _discover_for_cleanup(tracked, cleanup_errors, supervisor)
+            for identity in tracked.values():
+                _signal_identity(identity, signal.SIGTERM)
+            time.sleep(0.01)
+
+        kill_deadline = time.monotonic() + SUPERVISOR_KILL_TIMEOUT
+        while time.monotonic() < kill_deadline:
+            known = set(tracked)
+            _discover_for_cleanup(tracked, cleanup_errors, supervisor)
+            for identity in tracked.values():
+                _signal_identity(identity, signal.SIGKILL)
+            # Require a quiet rescan before removing the fixture-only
+            # subreaper. Dead children may remain as zombies until then.
+            if known == set(tracked):
+                time.sleep(0.01)
+                _discover_for_cleanup(tracked, cleanup_errors, supervisor)
+                if known == set(tracked):
+                    break
+            time.sleep(0.01)
+
+        _signal_identity(supervisor, signal.SIGKILL)
+        if not _poll_child_reaped(pid, SUPERVISOR_KILL_TIMEOUT):
+            cleanup_errors.append(
+                TimeoutError(
+                    "fixture supervisor did not exit after bounded lineage cleanup"
+                )
+            )
+
+        descendant_deadline = time.monotonic() + SUPERVISOR_KILL_TIMEOUT
+        while tracked and time.monotonic() < descendant_deadline:
+            for identity in tracked.values():
+                _signal_identity(identity, signal.SIGKILL)
+            _retire_dead_identities(tracked)
+            if tracked:
+                time.sleep(0.01)
+        if tracked:
+            cleanup_errors.append(
+                AssertionError("authenticated fixture lineage survived SIGKILL")
+            )
     finally:
-        os.close(pidfd)
+        for identity in tracked.values():
+            _reap_identity(identity)
+            os.close(identity.pidfd)
+        os.close(supervisor.pidfd)
+    _raise_operation_and_cleanup_errors(None, cleanup_errors)
 
 
 def _close_fd(fd: int | None) -> None:
@@ -690,16 +753,16 @@ def _start_fixture_supervisor(
         cleanup_actions: list[tuple[str, Callable[[], object]]] = [
             ("supervisor control socket", parent_control.close),
         ]
-        if owned_master is not None:
-            cleanup_actions.append(
-                ("received PTY master descriptor", owned_master.close)
-            )
         cleanup_actions.append(
             (
                 "fixture supervisor process",
                 lambda: _terminate_and_reap_supervisor(supervisor_pid),
             )
         )
+        if owned_master is not None:
+            cleanup_actions.append(
+                ("received PTY master descriptor", owned_master.close)
+            )
         _raise_operation_and_cleanup_errors(
             primary, _collect_cleanup_errors(cleanup_actions)
         )

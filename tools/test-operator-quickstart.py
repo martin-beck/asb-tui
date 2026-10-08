@@ -692,67 +692,232 @@ time.sleep(30)
             sender.close()
             receiver.close()
 
-    def test_stopped_supervisor_start_and_stop_cleanup_are_bounded(self):
-        fixture = "import time; print('READY', flush=True); time.sleep(30)"
-        real_child = MODULE._fixture_supervisor_child
+    @staticmethod
+    def _resistant_double_fork_fixture(marker_dir: Path) -> str:
+        return f"""
+import os, pathlib, signal, time
+root = pathlib.Path({str(marker_dir)!r})
+root.joinpath('leader').write_text(str(os.getpid()))
+child = os.fork()
+if child == 0:
+    root.joinpath('child').write_text(str(os.getpid()))
+    daemon = os.fork()
+    if daemon != 0:
+        os._exit(0)
+    os.setsid()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    root.joinpath('daemon').write_text(str(os.getpid()))
+    time.sleep(30)
+    os._exit(0)
+deadline = time.monotonic() + 5
+while not root.joinpath('daemon').exists():
+    if time.monotonic() >= deadline:
+        raise SystemExit(9)
+    time.sleep(0.01)
+print('READY', flush=True)
+time.sleep(30)
+"""
+
+    def _assert_marker_pids_gone(self, marker_dir: Path):
+        pids = [int(path.read_text()) for path in marker_dir.iterdir()]
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if all(not Path(f"/proc/{pid}").exists() for pid in pids):
+                break
+            time.sleep(0.01)
+        for pid in pids:
+            self.assertFalse(Path(f"/proc/{pid}").exists(), f"fixture PID {pid} survived")
+
+    def test_post_rights_startup_failure_reaps_resistant_double_fork_lineage(self):
         real_fork = MODULE.os.fork
+        real_receive = MODULE._receive_supervisor_packet
+        real_set_blocking = MODULE.os.set_blocking
+        real_pidfd_open = MODULE.os.pidfd_open
+        real_close = MODULE.os.close
+        real_socketpair = MODULE.socket.socketpair
+        real_socket_close = MODULE.socket.socket.close
         parent_pid = os.getpid()
-        startup_supervisor_pid = None
-
-        def tracked_fork():
-            nonlocal startup_supervisor_pid
-            pid = real_fork()
-            if os.getpid() == parent_pid:
-                startup_supervisor_pid = pid
-            return pid
-
-        def stopped_before_startup(control, command, environment):
-            os.kill(os.getpid(), signal.SIGSTOP)
-            real_child(control, command, environment)
-
-        with mock.patch.object(
-            MODULE, "SUPERVISOR_CONTROL_TIMEOUT", 0.1
-        ), mock.patch.object(
-            MODULE, "SUPERVISOR_TERM_TIMEOUT", 0.1
-        ), mock.patch.object(
-            MODULE, "SUPERVISOR_KILL_TIMEOUT", 0.2
-        ), mock.patch.object(
-            MODULE, "_fixture_supervisor_child", stopped_before_startup
-        ), mock.patch.object(
-            MODULE.os, "fork", tracked_fork
-        ):
-            started = time.monotonic()
-            with self.assertRaises((TimeoutError, BaseExceptionGroup)):
-                MODULE._start_fixture_supervisor(
-                    [sys.executable, "-c", fixture], os.environ.copy()
-                )
-            self.assertLess(time.monotonic() - started, 1.5)
-        self.assertIsNotNone(startup_supervisor_pid)
-        with self.assertRaises(ChildProcessError):
-            os.waitpid(startup_supervisor_pid, os.WNOHANG)
-
-        supervisor = MODULE._start_fixture_supervisor(
-            [sys.executable, "-c", fixture], os.environ.copy()
-        )
+        original_subreaper = MODULE._get_child_subreaper()
         try:
-            os.kill(supervisor.pid, signal.SIGSTOP)
-            started = time.monotonic()
-            with mock.patch.object(
-                MODULE, "SUPERVISOR_CONTROL_TIMEOUT", 0.1
-            ), mock.patch.object(
-                MODULE, "SUPERVISOR_TERM_TIMEOUT", 0.1
-            ), mock.patch.object(MODULE, "SUPERVISOR_KILL_TIMEOUT", 0.2):
-                with self.assertRaises((TimeoutError, BaseExceptionGroup)):
-                    MODULE._stop_fixture_supervisor(supervisor)
-            self.assertLess(time.monotonic() - started, 1.5)
-            with self.assertRaises(ChildProcessError):
-                os.waitpid(supervisor.pid, os.WNOHANG)
+            for initial_subreaper in (False, True):
+                with self.subTest(initial_subreaper=initial_subreaper), tempfile.TemporaryDirectory() as temporary:
+                    marker_dir = Path(temporary)
+                    fixture = self._resistant_double_fork_fixture(marker_dir)
+                    supervisor_pid = None
+                    received_master = None
+                    parent_control = None
+                    master_close_count = 0
+                    control_close_count = 0
+                    supervisor_pidfds = {}
+
+                    def tracked_fork():
+                        nonlocal supervisor_pid
+                        pid = real_fork()
+                        if os.getpid() == parent_pid:
+                            supervisor_pid = pid
+                        return pid
+
+                    def tracked_receive(control):
+                        nonlocal received_master
+                        packet, descriptor = real_receive(control)
+                        if os.getpid() == parent_pid and packet.get("kind") == "ready":
+                            received_master = descriptor
+                        return packet, descriptor
+
+                    def tracked_socketpair(*args, **kwargs):
+                        nonlocal parent_control
+                        pair = real_socketpair(*args, **kwargs)
+                        if os.getpid() == parent_pid:
+                            parent_control = pair[0]
+                        return pair
+
+                    def tracked_socket_close(sock):
+                        nonlocal control_close_count
+                        if os.getpid() == parent_pid and sock is parent_control:
+                            control_close_count += 1
+                        return real_socket_close(sock)
+
+                    def tracked_pidfd_open(pid):
+                        descriptor = real_pidfd_open(pid)
+                        if os.getpid() == parent_pid and pid == supervisor_pid:
+                            supervisor_pidfds[descriptor] = 0
+                        return descriptor
+
+                    def tracked_close(fd):
+                        nonlocal master_close_count
+                        if os.getpid() == parent_pid:
+                            if fd == received_master:
+                                master_close_count += 1
+                            if fd in supervisor_pidfds:
+                                supervisor_pidfds[fd] += 1
+                        return real_close(fd)
+
+                    def fail_after_rights(fd, blocking):
+                        if os.getpid() == parent_pid and fd == received_master:
+                            deadline = time.monotonic() + 2
+                            while not marker_dir.joinpath("daemon").exists():
+                                if time.monotonic() >= deadline:
+                                    raise AssertionError("fixture daemon did not start")
+                                time.sleep(0.01)
+                            raise OSError("injected post-SCM_RIGHTS failure")
+                        return real_set_blocking(fd, blocking)
+
+                    MODULE._child_subreaper(initial_subreaper)
+                    started = time.monotonic()
+                    with mock.patch.object(MODULE.os, "fork", tracked_fork), mock.patch.object(
+                        MODULE, "_receive_supervisor_packet", tracked_receive
+                    ), mock.patch.object(MODULE.os, "set_blocking", fail_after_rights), mock.patch.object(
+                        MODULE, "SUPERVISOR_TERM_TIMEOUT", 0.1
+                    ), mock.patch.object(MODULE, "SUPERVISOR_KILL_TIMEOUT", 0.3), mock.patch.object(
+                        MODULE.socket, "socketpair", tracked_socketpair
+                    ), mock.patch.object(MODULE.socket.socket, "close", tracked_socket_close), mock.patch.object(
+                        MODULE.os, "pidfd_open", tracked_pidfd_open
+                    ), mock.patch.object(MODULE.os, "close", tracked_close):
+                        with self.assertRaisesRegex(OSError, "post-SCM_RIGHTS"):
+                            MODULE._start_fixture_supervisor(
+                                [sys.executable, "-c", fixture], os.environ.copy()
+                            )
+                    self.assertLess(time.monotonic() - started, 1.5)
+                    self.assertIsNotNone(supervisor_pid)
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(supervisor_pid, os.WNOHANG)
+                    self._assert_marker_pids_gone(marker_dir)
+                    self.assertEqual(MODULE._get_child_subreaper(), initial_subreaper)
+                    self.assertIsNotNone(received_master)
+                    self.assertEqual(master_close_count, 1)
+                    self.assertEqual(control_close_count, 1)
+                    self.assertTrue(supervisor_pidfds)
+                    self.assertTrue(all(count == 1 for count in supervisor_pidfds.values()))
+                    with self.assertRaises(OSError):
+                        os.fstat(received_master)
         finally:
-            MODULE._close_fd(supervisor.master)
-            try:
-                os.kill(supervisor.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            MODULE._child_subreaper(original_subreaper)
+
+    def test_stopped_teardown_reaps_resistant_double_fork_lineage(self):
+        original_subreaper = MODULE._get_child_subreaper()
+        try:
+            for initial_subreaper in (False, True):
+                with self.subTest(initial_subreaper=initial_subreaper), tempfile.TemporaryDirectory() as temporary:
+                    marker_dir = Path(temporary)
+                    MODULE._child_subreaper(initial_subreaper)
+                    supervisor = MODULE._start_fixture_supervisor(
+                        [sys.executable, "-c", self._resistant_double_fork_fixture(marker_dir)],
+                        os.environ.copy(),
+                    )
+                    real_pidfd_open = MODULE.os.pidfd_open
+                    real_close = MODULE.os.close
+                    real_socket_close = MODULE.socket.socket.close
+                    supervisor_pidfds = {}
+                    pidfd_close_counts = {}
+                    control_close_count = 0
+                    master_close_count = 0
+
+                    def tracked_pidfd_open(pid):
+                        descriptor = real_pidfd_open(pid)
+                        if pid == supervisor.pid:
+                            supervisor_pidfds[descriptor] = True
+                            pidfd_close_counts[descriptor] = 0
+                        return descriptor
+
+                    def tracked_close(fd):
+                        nonlocal master_close_count
+                        if fd == supervisor.master:
+                            master_close_count += 1
+                        if fd in pidfd_close_counts:
+                            pidfd_close_counts[fd] += 1
+                        return real_close(fd)
+
+                    def tracked_socket_close(sock):
+                        nonlocal control_close_count
+                        if sock is supervisor.control:
+                            control_close_count += 1
+                        return real_socket_close(sock)
+                    try:
+                        deadline = time.monotonic() + 2
+                        while not marker_dir.joinpath("daemon").exists():
+                            if time.monotonic() >= deadline:
+                                self.fail("fixture daemon did not start")
+                            time.sleep(0.01)
+                        os.kill(supervisor.pid, signal.SIGSTOP)
+                        started = time.monotonic()
+                        with mock.patch.object(
+                            MODULE, "SUPERVISOR_CONTROL_TIMEOUT", 0.1
+                        ), mock.patch.object(
+                            MODULE, "SUPERVISOR_TERM_TIMEOUT", 0.1
+                        ), mock.patch.object(MODULE, "SUPERVISOR_KILL_TIMEOUT", 0.3), mock.patch.object(
+                            MODULE.os, "pidfd_open", tracked_pidfd_open
+                        ), mock.patch.object(MODULE.os, "close", tracked_close), mock.patch.object(
+                            MODULE.socket.socket, "close", tracked_socket_close
+                        ):
+                            with self.assertRaises((TimeoutError, BaseExceptionGroup)):
+                                MODULE._stop_fixture_supervisor(supervisor)
+                            MODULE._close_fd(supervisor.master)
+                        self.assertLess(time.monotonic() - started, 1.5)
+                        with self.assertRaises(ChildProcessError):
+                            os.waitpid(supervisor.pid, os.WNOHANG)
+                        self._assert_marker_pids_gone(marker_dir)
+                        self.assertEqual(MODULE._get_child_subreaper(), initial_subreaper)
+                        self.assertEqual(supervisor.control.fileno(), -1)
+                        self.assertEqual(control_close_count, 1)
+                        self.assertEqual(master_close_count, 1)
+                        self.assertTrue(supervisor_pidfds)
+                        self.assertTrue(
+                            all(count == 1 for count in pidfd_close_counts.values())
+                        )
+                    finally:
+                        try:
+                            os.fstat(supervisor.master)
+                        except OSError:
+                            pass
+                        else:
+                            MODULE._close_fd(supervisor.master)
+                        try:
+                            os.kill(supervisor.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+        finally:
+            MODULE._child_subreaper(original_subreaper)
 
     def test_pre_spawn_ttyname_failure_closes_both_descriptors_once(self):
         self._assert_pre_spawn_failure_is_clean("ttyname")
