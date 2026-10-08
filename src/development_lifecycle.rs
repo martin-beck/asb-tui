@@ -270,12 +270,7 @@ fn trusted_executable(variable: &str, name: &str) -> Result<PathBuf, &'static st
                 .collect()
         });
     for candidate in candidates {
-        let trusted = if name == "cargo" {
-            trusted_cargo_candidate(&candidate)
-        } else {
-            trusted_candidate(&candidate)
-        };
-        if let Some(trusted) = trusted {
+        if let Some(trusted) = trusted_candidate(&candidate) {
             return Ok(trusted);
         }
     }
@@ -463,13 +458,15 @@ fn resolve_rustup_toolchain(home: &Path) -> Option<RustupToolchain> {
     })
 }
 
-#[cfg(not(test))]
-fn trusted_cargo_candidate(candidate: &Path) -> Option<PathBuf> {
-    trusted_cargo_candidate_with_warning(candidate).map(|value| value.0)
+#[derive(Debug)]
+struct TrustedCargoResolution {
+    path: PathBuf,
+    rustup: Option<RustupToolchain>,
+    shim_group_writable: bool,
 }
 
 #[cfg(not(test))]
-fn trusted_cargo_candidate_with_warning(candidate: &Path) -> Option<(PathBuf, bool)> {
+fn trusted_cargo_resolution(candidate: &Path) -> Option<TrustedCargoResolution> {
     let canonical = fs::canonicalize(candidate).ok()?;
     let metadata = fs::symlink_metadata(&canonical).ok()?;
     if !metadata.is_file()
@@ -479,13 +476,28 @@ fn trusted_cargo_candidate_with_warning(candidate: &Path) -> Option<(PathBuf, bo
         return None;
     }
     if canonical.file_name() != Some(std::ffi::OsStr::new("rustup")) {
-        return trusted_candidate(candidate).map(|path| (path, false));
+        return trusted_candidate(candidate).map(|path| TrustedCargoResolution {
+            path,
+            rustup: None,
+            shim_group_writable: false,
+        });
     }
-
-    let shim_group_writable = validate_conventional_rustup_shim(candidate, &canonical)?;
-
     let home = trusted_rustup_home(candidate)?;
-    trusted_cargo_candidate_in_home(candidate, &home).map(|path| (path, shim_group_writable))
+    trusted_rustup_cargo_resolution(candidate, &canonical, &home)
+}
+
+fn trusted_rustup_cargo_resolution(
+    candidate: &Path,
+    canonical: &Path,
+    home: &Path,
+) -> Option<TrustedCargoResolution> {
+    let shim_group_writable = validate_conventional_rustup_shim(candidate, canonical)?;
+    let rustup = resolve_rustup_toolchain(home)?;
+    Some(TrustedCargoResolution {
+        path: rustup.cargo.clone(),
+        rustup: Some(rustup),
+        shim_group_writable,
+    })
 }
 
 fn validate_conventional_rustup_shim(candidate: &Path, canonical: &Path) -> Option<bool> {
@@ -525,14 +537,6 @@ fn validate_conventional_rustup_shim(candidate: &Path, canonical: &Path) -> Opti
     Some(group_writable)
 }
 
-fn trusted_cargo_candidate_in_home(candidate: &Path, home: &Path) -> Option<PathBuf> {
-    let canonical = fs::canonicalize(candidate).ok()?;
-    if canonical.file_name() != Some(std::ffi::OsStr::new("rustup")) {
-        return None;
-    }
-    Some(resolve_rustup_toolchain(home)?.cargo)
-}
-
 #[cfg(not(test))]
 fn trusted_toolchain_sibling(cargo: &Path, name: &str) -> Result<PathBuf, &'static str> {
     let resolved_cargo = fs::canonicalize(cargo).map_err(|_| "development_tool_unavailable")?;
@@ -544,7 +548,7 @@ fn trusted_toolchain_sibling(cargo: &Path, name: &str) -> Result<PathBuf, &'stat
 }
 
 #[cfg(not(test))]
-fn trusted_tools() -> Result<(PathBuf, PathBuf, PathBuf, String, bool), &'static str> {
+fn trusted_tools() -> Result<(PathBuf, PathBuf, TrustedCargoResolution, String), &'static str> {
     let setsid = trusted_executable("ASB_TUI_DEV_SETSID", "setsid")?;
     let git = trusted_executable("ASB_TUI_DEV_GIT", "git")?;
     let cargo_candidates = env::var_os("ASB_TUI_DEV_CARGO")
@@ -558,12 +562,12 @@ fn trusted_tools() -> Result<(PathBuf, PathBuf, PathBuf, String, bool), &'static
                 .map(|part| Path::new(part).join("cargo"))
                 .collect()
         });
-    let (cargo, shim_group_writable) = cargo_candidates
+    let cargo = cargo_candidates
         .iter()
-        .find_map(|candidate| trusted_cargo_candidate_with_warning(candidate))
+        .find_map(|candidate| trusted_cargo_resolution(candidate))
         .ok_or("development_tool_unavailable")?;
     let mut path = std::collections::BTreeSet::new();
-    for tool in [&setsid, &git, &cargo] {
+    for tool in [&setsid, &git, &cargo.path] {
         if let Some(parent) = tool.parent() {
             path.insert(parent.to_string_lossy().into_owned());
         }
@@ -573,7 +577,6 @@ fn trusted_tools() -> Result<(PathBuf, PathBuf, PathBuf, String, bool), &'static
         git,
         cargo,
         path.into_iter().collect::<Vec<_>>().join(":"),
-        shim_group_writable,
     ))
 }
 
@@ -656,21 +659,12 @@ fn make_descriptor_inheritable(file: &File) -> Result<FdFlags, &'static str> {
 
 #[cfg(not(test))]
 fn trusted_toolchain() -> Result<DevelopmentToolchain, &'static str> {
-    let (setsid, git, cargo, path, shim_group_writable) = trusted_tools()?;
-    let rustup_home = env::var_os("ASB_TUI_DEV_RUSTUP_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            cargo
-                .parent()?
-                .parent()?
-                .parent()?
-                .parent()
-                .map(Path::to_path_buf)
-        });
-    let rustup = rustup_home
-        .as_deref()
-        .and_then(resolve_rustup_toolchain)
-        .filter(|value| value.cargo == cargo);
+    let (setsid, git, cargo_resolution, path) = trusted_tools()?;
+    let TrustedCargoResolution {
+        path: cargo,
+        rustup,
+        shim_group_writable,
+    } = cargo_resolution;
     let (rustc, cargo_file, rustc_file, group_writable_rustup_paths) = if let Some(rustup) = rustup
     {
         if let Some(override_path) = env::var_os("ASB_TUI_DEV_RUSTC") {
@@ -1384,6 +1378,33 @@ mod tests {
     }
 
     #[test]
+    fn rustup_origin_never_falls_back_to_paths_after_second_pass_drift() {
+        let (root, shim, rustup_home) = rustup_fixture("rustup-no-path-fallback");
+        let canonical = fs::canonicalize(&shim).unwrap();
+        let selected = trusted_rustup_cargo_resolution(&shim, &canonical, &rustup_home).unwrap();
+        assert_eq!(selected.path.file_name().unwrap(), "cargo");
+        let rustup = selected.rustup.as_ref().unwrap();
+        assert!(selected.shim_group_writable || rustup.group_writable);
+
+        fs::remove_file(rustup_home.join("settings.toml")).unwrap();
+        fs::rename(
+            rustup_home.join("toolchains/fixture-toolchain"),
+            rustup_home.join("toolchains/retained"),
+        )
+        .unwrap();
+        assert!(resolve_rustup_toolchain(&rustup_home).is_none());
+        assert_eq!(
+            fs::read_to_string(format!("/proc/self/fd/{}", rustup.cargo_file.as_raw_fd())).unwrap(),
+            "validated-cargo"
+        );
+        assert_eq!(
+            fs::read_to_string(format!("/proc/self/fd/{}", rustup.rustc_file.as_raw_fd())).unwrap(),
+            "validated-rustc"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn hostile_rustup_layouts_fail_closed() {
         let (root, shim, rustup_home) = rustup_fixture("hostile-rustup");
         let canonical = fs::canonicalize(&shim).unwrap();
@@ -1735,17 +1756,14 @@ mod tests {
         let shim = shim_bin.join("cargo");
         std::os::unix::fs::symlink("rustup", &shim).unwrap();
 
-        assert_eq!(
-            trusted_cargo_candidate_in_home(&shim, &home),
-            Some(cargo.clone())
-        );
+        assert_eq!(resolve_rustup_toolchain(&home).unwrap().cargo, cargo);
 
         let outside = root.join("outside-cargo");
         fs::write(&outside, b"outside cargo").unwrap();
         fs::set_permissions(&outside, fs::Permissions::from_mode(0o700)).unwrap();
         fs::remove_file(&cargo).unwrap();
         std::os::unix::fs::symlink(&outside, &cargo).unwrap();
-        assert_eq!(trusted_cargo_candidate_in_home(&shim, &home), None);
+        assert!(resolve_rustup_toolchain(&home).is_none());
         fs::remove_dir_all(root).unwrap();
     }
 }
