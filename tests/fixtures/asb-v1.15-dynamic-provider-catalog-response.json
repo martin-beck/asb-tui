@@ -1,0 +1,48 @@
+{
+  "jsonrpc": "2.0",
+  "id": 15,
+  "result": {
+    "kind": "operation",
+    "value": {
+      "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result": {
+        "kind": "dynamic_provider_catalog",
+        "value": {
+          "catalog": {
+            "runner_instance_id": "runner-v115",
+            "generation": 7,
+            "catalog_sha256": "86b7fa36a223831e4773e47fc070f2cb09320f77c0d8a3f8fff577e987e52751",
+            "providers": [
+              {
+                "provider_id": "openrouter",
+                "display_name": "OpenRouter",
+                "auth_methods": ["credential_reference"],
+                "models": [
+                  {
+                    "model_id": "example/free",
+                    "revision": "openrouter-v1",
+                    "availability": {"status": "available"}
+                  }
+                ],
+                "availability": {"status": "available"}
+              }
+            ],
+            "refreshed": true
+          },
+          "openrouter": {
+            "catalog_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "mode": "dynamic",
+            "models": [
+              {
+                "model_id": "example/free",
+                "revision": "openrouter-v1",
+                "availability": {"status": "available"}
+              }
+            ],
+            "diagnostic": null
+          }
+        }
+      }
+    }
+  }
+}

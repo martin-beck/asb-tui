@@ -40,6 +40,12 @@ pub const V1_14: ControlVersion = ControlVersion {
     major: 1,
     minor: 14,
 };
+/// Minimum negotiated version for the additive dynamic provider catalog.
+pub const V1_15: ControlVersion = ControlVersion {
+    major: 1,
+    minor: 15,
+};
+pub const CONTROL_DYNAMIC_PROVIDER_CATALOG_V1: ControlVersion = V1_15;
 /// Minimum negotiated version that exposes the authenticated agent catalog.
 pub const CONTROL_AGENT_CATALOG_V1: ControlVersion = V1_4;
 /// Minimum negotiated version that exposes verified local-agent lifecycle calls.
@@ -438,6 +444,88 @@ pub struct ProviderCatalog {
     pub catalog_sha256: String,
     pub providers: Vec<ProviderCatalogEntry>,
     pub refreshed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCatalogMode {
+    Static,
+    Dynamic,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ProviderCatalogDiagnostic {
+    Unavailable,
+    HttpStatus(u16),
+    TooLarge,
+    Malformed,
+}
+
+impl ProviderCatalogDiagnostic {
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::HttpStatus(401 | 403) => "authentication_required",
+            Self::HttpStatus(429) => "quota_unavailable",
+            Self::HttpStatus(_) => "http_status",
+            Self::TooLarge => "catalog_too_large",
+            Self::Malformed => "catalog_malformed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenRouterCatalogProjection {
+    pub catalog_sha256: String,
+    pub mode: ProviderCatalogMode,
+    pub models: Vec<ProviderModel>,
+    pub diagnostic: Option<ProviderCatalogDiagnostic>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicProviderCatalog {
+    pub catalog: ProviderCatalog,
+    pub openrouter: OpenRouterCatalogProjection,
+}
+
+impl ProviderCatalog {
+    /// Compute ASB's canonical provider-catalog digest with the digest field
+    /// omitted. This is used for the v1.15 authenticated projection; legacy
+    /// v1.7 responses retain their existing compatibility behavior.
+    pub fn computed_sha256(&self) -> Result<String, CodecError> {
+        let mut value = serde_json::to_value(self).map_err(|_| CodecError::Serialization)?;
+        let Value::Object(object) = &mut value else {
+            return Err(CodecError::Serialization);
+        };
+        object.remove("catalog_sha256");
+        let bytes =
+            serde_json::to_vec(&canonical_json(value)).map_err(|_| CodecError::Serialization)?;
+        Ok(crate::sha256::digest_hex(&bytes))
+    }
+}
+
+fn canonical_json(value: Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let sorted = object
+                .into_iter()
+                .map(|(key, value)| (key, canonical_json(value)))
+                .collect();
+            Value::Object(sorted)
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonical_json).collect()),
+        other => other,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1217,6 +1305,7 @@ pub enum ControlResult {
     Analysis(AnalysisSummary),
     ArtifactMetadata(ArtifactMetadata),
     ProviderCatalog(ProviderCatalog),
+    DynamicProviderCatalog(DynamicProviderCatalog),
     Configuration(ConfigurationSnapshot),
     RecordingCampaign(RecordingCampaignPlan),
     RecordingCampaignStatus(RecordingCampaignStatus),
@@ -1414,6 +1503,7 @@ fn validate_call(call: &ControlCall) -> Result<(), CodecError> {
                             | V1_12
                             | V1_13
                             | V1_14
+                            | V1_15
                     )
                 })
             {
@@ -1634,7 +1724,18 @@ fn validate_success(success: &ControlSuccess, limits: ControlLimits) -> Result<(
         ControlSuccess::Negotiated(v) => {
             if !matches!(
                 v.version,
-                V1_0 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_10 | V1_12 | V1_13
+                V1_0 | V1_2
+                    | V1_3
+                    | V1_4
+                    | V1_5
+                    | V1_6
+                    | V1_7
+                    | V1_8
+                    | V1_10
+                    | V1_12
+                    | V1_13
+                    | V1_14
+                    | V1_15
             ) || v.oldest_revision > v.latest_revision
             {
                 return Err(CodecError::InvalidVersion);
@@ -1721,6 +1822,7 @@ fn validate_result(result: &ControlResult, limits: ControlLimits) -> Result<(), 
             }
         }
         ControlResult::ProviderCatalog(v) => validate_provider_catalog(v)?,
+        ControlResult::DynamicProviderCatalog(v) => validate_dynamic_provider_catalog(v)?,
         ControlResult::Configuration(v) => validate_configuration(v)?,
         ControlResult::RecordingCampaign(v) => validate_campaign_plan(v)?,
         ControlResult::RecordingCampaignStatus(v) => validate_campaign_status(v)?,
@@ -1783,12 +1885,92 @@ fn validate_provider_catalog(v: &ProviderCatalog) -> Result<(), CodecError> {
     for provider in &v.providers {
         validate_id(&provider.provider_id)?;
         validate_id(&provider.display_name)?;
-        if provider.auth_methods.is_empty() || provider.models.is_empty() {
+        if provider.auth_methods.is_empty() || provider.auth_methods.len() > 8 {
             return Err(CodecError::InvalidValue("provider entry"));
+        }
+        let dynamic_placeholder = provider.provider_id == "openrouter"
+            && provider.models.is_empty()
+            && matches!(
+                &provider.availability,
+                ProviderAvailability::Unavailable(reason)
+                    if matches!(
+                        reason.as_str(),
+                        "dynamic-catalog-not-ready"
+                            | "dynamic-catalog-unavailable"
+                            | "dynamic-catalog-empty"
+                    )
+            );
+        if (provider.models.is_empty() && !dynamic_placeholder) || provider.models.len() > 64 {
+            return Err(CodecError::InvalidValue("provider entry"));
+        }
+        if provider
+            .models
+            .windows(2)
+            .any(|pair| pair[0].model_id >= pair[1].model_id)
+        {
+            return Err(CodecError::InvalidValue("provider model ordering"));
         }
         for model in &provider.models {
             validate_id(&model.model_id)?;
             validate_id(&model.revision)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_dynamic_provider_catalog(v: &DynamicProviderCatalog) -> Result<(), CodecError> {
+    validate_provider_catalog(&v.catalog)?;
+    if v.catalog.catalog_sha256 != v.catalog.computed_sha256()? {
+        return Err(CodecError::InvalidValue("dynamic provider catalog digest"));
+    }
+    validate_digest(&v.openrouter.catalog_sha256)?;
+    if v.openrouter.models.len() > 64 {
+        return Err(CodecError::InvalidValue("dynamic provider catalog"));
+    }
+    if v.openrouter
+        .models
+        .windows(2)
+        .any(|pair| pair[0].model_id >= pair[1].model_id)
+    {
+        return Err(CodecError::InvalidValue("dynamic provider model ordering"));
+    }
+    for model in &v.openrouter.models {
+        validate_catalog_string(&model.model_id)?;
+        validate_catalog_string(&model.revision)?;
+    }
+    let openrouter = v
+        .catalog
+        .providers
+        .iter()
+        .find(|provider| provider.provider_id == "openrouter")
+        .ok_or(CodecError::InvalidValue("dynamic provider catalog"))?;
+    if openrouter.models != v.openrouter.models {
+        return Err(CodecError::InvalidValue("dynamic provider model identity"));
+    }
+    let zero_digest = v.openrouter.catalog_sha256 == "0".repeat(64);
+    match v.openrouter.mode {
+        ProviderCatalogMode::Static => {
+            if !zero_digest || !v.openrouter.models.is_empty() || v.openrouter.diagnostic.is_some()
+            {
+                return Err(CodecError::InvalidValue(
+                    "static provider catalog projection",
+                ));
+            }
+        }
+        ProviderCatalogMode::Unavailable => {
+            if !zero_digest || !v.openrouter.models.is_empty() || v.openrouter.diagnostic.is_none()
+            {
+                return Err(CodecError::InvalidValue(
+                    "unavailable provider catalog projection",
+                ));
+            }
+        }
+        ProviderCatalogMode::Dynamic => {
+            if zero_digest || v.openrouter.diagnostic.is_some() {
+                return Err(CodecError::InvalidValue(
+                    "dynamic provider catalog projection",
+                ));
+            }
         }
     }
     Ok(())
@@ -2078,6 +2260,10 @@ impl ControlResult {
                     Self::ArtifactMetadata(_)
                 )
                 | (ControlCall::ProviderCatalog(_), Self::ProviderCatalog(_))
+                | (
+                    ControlCall::ProviderCatalog(_),
+                    Self::DynamicProviderCatalog(_)
+                )
                 | (ControlCall::ConfigurationStatus(_), Self::Configuration(_))
                 | (ControlCall::ConfigurationApply(_), Self::Configuration(_))
                 | (
@@ -3431,5 +3617,78 @@ mod tests {
             ),
             Err(CodecError::InvalidValue("replay dispatch"))
         );
+    }
+
+    #[test]
+    fn v115_dynamic_provider_catalog_is_digest_bound_and_mode_closed() {
+        let model = ProviderModel {
+            model_id: "example/free".into(),
+            revision: "openrouter-v1".into(),
+            availability: ProviderAvailability::Available,
+        };
+        let mut catalog = ProviderCatalog {
+            runner_instance_id: "runner-1".into(),
+            generation: Revision(7),
+            catalog_sha256: String::new(),
+            providers: vec![ProviderCatalogEntry {
+                provider_id: "openrouter".into(),
+                display_name: "OpenRouter".into(),
+                auth_methods: vec![ProviderAuthMethod::CredentialReference],
+                models: vec![model.clone()],
+                availability: ProviderAvailability::Available,
+            }],
+            refreshed: true,
+        };
+        catalog.catalog_sha256 = catalog.computed_sha256().unwrap();
+        let dynamic = DynamicProviderCatalog {
+            catalog,
+            openrouter: OpenRouterCatalogProjection {
+                catalog_sha256: "a".repeat(64),
+                mode: ProviderCatalogMode::Dynamic,
+                models: vec![model],
+                diagnostic: None,
+            },
+        };
+        validate_dynamic_provider_catalog(&dynamic).unwrap();
+        let encoded =
+            serde_json::to_string(&ControlResult::DynamicProviderCatalog(dynamic.clone())).unwrap();
+        assert!(encoded.contains("dynamic_provider_catalog"));
+        assert!(!encoded.to_ascii_lowercase().contains("api_key"));
+
+        let mut stale_digest = dynamic.clone();
+        stale_digest.catalog.catalog_sha256 = "b".repeat(64);
+        assert_eq!(
+            validate_dynamic_provider_catalog(&stale_digest),
+            Err(CodecError::InvalidValue("dynamic provider catalog digest"))
+        );
+        let mut mismatched = dynamic.clone();
+        mismatched.openrouter.models[0].model_id = "other/free".into();
+        assert_eq!(
+            validate_dynamic_provider_catalog(&mismatched),
+            Err(CodecError::InvalidValue("dynamic provider model identity"))
+        );
+        let mut unavailable = dynamic;
+        unavailable.openrouter.mode = ProviderCatalogMode::Unavailable;
+        unavailable.openrouter.catalog_sha256 = "0".repeat(64);
+        unavailable.openrouter.models.clear();
+        unavailable.openrouter.diagnostic = Some(ProviderCatalogDiagnostic::HttpStatus(429));
+        unavailable.catalog.providers[0].models.clear();
+        unavailable.catalog.providers[0].availability =
+            ProviderAvailability::Unavailable("dynamic-catalog-unavailable".into());
+        unavailable.catalog.catalog_sha256 = unavailable.catalog.computed_sha256().unwrap();
+        validate_dynamic_provider_catalog(&unavailable).unwrap();
+        assert_eq!(
+            unavailable.openrouter.diagnostic.as_ref().unwrap().code(),
+            "quota_unavailable"
+        );
+
+        let mut static_projection = unavailable;
+        static_projection.openrouter.mode = ProviderCatalogMode::Static;
+        static_projection.openrouter.diagnostic = None;
+        static_projection.catalog.providers[0].availability =
+            ProviderAvailability::Unavailable("dynamic-catalog-not-ready".into());
+        static_projection.catalog.catalog_sha256 =
+            static_projection.catalog.computed_sha256().unwrap();
+        validate_dynamic_provider_catalog(&static_projection).unwrap();
     }
 }

@@ -135,6 +135,22 @@ without presenting caller-asserted facts as local detection.
 The closed offline/test input and public output contracts are
 `protocol/v1/compatibility-probe.schema.json` and `protocol/v1/compatibility-report.schema.json`.
 
+## Dynamic provider catalog
+
+The authenticated broker client negotiates the additive ASB ControlServer v1.15 provider-catalog
+projection. A v1.15 response must bind the runner and monotonic generation, authenticate the
+canonical provider-catalog digest, and carry an OpenRouter projection whose complete model list is
+identical to the catalog's `openrouter` profile. Static, dynamic, and unavailable modes are closed;
+unavailable transport, HTTP/quota, oversized, and malformed outcomes remain typed and
+credential-free. Older control versions remain usable for their legacy catalog but are explicitly
+reported as not supporting the dynamic projection. The wizard consumes only the authenticated
+nested catalog and never substitutes a development fixture after authoritative catalog evidence.
+
+This is a development control-plane capability, not evidence of provider authorization or a public
+release. Missing development authentication, signatures, and key management remain warnings. No
+raw provider response, credential, endpoint, or environment value enters TUI state or diagnostics,
+and an explicit live request never falls back to a static, mock, or replay provider.
+
 ## Bundle verification
 
 The closed `protocol/v1/bundle-manifest.schema.json` contract binds a signed release to its source

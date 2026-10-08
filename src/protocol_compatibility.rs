@@ -9,7 +9,7 @@
 
 use crate::control_codec::{
     ControlCall, ControlVersion, V1_0, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_10, V1_12,
-    V1_13,
+    V1_13, V1_14, V1_15,
 };
 use std::collections::BTreeSet;
 
@@ -18,7 +18,7 @@ pub const MATRIX_SCHEMA_VERSION: u16 = 1;
 /// Exact ASB control minors represented by this TUI codec.  Gaps are
 /// intentional: only published, independently validated minors are offered.
 pub const SUPPORTED_CONTROL_VERSIONS: &[ControlVersion] = &[
-    V1_0, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_10, V1_12, V1_13,
+    V1_0, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_10, V1_12, V1_13, V1_14, V1_15,
 ];
 
 /// Public matrix row for tooling and development qualification reports.
@@ -255,10 +255,12 @@ mod tests {
 
     #[test]
     fn matrix_is_explicit_and_has_no_unsupported_gaps() {
-        assert_eq!(SUPPORTED_CONTROL_VERSIONS.len(), 11);
+        assert_eq!(SUPPORTED_CONTROL_VERSIONS.len(), 13);
         assert!(validate_version(V1_10).is_ok());
         assert!(validate_version(V1_12).is_ok());
         assert!(validate_version(V1_13).is_ok());
+        assert!(validate_version(V1_14).is_ok());
+        assert!(validate_version(V1_15).is_ok());
         assert_eq!(
             validate_version(ControlVersion { major: 1, minor: 9 }),
             Err(CompatibilityError::UnsupportedVersion)

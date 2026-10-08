@@ -183,10 +183,17 @@ impl FramedControlStream {
         let response: ControlResponse =
             control_codec::decode(&frame, self.limits.max_frame_bytes as usize)?;
         response.validate_for(request, self.limits)?;
-        if let Some(version) = self.negotiated_version
-            && minimum_version_for_call(&request.call).is_some_and(|minimum| version < minimum)
-        {
-            return Err(TransportError::NotNegotiated);
+        if let Some(version) = self.negotiated_version {
+            if minimum_version_for_call(&request.call).is_some_and(|minimum| version < minimum) {
+                return Err(TransportError::NotNegotiated);
+            }
+            if let ControlResponse::Success(success) = &response
+                && let ControlSuccess::Operation(bound) = &success.result
+                && matches!(bound.result, ControlResult::DynamicProviderCatalog(_))
+                && version < control_codec::CONTROL_DYNAMIC_PROVIDER_CATALOG_V1
+            {
+                return Err(TransportError::NotNegotiated);
+            }
         }
         Ok(response)
     }
@@ -4243,5 +4250,42 @@ mod tests {
             session.execute_recording_campaign(&mut projection, "campaign".into(), "key".into(),),
             Err(TransportError::Projection)
         );
+    }
+
+    #[test]
+    fn dynamic_provider_catalog_response_requires_negotiated_v115() {
+        let response: ControlResponse = serde_json::from_str(include_str!(
+            "../tests/fixtures/asb-v1.15-dynamic-provider-catalog-response.json"
+        ))
+        .unwrap();
+        let request = ControlRequest {
+            jsonrpc: control_codec::JSONRPC_VERSION.into(),
+            id: crate::control_codec::RequestId(15),
+            timeout_ms: 1_000,
+            call: ControlCall::ProviderCatalog(control_codec::ProviderCatalogRequest {
+                action: control_codec::ProviderCatalogAction::Refresh,
+                runner_instance_id: "runner-v115".into(),
+                known_generation: Some(Revision(6)),
+            }),
+        };
+        for (version, expected) in [
+            (control_codec::V1_14, Err(TransportError::NotNegotiated)),
+            (control_codec::V1_15, Ok(response.clone())),
+        ] {
+            let (mut server, client) = UnixStream::pair().unwrap();
+            server
+                .write_all(&control_codec::encode(&response, 65_536).unwrap())
+                .unwrap();
+            let mut transport = FramedControlStream::adopt_broker(
+                client,
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getpid().as_raw_pid() as u32,
+                ControlLimits::default(),
+            )
+            .unwrap();
+            transport.negotiated = true;
+            transport.negotiated_version = Some(version);
+            assert_eq!(transport.read_response(&request), expected);
+        }
     }
 }

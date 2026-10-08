@@ -443,6 +443,7 @@ fn authenticated_projection_drives_repeatable_setup_without_secret_defaults() {
         agent_catalog: Some(agent_catalog),
         agent_lifecycle: None,
         provider_catalog: Some(provider_catalog),
+        dynamic_provider_catalog: None,
         configuration: Some(ConfigurationSnapshot {
             runner_instance_id: "runner-setup".into(),
             generation: Revision(3),

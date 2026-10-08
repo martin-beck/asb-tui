@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "provider_model_availability_projection": "Authoritative unavailable provider and model reasons remain typed through adapter projection, are rendered disabled, and are rejected before dispatch.",
+  "dynamic_provider_catalog_contract": "Control v1.15 projects the authenticated OpenRouter roster as static, dynamic, or unavailable with a normalized digest, complete model identity equality, and typed credential-free diagnostics. Older control versions remain explicitly unsupported for dynamic refresh. Live setup never substitutes the development catalog after an authoritative provider response.",
   "fanout_request_contract": "Fan-out dispatch expands reviewed agent/workload selections into complete ASB RunRequest payloads with provider/model, catalog and revision digests, local-mock authority, bounded limits, and stable idempotency before transport; identity, revision, cancellation, and applied-configuration gates are behavior-covered. Live benchmark launch and cancellation preserve the selected provider/model/mode, bounded progress, and typed control failures without silently falling back to local-mock.",
   "fanout_live_admission_contract": "Explicit live fan-out requires a configured 64-character hexadecimal credential reference and rejects missing or malformed references before backend submission; diagnostics remain typed, bounded, and secret-free.",
   "recording_capture_contract": "Recording actions carry the benchmark picker's explicit selected or all-workloads scope, rebuild after provider/model/agent changes, and retain typed live capture or replay failures in the interactive session without silently switching to mock execution.",
@@ -41,6 +42,9 @@
     "capabilities",
     "provider_catalog",
     "provider_catalog_generation",
+    "dynamic_provider_catalog_mode",
+    "dynamic_provider_catalog_digest",
+    "dynamic_provider_catalog_diagnostic",
     "provider_registry_profile",
     "provider_registry_status",
     "provider_registry_model_count",

@@ -9,8 +9,8 @@
 
 use crate::control_codec::{
     AnalysisSummary, AuthStatusResponse, ConfigurationSnapshot, ControlCall, ControlLimits,
-    ControlRequest, ControlResponse, ControlResult, ControlSuccess, FanoutAdmission,
-    MeasurementCatalog, Negotiated, ProviderCatalog, RecordingCampaignEstimate,
+    ControlRequest, ControlResponse, ControlResult, ControlSuccess, DynamicProviderCatalog,
+    FanoutAdmission, MeasurementCatalog, Negotiated, ProviderCatalog, RecordingCampaignEstimate,
     RecordingCampaignLifecycle, RecordingCampaignPlan, Revision, RunSummary,
 };
 use std::{collections::BTreeMap, fmt};
@@ -42,6 +42,14 @@ pub struct LiveBenchmarkEntry {
     pub measure_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DynamicProviderCatalogState {
+    /// The negotiated peer predates the additive v1.15 projection.
+    UnsupportedVersion,
+    /// Authenticated v1.15 projection, including typed availability.
+    Catalog(DynamicProviderCatalog),
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Connection {
     #[default]
@@ -60,6 +68,8 @@ pub struct LiveSnapshot {
     pub agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
     pub agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     pub provider_catalog: Option<ProviderCatalog>,
+    /// Additive v1.15 OpenRouter roster identity and typed availability.
+    pub dynamic_provider_catalog: Option<DynamicProviderCatalogState>,
     pub configuration: Option<ConfigurationSnapshot>,
     /// Last public provider enrollment status. This contains digests only;
     /// absence means unavailable, not unauthorized or connected.
@@ -115,6 +125,7 @@ pub struct ControlProjection {
     agent_catalog: Option<crate::agent_catalog::AgentCatalog>,
     agent_lifecycle: Option<crate::asb_lifecycle::AgentLifecycleResponse>,
     provider_catalog: Option<ProviderCatalog>,
+    dynamic_provider_catalog: Option<DynamicProviderCatalogState>,
     configuration: Option<ConfigurationSnapshot>,
     auth_status: Option<AuthStatusResponse>,
     auth_unavailable: bool,
@@ -335,6 +346,57 @@ impl ControlProjection {
                     return Err(ProjectionError::UnexpectedResult);
                 }
                 self.provider_catalog = Some(value.clone());
+                self.dynamic_provider_catalog = self
+                    .negotiated
+                    .as_ref()
+                    .filter(|session| {
+                        session.version < crate::control_codec::CONTROL_DYNAMIC_PROVIDER_CATALOG_V1
+                    })
+                    .map(|_| DynamicProviderCatalogState::UnsupportedVersion);
+            }
+            (
+                ControlCall::ProviderCatalog(request),
+                ControlResult::DynamicProviderCatalog(value),
+            ) => {
+                if self.negotiated.as_ref().is_none_or(|session| {
+                    session.version < crate::control_codec::CONTROL_DYNAMIC_PROVIDER_CATALOG_V1
+                }) {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                let expected_refreshed = matches!(
+                    request.action,
+                    crate::control_codec::ProviderCatalogAction::Refresh
+                );
+                if value.catalog.refreshed != expected_refreshed {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                if request
+                    .known_generation
+                    .is_some_and(|known| value.catalog.generation.0 < known.0)
+                {
+                    return Err(ProjectionError::StaleProviderCatalog);
+                }
+                if self
+                    .provider_catalog
+                    .as_ref()
+                    .is_some_and(|current| value.catalog.generation.0 < current.generation.0)
+                {
+                    return Err(ProjectionError::StaleProviderCatalog);
+                }
+                if self.provider_catalog.as_ref().is_some_and(|current| {
+                    value.catalog.generation == current.generation
+                        && value.catalog.catalog_sha256 != current.catalog_sha256
+                }) {
+                    return Err(ProjectionError::StaleProviderCatalog);
+                }
+                if self.negotiated.as_ref().is_some_and(|session| {
+                    value.catalog.runner_instance_id != session.runner_instance_id
+                }) {
+                    return Err(ProjectionError::UnexpectedResult);
+                }
+                self.provider_catalog = Some(value.catalog.clone());
+                self.dynamic_provider_catalog =
+                    Some(DynamicProviderCatalogState::Catalog(value.clone()));
             }
             (ControlCall::ConfigurationStatus(_), ControlResult::Configuration(value))
             | (ControlCall::ConfigurationApply(_), ControlResult::Configuration(value)) => {
@@ -578,6 +640,7 @@ impl ControlProjection {
             agent_catalog: self.agent_catalog.clone(),
             agent_lifecycle: self.agent_lifecycle.clone(),
             provider_catalog: self.provider_catalog.clone(),
+            dynamic_provider_catalog: self.dynamic_provider_catalog.clone(),
             configuration: self.configuration.clone(),
             auth_status: self.auth_status.clone(),
             auth_unavailable: self.auth_unavailable,
@@ -749,6 +812,10 @@ mod tests {
                 .providers
                 .len(),
             1
+        );
+        assert_eq!(
+            projection.snapshot().dynamic_provider_catalog,
+            Some(DynamicProviderCatalogState::UnsupportedVersion)
         );
         let mut stale_catalog = catalog;
         stale_catalog.generation = Revision(1);
@@ -1240,5 +1307,125 @@ mod tests {
         );
         projection.mark_auth_unavailable("auth_unavailable", false);
         assert!(!projection.snapshot().auth_development_only);
+    }
+
+    #[test]
+    fn v115_dynamic_provider_catalog_projects_nested_catalog_and_diagnostics() {
+        use crate::control_codec::{
+            DynamicProviderCatalog, OpenRouterCatalogProjection, ProviderAuthMethod,
+            ProviderAvailability, ProviderCatalogEntry, ProviderCatalogMode,
+            ProviderCatalogRequest, ProviderModel,
+        };
+        let model = ProviderModel {
+            model_id: "example/free".into(),
+            revision: "openrouter-v1".into(),
+            availability: ProviderAvailability::Available,
+        };
+        let mut catalog = ProviderCatalog {
+            runner_instance_id: "runner".into(),
+            generation: Revision(2),
+            catalog_sha256: String::new(),
+            providers: vec![ProviderCatalogEntry {
+                provider_id: "openrouter".into(),
+                display_name: "OpenRouter".into(),
+                auth_methods: vec![ProviderAuthMethod::CredentialReference],
+                models: vec![model.clone()],
+                availability: ProviderAvailability::Available,
+            }],
+            refreshed: true,
+        };
+        catalog.catalog_sha256 = catalog.computed_sha256().unwrap();
+        let dynamic = DynamicProviderCatalog {
+            catalog,
+            openrouter: OpenRouterCatalogProjection {
+                catalog_sha256: "a".repeat(64),
+                mode: ProviderCatalogMode::Dynamic,
+                models: vec![model],
+                diagnostic: None,
+            },
+        };
+        let call = ControlCall::ProviderCatalog(ProviderCatalogRequest {
+            action: crate::control_codec::ProviderCatalogAction::Refresh,
+            runner_instance_id: "runner".into(),
+            known_generation: Some(Revision(1)),
+        });
+        let mut projection = connected_projection_at(crate::control_codec::V1_15);
+        projection
+            .apply(
+                &request(call.clone(), 41),
+                &response(41, ControlResult::DynamicProviderCatalog(dynamic.clone())),
+                ControlLimits::default(),
+            )
+            .unwrap();
+        let snapshot = projection.snapshot();
+        assert_eq!(snapshot.provider_catalog.unwrap().generation, Revision(2));
+        assert_eq!(
+            match snapshot.dynamic_provider_catalog.unwrap() {
+                DynamicProviderCatalogState::Catalog(value) => {
+                    value.openrouter.models[0].model_id.clone()
+                }
+                DynamicProviderCatalogState::UnsupportedVersion =>
+                    panic!("v1.15 projection missing"),
+            },
+            "example/free"
+        );
+
+        let mut conflicting = dynamic.clone();
+        conflicting.catalog.providers[0].display_name = "Changed OpenRouter".into();
+        conflicting.catalog.catalog_sha256 = conflicting.catalog.computed_sha256().unwrap();
+        assert_eq!(
+            projection.apply(
+                &request(call.clone(), 44),
+                &response(44, ControlResult::DynamicProviderCatalog(conflicting)),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::StaleProviderCatalog)
+        );
+
+        assert_eq!(
+            projection.apply(
+                &request(
+                    ControlCall::ProviderCatalog(ProviderCatalogRequest {
+                        action: crate::control_codec::ProviderCatalogAction::Status,
+                        runner_instance_id: "runner".into(),
+                        known_generation: Some(Revision(2)),
+                    }),
+                    45,
+                ),
+                &response(45, ControlResult::DynamicProviderCatalog(dynamic.clone())),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::UnexpectedResult)
+        );
+
+        let mut legacy = connected_projection_at(crate::control_codec::V1_14);
+        assert_eq!(
+            legacy.apply(
+                &request(call, 42),
+                &response(42, ControlResult::DynamicProviderCatalog(dynamic.clone())),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::UnexpectedResult)
+        );
+
+        let mut stale = connected_projection_at(crate::control_codec::V1_15);
+        let mut stale_dynamic = dynamic.clone();
+        stale_dynamic.catalog.generation = Revision(1);
+        stale_dynamic.catalog.catalog_sha256 = stale_dynamic.catalog.computed_sha256().unwrap();
+        assert_eq!(
+            stale.apply(
+                &request(
+                    ControlCall::ProviderCatalog(ProviderCatalogRequest {
+                        action: crate::control_codec::ProviderCatalogAction::Refresh,
+                        runner_instance_id: "runner".into(),
+                        known_generation: Some(Revision(2)),
+                    }),
+                    43,
+                ),
+                &response(43, ControlResult::DynamicProviderCatalog(stale_dynamic)),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::StaleProviderCatalog)
+        );
     }
 }

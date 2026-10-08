@@ -595,6 +595,7 @@ mod tests {
                 providers: vec![],
                 refreshed: true,
             }),
+            dynamic_provider_catalog: None,
             configuration: Some(ConfigurationSnapshot {
                 runner_instance_id: "runner".into(),
                 generation: Revision(3),
