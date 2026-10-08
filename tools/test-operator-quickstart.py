@@ -246,7 +246,7 @@ time.sleep(30)
             environment = os.environ.copy()
             environment["DESCENDANT_PID_FILE"] = str(marker)
             environment["DESCENDANT_SOURCE"] = child
-            real_spawn = MODULE._spawn_controlling_pty
+            real_start = MODULE._start_fixture_supervisor
             real_close = MODULE.os.close
             master_fd = None
             master_close_count = 0
@@ -255,10 +255,11 @@ time.sleep(30)
                 [sys.executable, "-c", "import time; time.sleep(30)"]
             )
 
-            def tracked_spawn(*args, **kwargs):
+            def tracked_start(*args, **kwargs):
                 nonlocal master_fd
-                spawned_leader, master_fd = real_spawn(*args, **kwargs)
-                return spawned_leader, master_fd
+                supervisor = real_start(*args, **kwargs)
+                master_fd = supervisor.master
+                return supervisor
 
             def tracked_close(fd):
                 nonlocal master_close_count
@@ -275,7 +276,7 @@ time.sleep(30)
                         master_close_count = 0
                         MODULE._child_subreaper(initial_subreaper)
                         with mock.patch.object(
-                            MODULE, "_spawn_controlling_pty", tracked_spawn
+                            MODULE, "_start_fixture_supervisor", tracked_start
                         ), mock.patch.object(MODULE.os, "close", tracked_close):
                             with self.assertRaisesRegex(AssertionError, "timed out"):
                                 MODULE.run_asb(
@@ -367,6 +368,117 @@ time.sleep(30)
                     except ProcessLookupError:
                         pass
 
+    def test_ambient_post_boundary_double_fork_survives_fixture_cleanup(self):
+        fixture = """
+import os, pathlib, signal, time
+intermediate = os.fork()
+if intermediate == 0:
+    daemon = os.fork()
+    if daemon != 0:
+        os._exit(0)
+    os.setsid()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    pathlib.Path(os.environ["FIXTURE_DAEMON_FILE"]).write_text(str(os.getpid()))
+    while True:
+        time.sleep(1)
+os.waitpid(intermediate, 0)
+while not pathlib.Path(os.environ["FIXTURE_DAEMON_FILE"]).exists():
+    time.sleep(0.001)
+time.sleep(30)
+"""
+        ambient_source = """
+import os, pathlib, signal, time
+os.read(int(os.environ["RELEASE_FD"]), 1)
+intermediate = os.fork()
+if intermediate == 0:
+    daemon = os.fork()
+    if daemon != 0:
+        os._exit(0)
+    os.setsid()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    pathlib.Path(os.environ["AMBIENT_DAEMON_FILE"]).write_text(str(os.getpid()))
+    while True:
+        time.sleep(1)
+os.waitpid(intermediate, 0)
+"""
+        original_subreaper = MODULE._get_child_subreaper()
+        try:
+            for initial_subreaper in (False, True):
+                with self.subTest(
+                    initial_subreaper=initial_subreaper
+                ), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    ambient_marker = root / "ambient"
+                    fixture_marker = root / "fixture"
+                    release_read, release_write = os.pipe()
+                    MODULE._child_subreaper(initial_subreaper)
+                    ambient_environment = os.environ.copy()
+                    ambient_environment.update(
+                        {
+                            "RELEASE_FD": str(release_read),
+                            "AMBIENT_DAEMON_FILE": str(ambient_marker),
+                        }
+                    )
+                    ambient = subprocess.Popen(
+                        [sys.executable, "-c", ambient_source],
+                        env=ambient_environment,
+                        pass_fds=(release_read,),
+                    )
+                    os.close(release_read)
+                    fixture_environment = os.environ.copy()
+                    fixture_environment["FIXTURE_DAEMON_FILE"] = str(
+                        fixture_marker
+                    )
+                    real_start = MODULE._start_fixture_supervisor
+                    ambient_pid = None
+                    fixture_pid = None
+
+                    def release_after_boundary(*args, **kwargs):
+                        supervisor = real_start(*args, **kwargs)
+                        os.write(release_write, b"x")
+                        deadline = time.monotonic() + 2
+                        while (
+                            not ambient_marker.exists()
+                            and time.monotonic() < deadline
+                        ):
+                            time.sleep(0.001)
+                        self.assertTrue(ambient_marker.exists())
+                        return supervisor
+
+                    try:
+                        with mock.patch.object(
+                            MODULE, "_start_fixture_supervisor", release_after_boundary
+                        ):
+                            with self.assertRaisesRegex(AssertionError, "timed out"):
+                                MODULE.run_asb(
+                                    Path(sys.executable),
+                                    ["-c", fixture],
+                                    fixture_environment,
+                                    json_output=False,
+                                    timeout_seconds=0.3,
+                                )
+                        ambient_pid = int(ambient_marker.read_text())
+                        fixture_pid = int(fixture_marker.read_text())
+                        os.kill(ambient_pid, 0)
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(fixture_pid, 0)
+                        self.assertEqual(
+                            MODULE._get_child_subreaper(), initial_subreaper
+                        )
+                    finally:
+                        os.close(release_write)
+                        ambient.wait(timeout=2)
+                        for pid in (ambient_pid, fixture_pid):
+                            if pid is not None:
+                                try:
+                                    os.kill(pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+        finally:
+            MODULE._child_subreaper(original_subreaper)
+
     def test_depth_limit_still_cleans_authenticated_lineage(self):
         self._assert_discovery_limit_is_clean("depth")
 
@@ -404,16 +516,17 @@ time.sleep(30)
 """
             environment = os.environ.copy()
             environment["LINEAGE_MARKER_DIR"] = str(marker_dir)
-            real_spawn = MODULE._spawn_controlling_pty
+            real_start = MODULE._start_fixture_supervisor
             real_close = MODULE.os.close
             master_fd = None
             master_close_count = 0
             observed_pids = []
 
-            def tracked_spawn(*args, **kwargs):
+            def tracked_start(*args, **kwargs):
                 nonlocal master_fd
-                leader, master_fd = real_spawn(*args, **kwargs)
-                return leader, master_fd
+                supervisor = real_start(*args, **kwargs)
+                master_fd = supervisor.master
+                return supervisor
 
             def tracked_close(fd):
                 nonlocal master_close_count
@@ -441,7 +554,7 @@ time.sleep(30)
                             )
                         )
                         with limit_patch, mock.patch.object(
-                            MODULE, "_spawn_controlling_pty", tracked_spawn
+                            MODULE, "_start_fixture_supervisor", tracked_start
                         ), mock.patch.object(MODULE.os, "close", tracked_close):
                             with self.assertRaises(BaseException) as caught:
                                 MODULE.run_asb(
@@ -550,11 +663,9 @@ time.sleep(30)
                     MODULE.os, "posix_spawn", injected_posix_spawn
                 ):
                     with self.assertRaisesRegex(OSError, "injected"):
-                        MODULE.run_asb(
-                            Path(sys.executable),
-                            ["-c", "raise SystemExit(0)"],
+                        MODULE._spawn_controlling_pty(
+                            [sys.executable, "-c", "raise SystemExit(0)"],
                             os.environ.copy(),
-                            json_output=False,
                         )
                 self.assertEqual(spawn_calls, 1 if failure == "spawn" else 0)
                 self.assertEqual(MODULE._get_child_subreaper(), initial_subreaper)
@@ -574,32 +685,23 @@ time.sleep(30)
                 f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); "
                 "time.sleep(30)"
             )
-            real_spawn = MODULE._spawn_controlling_pty
-            real_terminate = MODULE._terminate_session
-            real_child_subreaper = MODULE._child_subreaper
+            real_start = MODULE._start_fixture_supervisor
+            real_stop = MODULE._stop_fixture_supervisor
             real_close = MODULE.os.close
             spawned_fd = None
             close_count = 0
-            subreaper_calls = 0
             cleanup_failure = ""
 
-            def tracked_spawn(*args, **kwargs):
+            def tracked_start(*args, **kwargs):
                 nonlocal spawned_fd
-                leader, spawned_fd = real_spawn(*args, **kwargs)
-                return leader, spawned_fd
+                supervisor = real_start(*args, **kwargs)
+                spawned_fd = supervisor.master
+                return supervisor
 
-            def terminate_then_report(leader, tracked=None, ambient=None):
-                real_terminate(leader, tracked, ambient)
-                if cleanup_failure == "terminate":
+            def stop_then_report(supervisor):
+                real_stop(supervisor)
+                if cleanup_failure == "stop":
                     raise RuntimeError("injected teardown report")
-
-            def restore_then_report(enable):
-                nonlocal subreaper_calls
-                subreaper_calls += 1
-                previous = real_child_subreaper(enable)
-                if cleanup_failure == "restore" and subreaper_calls == 2:
-                    raise RuntimeError("injected restoration report")
-                return previous
 
             def tracked_close(fd):
                 nonlocal close_count
@@ -609,7 +711,7 @@ time.sleep(30)
 
             original_subreaper = MODULE._get_child_subreaper()
             try:
-                for cleanup_failure in ("terminate", "restore"):
+                for cleanup_failure in ("stop",):
                     for initial_subreaper in (False, True):
                         with self.subTest(
                             cleanup_failure=cleanup_failure,
@@ -617,14 +719,11 @@ time.sleep(30)
                         ):
                             spawned_fd = None
                             close_count = 0
-                            subreaper_calls = 0
                             MODULE._child_subreaper(initial_subreaper)
                             with mock.patch.object(
-                                MODULE, "_spawn_controlling_pty", tracked_spawn
+                                MODULE, "_start_fixture_supervisor", tracked_start
                             ), mock.patch.object(
-                                MODULE, "_terminate_session", terminate_then_report
-                            ), mock.patch.object(
-                                MODULE, "_child_subreaper", restore_then_report
+                                MODULE, "_stop_fixture_supervisor", stop_then_report
                             ), mock.patch.object(MODULE.os, "close", tracked_close):
                                 with self.assertRaises(BaseExceptionGroup) as caught:
                                     MODULE.run_asb(
@@ -639,17 +738,8 @@ time.sleep(30)
                             self.assertIsInstance(primary, AssertionError)
                             self.assertIn("timed out", str(primary))
                             self.assertIsInstance(cleanup, RuntimeError)
-                            expected = (
-                                "injected teardown report"
-                                if cleanup_failure == "terminate"
-                                else "injected restoration report"
-                            )
-                            stage = (
-                                "cleanup stage: authenticated child lineage"
-                                if cleanup_failure == "terminate"
-                                else "cleanup stage: child-subreaper restoration"
-                            )
-                            self.assertIn(expected, str(cleanup))
+                            self.assertIn("injected teardown report", str(cleanup))
+                            stage = "cleanup stage: authenticated child lineage"
                             self.assertIn(stage, getattr(cleanup, "__notes__", []))
                             self.assertEqual(
                                 MODULE._get_child_subreaper(), initial_subreaper
@@ -675,12 +765,13 @@ time.sleep(30)
             )
             selector_fd = None
             spawned_fd = None
-            real_spawn = MODULE._spawn_controlling_pty
+            real_start = MODULE._start_fixture_supervisor
 
-            def tracked_spawn(*args, **kwargs):
+            def tracked_start(*args, **kwargs):
                 nonlocal spawned_fd
-                leader, spawned_fd = real_spawn(*args, **kwargs)
-                return leader, spawned_fd
+                supervisor = real_start(*args, **kwargs)
+                spawned_fd = supervisor.master
+                return supervisor
 
             class FailingSelector:
                 def __init__(self):
@@ -690,7 +781,7 @@ time.sleep(30)
                             time.sleep(0.01)
                         raise RuntimeError("injected selector construction failure")
 
-                def register(self, fd, _events):
+                def register(self, fd, _events, _data=None):
                     nonlocal selector_fd
                     selector_fd = fd
                     deadline = time.monotonic() + 2
@@ -707,7 +798,9 @@ time.sleep(30)
                     selector_fd = None
                     spawned_fd = None
                     MODULE._child_subreaper(initial_subreaper)
-                    with mock.patch.object(MODULE, "_spawn_controlling_pty", tracked_spawn), mock.patch.object(
+                    with mock.patch.object(
+                        MODULE, "_start_fixture_supervisor", tracked_start
+                    ), mock.patch.object(
                         MODULE.selectors, "DefaultSelector", FailingSelector
                     ):
                         with self.assertRaisesRegex(RuntimeError, "injected selector"):

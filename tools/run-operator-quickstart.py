@@ -13,6 +13,7 @@ import os
 import pty
 import selectors
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -67,6 +68,14 @@ class _ProcessSnapshot(NamedTuple):
     parent_pid: int
     session_id: int
     start_time: int
+
+
+class _FixtureSupervisor(NamedTuple):
+    pid: int
+    control: socket.socket
+    leader_pid: int
+    session_id: int
+    master: int
 
 
 def _read_process_identity(pid: int) -> _ProcessSnapshot:
@@ -184,29 +193,8 @@ MAX_LINEAGE_DEPTH = 64
 MAX_LINEAGE_PROCESSES = 4096
 
 
-def _capture_ambient_children() -> dict[int, _ProcessIdentity]:
-    """Pin children which existed before the fixture execution boundary."""
-    ambient: dict[int, _ProcessIdentity] = {}
-    runner_pid = os.getpid()
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdecimal():
-            continue
-        identity = _open_direct_child_identity(int(entry.name), runner_pid)
-        if identity is not None:
-            ambient[identity.pid] = identity
-    return ambient
-
-
-def _is_ambient_identity(
-    identity: _ProcessIdentity, ambient: dict[int, _ProcessIdentity]
-) -> bool:
-    baseline = ambient.get(identity.pid)
-    return baseline is not None and baseline.start_time == identity.start_time
-
-
 def _discover_descendants(
     tracked: dict[int, _ProcessIdentity],
-    ambient: dict[int, _ProcessIdentity] | None = None,
 ) -> None:
     """Pin descendants through stable parent edges, independent of sessions.
 
@@ -214,9 +202,7 @@ def _discover_descendants(
     already proven to descend from it.  It never treats the runner's ambient
     children, a shared session, or a numeric PID/PGID as authority.
     """
-    if ambient is None:
-        ambient = {}
-    runner_pid = os.getpid()
+    supervisor_pid = os.getpid()
     process_limit_reached = False
     for depth in range(MAX_LINEAGE_DEPTH):
         added = False
@@ -234,14 +220,12 @@ def _discover_descendants(
             parent = parents.get(parent_pid)
             if parent is not None:
                 identity = _open_descendant_identity(pid, parent)
-            elif parent_pid == runner_pid:
-                # A rapid double-fork can be adopted by this subreaper before
-                # an intermediate parent edge is sampled.  The pre-spawn
-                # baseline excludes ambient siblings at this boundary.
-                identity = _open_direct_child_identity(pid, runner_pid)
-                if identity is not None and _is_ambient_identity(identity, ambient):
-                    os.close(identity.pidfd)
-                    identity = None
+            elif parent_pid == supervisor_pid:
+                # This process is a fixture-exclusive subreaper: its only
+                # possible children are the launch leader and descendants
+                # adopted from that leader.  The structural boundary makes a
+                # rapid double-fork authentic without sampling a parent edge.
+                identity = _open_direct_child_identity(pid, supervisor_pid)
             else:
                 identity = None
             if identity is None:
@@ -275,11 +259,10 @@ def _record_discovery_error(
 
 def _discover_for_cleanup(
     tracked: dict[int, _ProcessIdentity],
-    ambient: dict[int, _ProcessIdentity],
     errors: list[BaseException],
 ) -> None:
     try:
-        _discover_descendants(tracked, ambient)
+        _discover_descendants(tracked)
     except BaseException as error:
         _record_discovery_error(errors, error)
 
@@ -295,10 +278,9 @@ def _retire_dead_identities(tracked: dict[int, _ProcessIdentity]) -> None:
 
 def _lineage_alive(
     tracked: dict[int, _ProcessIdentity],
-    ambient: dict[int, _ProcessIdentity],
     errors: list[BaseException],
 ) -> bool:
-    _discover_for_cleanup(tracked, ambient, errors)
+    _discover_for_cleanup(tracked, errors)
     _retire_dead_identities(tracked)
     return bool(tracked)
 
@@ -306,7 +288,6 @@ def _lineage_alive(
 def _terminate_session(
     leader: _ProcessIdentity,
     tracked: dict[int, _ProcessIdentity] | None = None,
-    ambient: dict[int, _ProcessIdentity] | None = None,
 ) -> None:
     """Terminate and reap the authenticated spawned process lineage.
 
@@ -318,34 +299,32 @@ def _terminate_session(
         tracked = {leader.pid: leader}
     elif tracked.get(leader.pid) != leader:
         raise AssertionError("authenticated fixture lineage lost its leader")
-    if ambient is None:
-        ambient = {}
     cleanup_errors: list[BaseException] = []
     try:
-        _discover_for_cleanup(tracked, ambient, cleanup_errors)
+        _discover_for_cleanup(tracked, cleanup_errors)
         for identity in tracked.values():
             _signal_identity(identity, signal.SIGTERM)
         term_deadline = time.monotonic() + 0.5
         while time.monotonic() < term_deadline:
             known = set(tracked)
-            alive = _lineage_alive(tracked, ambient, cleanup_errors)
+            alive = _lineage_alive(tracked, cleanup_errors)
             for pid in set(tracked) - known:
                 _signal_identity(tracked[pid], signal.SIGTERM)
             if not alive:
                 time.sleep(0.01)
-                if not _lineage_alive(tracked, ambient, cleanup_errors):
+                if not _lineage_alive(tracked, cleanup_errors):
                     break
             time.sleep(0.01)
 
         if tracked:
             kill_deadline = time.monotonic() + 1.0
             while time.monotonic() < kill_deadline:
-                _discover_for_cleanup(tracked, ambient, cleanup_errors)
+                _discover_for_cleanup(tracked, cleanup_errors)
                 for identity in tracked.values():
                     _signal_identity(identity, signal.SIGKILL)
-                if not _lineage_alive(tracked, ambient, cleanup_errors):
+                if not _lineage_alive(tracked, cleanup_errors):
                     time.sleep(0.01)
-                    if not _lineage_alive(tracked, ambient, cleanup_errors):
+                    if not _lineage_alive(tracked, cleanup_errors):
                         break
                 time.sleep(0.01)
         if tracked:
@@ -358,12 +337,6 @@ def _terminate_session(
             os.close(identity.pidfd)
         tracked.clear()
     _raise_operation_and_cleanup_errors(None, cleanup_errors)
-
-
-def _close_identity_set(identities: dict[int, _ProcessIdentity]) -> None:
-    for identity in identities.values():
-        os.close(identity.pidfd)
-    identities.clear()
 
 
 def _wait_nohang(pid: int) -> int | None:
@@ -451,10 +424,7 @@ def _pty_is_interactive_ready(master: int, session_id: int) -> bool:
 def _spawn_controlling_pty(
     command: list[str],
     environment: dict[str, str],
-    ambient: dict[int, _ProcessIdentity] | None = None,
 ) -> tuple[_ProcessIdentity, int]:
-    if ambient is None:
-        ambient = {}
     master, slave = pty.openpty()
     owned_master = _OwnedFd(master)
     owned_slave = _OwnedFd(slave)
@@ -503,7 +473,7 @@ def _spawn_controlling_pty(
         cleanup_actions.append(
             (
                 "authenticated child session",
-                lambda: _terminate_session(leader, ambient=ambient),
+                lambda: _terminate_session(leader),
             )
         )
     cleanup_actions.extend(
@@ -515,6 +485,167 @@ def _spawn_controlling_pty(
     cleanup_errors = _collect_cleanup_errors(cleanup_actions)
     _raise_operation_and_cleanup_errors(primary, cleanup_errors)
     raise AssertionError("unreachable PTY spawn cleanup state")
+
+
+def _send_supervisor_packet(
+    control: socket.socket, value: dict[str, object], fd: int | None = None
+) -> None:
+    ancillary = []
+    if fd is not None:
+        ancillary.append((socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", fd)))
+    control.sendmsg([json.dumps(value).encode("utf-8")], ancillary)
+
+
+def _receive_supervisor_packet(
+    control: socket.socket,
+) -> tuple[dict[str, object], int | None]:
+    payload, ancillary, _, _ = control.recvmsg(
+        65536, socket.CMSG_SPACE(struct.calcsize("i"))
+    )
+    if not payload:
+        raise RuntimeError("fixture supervisor closed its control channel")
+    received_fd = None
+    for level, kind, data in ancillary:
+        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+            received_fd = struct.unpack("i", data[: struct.calcsize("i")])[0]
+    value = json.loads(payload.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError("fixture supervisor sent an invalid control packet")
+    return value, received_fd
+
+
+def _fixture_supervisor_child(
+    control: socket.socket, command: list[str], environment: dict[str, str]
+) -> None:
+    """Own the entire fixture lineage beneath an otherwise childless subreaper."""
+    leader: _ProcessIdentity | None = None
+    tracked: dict[int, _ProcessIdentity] = {}
+    master: int | None = None
+    discovery_errors: list[BaseException] = []
+    try:
+        _child_subreaper(True)
+        leader, master = _spawn_controlling_pty(command, environment)
+        tracked[leader.pid] = leader
+        _send_supervisor_packet(
+            control,
+            {
+                "kind": "ready",
+                "leader_pid": leader.pid,
+                "session_id": leader.session_id,
+            },
+            master,
+        )
+        _close_fd(master)
+        master = None
+        control.setblocking(False)
+        exit_sent = False
+        while True:
+            _discover_for_cleanup(tracked, discovery_errors)
+            if not exit_sent:
+                result_code = _wait_nohang(leader.pid)
+                if result_code is not None:
+                    _send_supervisor_packet(
+                        control, {"kind": "exit", "code": result_code}
+                    )
+                    exit_sent = True
+            try:
+                request, _ = _receive_supervisor_packet(control)
+            except BlockingIOError:
+                request = None
+            except RuntimeError:
+                request = {"kind": "cleanup"}
+            if request is not None:
+                if request.get("kind") != "cleanup":
+                    raise RuntimeError("fixture supervisor received an invalid request")
+                break
+            time.sleep(0.01)
+
+        cleanup_errors: list[BaseException] = []
+        try:
+            _terminate_session(leader, tracked)
+        except BaseException as error:
+            cleanup_errors.append(error)
+        errors = [*discovery_errors, *cleanup_errors]
+        _send_supervisor_packet(
+            control,
+            {"kind": "cleanup", "errors": [repr(error) for error in errors]},
+        )
+    except BaseException as error:
+        try:
+            if leader is not None:
+                _terminate_session(leader, tracked)
+        except BaseException as cleanup_error:
+            error = BaseExceptionGroup(
+                "fixture supervisor failed and cleanup also reported errors",
+                [error, cleanup_error],
+            )
+        try:
+            _send_supervisor_packet(control, {"kind": "error", "message": repr(error)})
+        except BaseException:
+            pass
+    finally:
+        _close_fd(master)
+        control.close()
+
+
+def _start_fixture_supervisor(
+    command: list[str], environment: dict[str, str]
+) -> _FixtureSupervisor:
+    parent_control, child_control = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET
+    )
+    supervisor_pid = os.fork()
+    if supervisor_pid == 0:
+        parent_control.close()
+        _fixture_supervisor_child(child_control, command, environment)
+        os._exit(0)
+    child_control.close()
+    parent_control.settimeout(5.0)
+    try:
+        packet, master = _receive_supervisor_packet(parent_control)
+        if packet.get("kind") != "ready" or master is None:
+            raise RuntimeError(f"fixture supervisor startup failed: {packet}")
+        os.set_blocking(master, False)
+        parent_control.setblocking(False)
+        return _FixtureSupervisor(
+            supervisor_pid,
+            parent_control,
+            int(packet["leader_pid"]),
+            int(packet["session_id"]),
+            master,
+        )
+    except BaseException:
+        parent_control.close()
+        try:
+            os.waitpid(supervisor_pid, 0)
+        except ChildProcessError:
+            pass
+        raise
+
+
+def _stop_fixture_supervisor(supervisor: _FixtureSupervisor) -> None:
+    errors: list[str] = []
+    try:
+        supervisor.control.settimeout(5.0)
+        _send_supervisor_packet(supervisor.control, {"kind": "cleanup"})
+        while True:
+            packet, received_fd = _receive_supervisor_packet(supervisor.control)
+            _close_fd(received_fd)
+            kind = packet.get("kind")
+            if kind == "cleanup":
+                errors.extend(str(value) for value in packet.get("errors", []))
+                break
+            if kind == "error":
+                errors.append(str(packet.get("message")))
+                break
+    finally:
+        supervisor.control.close()
+        try:
+            os.waitpid(supervisor.pid, 0)
+        except ChildProcessError:
+            pass
+    if errors:
+        raise AssertionError("; ".join(errors))
 
 
 def run_asb(
@@ -530,21 +661,18 @@ def run_asb(
     exit_timeout_seconds: float = PTY_EXIT_TIMEOUT,
 ) -> tuple[int, str]:
     command = [str(asb), *arguments]
-    previous_subreaper = _child_subreaper(True)
-    ambient: dict[int, _ProcessIdentity] = {}
-    leader: _ProcessIdentity | None = None
-    tracked: dict[int, _ProcessIdentity] = {}
+    supervisor: _FixtureSupervisor | None = None
     master: int | None = None
     selector: selectors.BaseSelector | None = None
     chunks = bytearray()
     result_code: int | None = None
     primary: BaseException | None = None
     try:
-        ambient = _capture_ambient_children()
-        leader, master = _spawn_controlling_pty(command, environment, ambient)
-        tracked[leader.pid] = leader
+        supervisor = _start_fixture_supervisor(command, environment)
+        master = supervisor.master
         selector = selectors.DefaultSelector()
-        selector.register(master, selectors.EVENT_READ)
+        selector.register(master, selectors.EVENT_READ, "pty")
+        selector.register(supervisor.control, selectors.EVENT_READ, "supervisor")
         deadline = time.monotonic() + timeout_seconds
         readiness_deadline = min(deadline, time.monotonic() + readiness_timeout_seconds)
         exit_deadline: float | None = None
@@ -557,7 +685,17 @@ def run_asb(
                 raise AssertionError(f"ASB command did not exit after quit: {' '.join(command)}")
             if now >= deadline:
                 raise AssertionError(f"ASB command timed out: {' '.join(command)}")
-            for _, _ in selector.select(timeout=0.05):
+            for key, _ in selector.select(timeout=0.05):
+                if key.data == "supervisor":
+                    packet, received_fd = _receive_supervisor_packet(supervisor.control)
+                    _close_fd(received_fd)
+                    if packet.get("kind") == "exit":
+                        result_code = int(packet["code"])
+                    elif packet.get("kind") == "error":
+                        raise AssertionError(
+                            f"fixture supervisor failed: {packet.get('message')}"
+                        )
+                    continue
                 try:
                     chunk = os.read(master, min(65536, output_limit + 1 - len(chunks)))
                 except BlockingIOError:
@@ -570,7 +708,7 @@ def run_asb(
                     chunks.extend(chunk)
                     if len(chunks) > output_limit:
                         raise AssertionError(f"ASB command exceeded output limit: {' '.join(command)}")
-            if interactive_quit and not quit_sent and _pty_is_interactive_ready(master, leader.session_id):
+            if interactive_quit and not quit_sent and _pty_is_interactive_ready(master, supervisor.session_id):
                 try:
                     written = os.write(master, b"q")
                 except BlockingIOError:
@@ -578,8 +716,6 @@ def run_asb(
                 if written == 1:
                     quit_sent = True
                     exit_deadline = min(deadline, time.monotonic() + exit_timeout_seconds)
-            _discover_descendants(tracked, ambient)
-            result_code = _wait_nohang(leader.pid)
         while True:
             try:
                 chunk = os.read(master, min(65536, output_limit + 1 - len(chunks)))
@@ -599,21 +735,16 @@ def run_asb(
     cleanup_actions: list[tuple[str, Callable[[], object]]] = []
     if selector is not None:
         cleanup_actions.append(("selector", selector.close))
-    if leader is not None:
+    if supervisor is not None:
         cleanup_actions.append(
             (
                 "authenticated child lineage",
-                lambda: _terminate_session(leader, tracked, ambient),
+                lambda: _stop_fixture_supervisor(supervisor),
             )
         )
     cleanup_actions.extend(
         [
             ("PTY master descriptor", lambda: _close_fd(master)),
-            ("ambient-child identity baseline", lambda: _close_identity_set(ambient)),
-            (
-                "child-subreaper restoration",
-                lambda: _child_subreaper(previous_subreaper),
-            ),
         ]
     )
     cleanup_errors = _collect_cleanup_errors(cleanup_actions)
