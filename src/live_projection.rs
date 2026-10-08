@@ -323,7 +323,7 @@ impl ControlProjection {
                 }
                 self.agent_lifecycle = Some(value.clone());
             }
-            (ControlCall::ProviderCatalog(_), ControlResult::ProviderCatalog(value)) => {
+            (ControlCall::ProviderCatalog(request), ControlResult::ProviderCatalog(value)) => {
                 if self
                     .negotiated
                     .as_ref()
@@ -331,11 +331,23 @@ impl ControlProjection {
                 {
                     return Err(ProjectionError::UnexpectedResult);
                 }
+                if request
+                    .known_generation
+                    .is_some_and(|known| value.generation.0 < known.0)
+                {
+                    return Err(ProjectionError::StaleProviderCatalog);
+                }
                 if self
                     .provider_catalog
                     .as_ref()
                     .is_some_and(|current| value.generation.0 < current.generation.0)
                 {
+                    return Err(ProjectionError::StaleProviderCatalog);
+                }
+                if self.provider_catalog.as_ref().is_some_and(|current| {
+                    value.generation == current.generation
+                        && value.catalog_sha256 != current.catalog_sha256
+                }) {
                     return Err(ProjectionError::StaleProviderCatalog);
                 }
                 if self
@@ -816,6 +828,40 @@ mod tests {
         assert_eq!(
             projection.snapshot().dynamic_provider_catalog,
             Some(DynamicProviderCatalogState::UnsupportedVersion)
+        );
+        let mut conflicting_catalog = catalog.clone();
+        conflicting_catalog.catalog_sha256 = "b".repeat(64);
+        assert_eq!(
+            projection.apply(
+                &request(
+                    ControlCall::ProviderCatalog(ProviderCatalogRequest {
+                        action: ProviderCatalogAction::Status,
+                        runner_instance_id: "runner-1".into(),
+                        known_generation: Some(Revision(2)),
+                    }),
+                    4,
+                ),
+                &response(4, ControlResult::ProviderCatalog(conflicting_catalog)),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::StaleProviderCatalog)
+        );
+
+        let mut v114 = connected_projection_at(V1_14);
+        assert_eq!(
+            v114.apply(
+                &request(
+                    ControlCall::ProviderCatalog(ProviderCatalogRequest {
+                        action: ProviderCatalogAction::Status,
+                        runner_instance_id: "runner-1".into(),
+                        known_generation: Some(Revision(3)),
+                    }),
+                    5,
+                ),
+                &response(5, ControlResult::ProviderCatalog(catalog.clone())),
+                ControlLimits::default(),
+            ),
+            Err(ProjectionError::StaleProviderCatalog)
         );
         let mut stale_catalog = catalog;
         stale_catalog.generation = Revision(1);
