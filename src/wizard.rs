@@ -571,6 +571,16 @@ impl WizardFormalState {
         Self::new_with_wizard(Wizard::with_catalog(catalog))
     }
 
+    pub fn new_with_catalog_and_adapter(
+        catalog: WizardCatalog,
+        adapter_catalog: AdapterCatalog,
+    ) -> Result<Self, WizardError> {
+        Self::new_with_wizard(Wizard::stable_with_catalog_and_adapter(
+            catalog,
+            adapter_catalog,
+        ))
+    }
+
     fn new_with_wizard(wizard: Wizard) -> Result<Self, WizardError> {
         validate_model()?;
         Ok(Self {

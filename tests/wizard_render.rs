@@ -520,6 +520,161 @@ fn authenticated_projection_drives_repeatable_setup_without_secret_defaults() {
 }
 
 #[test]
+fn ar1668_authoritative_openrouter_wizard_completes_through_renderer_seam() {
+    use asb_tui::{
+        agent_catalog::{
+            AgentAvailability, AgentCatalog, AgentCatalogEntry, AgentPackage, AgentProvenance,
+            AgentSigner, AgentTarget,
+        },
+        control_codec::{ConfigurationSnapshot, ProviderAuthMethod, Revision},
+        live_projection::{Connection, LiveSnapshot},
+        provider_catalog::development_openrouter_catalog,
+        wizard::Step,
+    };
+
+    let target = AgentTarget {
+        operating_system: "linux".into(),
+        architecture: "x86_64".into(),
+        libc: "glibc".into(),
+        libc_version: "2.35".into(),
+    };
+    let agent = |id: &str, marker: char| AgentCatalogEntry {
+        agent_id: id.into(),
+        target: target.clone(),
+        package: Some(AgentPackage {
+            package_id: format!("{id}-package"),
+            version: "1.0.0".into(),
+            sha256: marker.to_string().repeat(64),
+            signature_sha256: "c".repeat(64),
+            signer: AgentSigner {
+                key_id: "release-key".into(),
+                principal: "asb-release".into(),
+            },
+        }),
+        provenance: Some(AgentProvenance {
+            source_revision: "d".repeat(40),
+            manifest_sha256: "e".repeat(64),
+            sbom_sha256: "f".repeat(64),
+            license_ref: "MIT".into(),
+        }),
+        capabilities: vec!["benchmark".into()],
+        availability: AgentAvailability::Available,
+    };
+    let agents = AgentCatalog {
+        runner_instance_id: "development-fixture".into(),
+        generation: 4,
+        catalog_sha256: "a".repeat(64),
+        target: target.clone(),
+        agents: vec![agent("opencode", '1'), agent("opendesk", '2')],
+        refreshed: true,
+    };
+    let mut providers = development_openrouter_catalog();
+    providers.refreshed = true;
+    let mut state = WorkspaceState::default();
+    state.apply_live_snapshot(LiveSnapshot {
+        connection: Connection::Negotiated,
+        runner_instance_id: Some("development-fixture".into()),
+        latest_revision: Some(Revision(4)),
+        capabilities: None,
+        measurement_catalog: None,
+        benchmark_catalog: None,
+        agent_catalog: Some(agents.clone()),
+        agent_lifecycle: None,
+        provider_catalog: Some(providers.clone()),
+        dynamic_provider_catalog: None,
+        configuration: Some(ConfigurationSnapshot {
+            runner_instance_id: "development-fixture".into(),
+            generation: Revision(1),
+            configured: false,
+            agent_ids: Vec::new(),
+            provider_id: None,
+            model_id: None,
+            auth_method: None,
+            credential_reference_sha256: None,
+        }),
+        auth_status: None,
+        auth_unavailable: true,
+        auth_development_only: true,
+        auth_unavailable_reason: Some("development credentials are unavailable".into()),
+        recording_campaign: None,
+        recording_estimate: None,
+        recording_campaign_lifecycle: None,
+        fanout: None,
+        runs: Vec::new(),
+        analysis: None,
+    });
+
+    assert_eq!(state.screen, Screen::Wizard);
+    let mut visited = Vec::new();
+    let mut record_step = |state: &WorkspaceState| {
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| asb_tui::ui::render(frame, state, policy(false)))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("ASB setup wizard"));
+        assert!(text.contains(asb_tui::wizard::element_id(state.wizard.step())));
+        visited.push(asb_tui::wizard::element_id(state.wizard.step()));
+    };
+
+    record_step(&state);
+    state.handle_key(key(KeyCode::Char('a')));
+    state.handle_key(key(KeyCode::Enter));
+    assert_eq!(state.wizard.step(), Step::Provider);
+    record_step(&state);
+    state.handle_key(key(KeyCode::Enter));
+    assert_eq!(state.wizard.step(), Step::Model);
+    record_step(&state);
+    state.handle_key(key(KeyCode::Down));
+    state.handle_key(key(KeyCode::Enter));
+    for (step, value) in [
+        (Step::Configuration, "all defaults"),
+        (
+            Step::Authentication,
+            "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        (Step::Recording, "live"),
+        (Step::Replay, "strict offline replay"),
+    ] {
+        assert_eq!(state.wizard.step(), step);
+        record_step(&state);
+        for character in value.chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(state.wizard.current_value(), value);
+        state.handle_key(key(KeyCode::Enter));
+    }
+    assert_eq!(state.wizard.step(), Step::Review);
+    record_step(&state);
+    state.handle_key(key(KeyCode::Enter));
+    assert_eq!(state.screen, Screen::Landing);
+
+    let values = state.take_wizard_completion().unwrap();
+    let draft = WorkspaceState::wizard_provider_setup_draft(&values, &agents, &providers).unwrap();
+    assert_eq!(draft.selection().agent_ids, ["opencode", "opendesk"]);
+    assert_eq!(draft.selection().provider_id, "openrouter");
+    assert_eq!(draft.selection().model_id, "openai/gpt-4o");
+    assert_eq!(
+        draft.selection().auth_method,
+        ProviderAuthMethod::CredentialReference
+    );
+    assert_eq!(values[3], "all defaults");
+    assert_eq!(values[5], "live");
+    assert_eq!(values[6], "strict offline replay");
+    assert!(values.iter().all(|value| !value.contains("api_key")));
+    println!("AR1668_RENDERER_TRACE={}", visited.join(">"));
+    println!(
+        "AR1668_SELECTION=opencode,opendesk|openrouter|openai/gpt-4o|shared-defaults|live|strict-offline"
+    );
+}
+
+#[test]
 fn wizard_catalog_filters_moves_and_projects_selection_into_the_draft() {
     let catalog = WizardCatalog::new(
         vec![
