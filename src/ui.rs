@@ -2390,6 +2390,32 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
                     catalog.providers.len()
                 )));
             }
+            if let Some(dynamic) = &snapshot.dynamic_provider_catalog {
+                match dynamic {
+                    crate::live_projection::DynamicProviderCatalogState::UnsupportedVersion => {
+                        lines.push(Line::from(
+                            "OpenRouter catalog: unavailable (control_version_unsupported)",
+                        ));
+                    }
+                    crate::live_projection::DynamicProviderCatalogState::Catalog(dynamic) => {
+                        let mode = match dynamic.openrouter.mode {
+                            crate::control_codec::ProviderCatalogMode::Static => "static",
+                            crate::control_codec::ProviderCatalogMode::Dynamic => "dynamic",
+                            crate::control_codec::ProviderCatalogMode::Unavailable => "unavailable",
+                        };
+                        lines.push(Line::from(format!(
+                            "OpenRouter catalog: {mode} ({} models)",
+                            dynamic.openrouter.models.len()
+                        )));
+                        if let Some(diagnostic) = &dynamic.openrouter.diagnostic {
+                            lines.push(Line::from(format!(
+                                "Catalog diagnostic: {}",
+                                diagnostic.code()
+                            )));
+                        }
+                    }
+                }
+            }
             if let Some(preflight) = &state.preflight {
                 lines.push(Line::from("Preflight: ready (review before apply)"));
                 lines.push(Line::from(format!(
@@ -2900,6 +2926,7 @@ mod tests {
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,
+            dynamic_provider_catalog: None,
             configuration: None,
             recording_campaign: None,
             recording_estimate: None,
@@ -2962,6 +2989,7 @@ mod tests {
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,
+            dynamic_provider_catalog: None,
             configuration: None,
             auth_status: None,
             auth_unavailable: false,
@@ -3044,6 +3072,7 @@ mod tests {
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,
+            dynamic_provider_catalog: None,
             configuration: None,
             recording_campaign: None,
             recording_estimate: None,
@@ -3130,6 +3159,7 @@ mod tests {
                 }],
                 refreshed: true,
             }),
+            dynamic_provider_catalog: None,
             configuration: None,
             recording_campaign: None,
             recording_estimate: None,
@@ -3255,6 +3285,7 @@ mod tests {
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,
+            dynamic_provider_catalog: None,
             configuration: None,
             auth_status: None,
             auth_unavailable: false,
@@ -3304,6 +3335,7 @@ mod tests {
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,
+            dynamic_provider_catalog: None,
             configuration: Some(crate::control_codec::ConfigurationSnapshot {
                 runner_instance_id: "runner".into(),
                 generation: Revision(1),
@@ -3500,6 +3532,7 @@ mod tests {
             agent_catalog: None,
             agent_lifecycle: None,
             provider_catalog: None,
+            dynamic_provider_catalog: None,
             configuration: None,
             auth_status: None,
             auth_unavailable: false,

@@ -42,3 +42,10 @@ missing or invalid.
 The existing `doctor --format json`, `compatibility --format json`, and
 lifecycle JSON protocols remain unchanged for callers that already consume
 those compatibility interfaces.
+
+The broker's v1.15 dynamic-provider-catalog result is a separate authenticated JSON control
+projection, not a guided command result. Human setup status maps its closed modes and diagnostics to
+stable labels. The JSON wire retains only the typed `unavailable`, `http_status`, `too_large`, and
+`malformed` diagnostics; HTTP 401/403 is presented as `authentication_required` and HTTP 429 as
+`quota_unavailable`. Older negotiated versions report `control_version_unsupported`. Neither form
+contains provider payloads, credentials, endpoints, environment values, or a fallback claim.
