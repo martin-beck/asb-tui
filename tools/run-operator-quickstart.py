@@ -53,18 +53,46 @@ def trailing_json(output: str) -> str | None:
     ASB response may immediately follow a CSI sequence.  Only a JSON object
     consuming the complete non-whitespace suffix is accepted.
     """
-    decoder = json.JSONDecoder()
-    offset = output.rfind("{")
+    stripped = output.rstrip()
+    if not stripped.endswith("}"):
+        return None
+
+    # Walk backward once from the required object terminator.  Quote state is
+    # reconstructed from unescaped delimiters so braces in JSON strings do not
+    # affect depth.  This keeps hostile output linear in MAX_COMMAND_OUTPUT and
+    # invokes the JSON decoder at most once.
+    depth = 0
+    in_string = False
+    offset = len(stripped) - 1
+    start: int | None = None
     while offset >= 0:
-        try:
-            value, end = decoder.raw_decode(output, offset)
-        except json.JSONDecodeError:
-            pass
-        else:
-            if isinstance(value, dict) and not output[end:].strip():
-                return json.dumps(value, sort_keys=True)
-        offset = output.rfind("{", 0, offset)
-    return None
+        character = stripped[offset]
+        if character == '"':
+            backslashes = 0
+            preceding = offset - 1
+            while preceding >= 0 and stripped[preceding] == "\\":
+                backslashes += 1
+                preceding -= 1
+            if backslashes % 2 == 0:
+                in_string = not in_string
+        elif not in_string:
+            if character == "}":
+                depth += 1
+            elif character == "{":
+                depth -= 1
+                if depth == 0:
+                    start = offset
+                    break
+        offset -= 1
+    if start is None:
+        return None
+    try:
+        value, end = json.JSONDecoder().raw_decode(stripped, start)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict) or end != len(stripped):
+        return None
+    return json.dumps(value, sort_keys=True)
 
 def _get_child_subreaper() -> bool:
     libc = ctypes.CDLL(None, use_errno=True)

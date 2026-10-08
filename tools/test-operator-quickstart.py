@@ -1196,15 +1196,24 @@ time.sleep(30)
     def test_json_response_may_follow_terminal_teardown_without_newline(self):
         encoded = MODULE.trailing_json(
             "screen contents\x1b[?25h\x1b[?1049l"
-            '{"ok":true,"details":{"route":"wizard"}}\r\n'
+            '{"ok":true,"details":{"route":"{wizard}","quote":"\\\""}}\r\n'
         )
         self.assertEqual(
             json.loads(encoded),
-            {"ok": True, "details": {"route": "wizard"}},
+            {"ok": True, "details": {"route": "{wizard}", "quote": '"'}},
         )
 
     def test_json_response_rejects_non_whitespace_suffix(self):
         self.assertIsNone(MODULE.trailing_json('{"ok":true}trailing'))
+
+    def test_json_response_rejects_near_limit_hostile_output_linearly(self):
+        hostile = "}" * (MODULE.MAX_COMMAND_OUTPUT - 1)
+        with mock.patch.object(
+            MODULE.json.JSONDecoder,
+            "raw_decode",
+            side_effect=AssertionError("decoder must not run without an opening object"),
+        ):
+            self.assertIsNone(MODULE.trailing_json(hostile))
 
     def test_fast_exit_json_is_drained_before_the_pty_closes(self):
         fixture = "import json; print(json.dumps({'ok': True, 'code': 'fast'}))"
