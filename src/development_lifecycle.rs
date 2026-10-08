@@ -465,6 +465,11 @@ fn resolve_rustup_toolchain(home: &Path) -> Option<RustupToolchain> {
 
 #[cfg(not(test))]
 fn trusted_cargo_candidate(candidate: &Path) -> Option<PathBuf> {
+    trusted_cargo_candidate_with_warning(candidate).map(|value| value.0)
+}
+
+#[cfg(not(test))]
+fn trusted_cargo_candidate_with_warning(candidate: &Path) -> Option<(PathBuf, bool)> {
     let canonical = fs::canonicalize(candidate).ok()?;
     let metadata = fs::symlink_metadata(&canonical).ok()?;
     if !metadata.is_file()
@@ -474,16 +479,16 @@ fn trusted_cargo_candidate(candidate: &Path) -> Option<PathBuf> {
         return None;
     }
     if canonical.file_name() != Some(std::ffi::OsStr::new("rustup")) {
-        return trusted_candidate(candidate);
+        return trusted_candidate(candidate).map(|path| (path, false));
     }
 
-    validate_conventional_rustup_shim(candidate, &canonical)?;
+    let shim_group_writable = validate_conventional_rustup_shim(candidate, &canonical)?;
 
     let home = trusted_rustup_home(candidate)?;
-    trusted_cargo_candidate_in_home(candidate, &home)
+    trusted_cargo_candidate_in_home(candidate, &home).map(|path| (path, shim_group_writable))
 }
 
-fn validate_conventional_rustup_shim(candidate: &Path, canonical: &Path) -> Option<()> {
+fn validate_conventional_rustup_shim(candidate: &Path, canonical: &Path) -> Option<bool> {
     if !candidate.is_absolute()
         || !matches!(candidate.file_name()?.to_str(), Some("cargo" | "rustc"))
         || candidate.parent()?.file_name()? != "bin"
@@ -502,6 +507,7 @@ fn validate_conventional_rustup_shim(candidate: &Path, canonical: &Path) -> Opti
     let cargo_root = candidate.parent()?.parent()?;
     let shim_bin = candidate.parent()?;
     let mut current = PathBuf::from("/");
+    let mut group_writable = false;
     for component in shim_bin.components() {
         if let std::path::Component::Normal(name) = component {
             current.push(name);
@@ -513,9 +519,10 @@ fn validate_conventional_rustup_shim(candidate: &Path, canonical: &Path) -> Opti
             {
                 return None;
             }
+            group_writable |= allow_group && metadata.mode() & 0o020 != 0;
         }
     }
-    Some(())
+    Some(group_writable)
 }
 
 fn trusted_cargo_candidate_in_home(candidate: &Path, home: &Path) -> Option<PathBuf> {
@@ -537,10 +544,24 @@ fn trusted_toolchain_sibling(cargo: &Path, name: &str) -> Result<PathBuf, &'stat
 }
 
 #[cfg(not(test))]
-fn trusted_tools() -> Result<(PathBuf, PathBuf, PathBuf, String), &'static str> {
+fn trusted_tools() -> Result<(PathBuf, PathBuf, PathBuf, String, bool), &'static str> {
     let setsid = trusted_executable("ASB_TUI_DEV_SETSID", "setsid")?;
     let git = trusted_executable("ASB_TUI_DEV_GIT", "git")?;
-    let cargo = trusted_executable("ASB_TUI_DEV_CARGO", "cargo")?;
+    let cargo_candidates = env::var_os("ASB_TUI_DEV_CARGO")
+        .map(|value| vec![PathBuf::from(value)])
+        .unwrap_or_else(|| {
+            env::var_os("PATH")
+                .unwrap_or_default()
+                .to_string_lossy()
+                .split(':')
+                .filter(|part| !part.is_empty())
+                .map(|part| Path::new(part).join("cargo"))
+                .collect()
+        });
+    let (cargo, shim_group_writable) = cargo_candidates
+        .iter()
+        .find_map(|candidate| trusted_cargo_candidate_with_warning(candidate))
+        .ok_or("development_tool_unavailable")?;
     let mut path = std::collections::BTreeSet::new();
     for tool in [&setsid, &git, &cargo] {
         if let Some(parent) = tool.parent() {
@@ -552,6 +573,7 @@ fn trusted_tools() -> Result<(PathBuf, PathBuf, PathBuf, String), &'static str> 
         git,
         cargo,
         path.into_iter().collect::<Vec<_>>().join(":"),
+        shim_group_writable,
     ))
 }
 
@@ -634,7 +656,7 @@ fn make_descriptor_inheritable(file: &File) -> Result<FdFlags, &'static str> {
 
 #[cfg(not(test))]
 fn trusted_toolchain() -> Result<DevelopmentToolchain, &'static str> {
-    let (setsid, git, cargo, path) = trusted_tools()?;
+    let (setsid, git, cargo, path, shim_group_writable) = trusted_tools()?;
     let rustup_home = env::var_os("ASB_TUI_DEV_RUSTUP_HOME")
         .map(PathBuf::from)
         .or_else(|| {
@@ -668,14 +690,14 @@ fn trusted_toolchain() -> Result<DevelopmentToolchain, &'static str> {
             rustup.rustc,
             Some(rustup.cargo_file),
             Some(rustup.rustc_file),
-            rustup.group_writable,
+            rustup.group_writable || shim_group_writable,
         )
     } else {
         let rustc = match env::var_os("ASB_TUI_DEV_RUSTC") {
             Some(_) => trusted_rustc_override(&cargo).map_err(|_| "dbg_rustc")?,
             None => trusted_toolchain_sibling(&cargo, "rustc").map_err(|_| "dbg_rustc")?,
         };
-        (rustc, None, None, false)
+        (rustc, None, None, shim_group_writable)
     };
     Ok(DevelopmentToolchain {
         setsid,
@@ -1313,6 +1335,35 @@ mod tests {
             serde_json::to_string(&launched)
                 .unwrap()
                 .contains(GROUP_WRITABLE_RUSTUP_PATH_WARNING)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn group_writable_shim_dirs_alone_require_the_persisted_warning() {
+        let (root, shim, rustup_home) = rustup_fixture("owner-group-shim-only");
+        fs::set_permissions(
+            rustup_home.join("settings.toml"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        for directory in [
+            rustup_home.join("toolchains"),
+            rustup_home.join("toolchains/fixture-toolchain"),
+            rustup_home.join("toolchains/fixture-toolchain/bin"),
+        ] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let canonical = fs::canonicalize(&shim).unwrap();
+        assert_eq!(
+            validate_conventional_rustup_shim(&shim, &canonical),
+            Some(true)
+        );
+        let resolved = resolve_rustup_toolchain(&rustup_home).unwrap();
+        assert!(!resolved.group_writable);
+        assert!(
+            validate_conventional_rustup_shim(&shim, &canonical).unwrap()
+                || resolved.group_writable
         );
         fs::remove_dir_all(root).unwrap();
     }
