@@ -109,6 +109,7 @@ fn persisted_live_openrouter_setup_survives_tui_restart_without_mock_fallback() 
     assert_eq!(values[0], "opencode,opendesk");
     assert_eq!(values[1], "openrouter");
     assert_eq!(values[2], "cohere/north-mini-code:free");
+    assert_eq!(values[3], "all defaults");
     assert_eq!(values[5], "live");
     assert!(!values[5].contains("mock"));
     let loaded = store.load().unwrap().unwrap();
@@ -247,9 +248,9 @@ fn complete_development_journey_has_bounded_visible_transcript() {
     for value in [
         "development",
         "fixture-model",
-        "development defaults",
-        "development fixture",
-        "mock capture",
+        "all defaults",
+        "none",
+        "local-mock",
         "strict offline replay",
     ] {
         wizard.advance().unwrap();

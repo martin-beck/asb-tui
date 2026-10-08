@@ -113,10 +113,10 @@ fn formal_wizard_flow_checks_documented_route_and_step_effects() {
         "agent",
         "provider",
         "model",
-        "configuration",
-        "auth",
-        "record",
-        "replay",
+        "all defaults",
+        "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "live",
+        "strict offline replay",
     ] {
         state.apply(FormalEvent::SetValue(value.into())).unwrap();
         state.apply(FormalEvent::Next).unwrap();
@@ -202,10 +202,10 @@ fn wizard_validates_input_and_boundaries() {
         "agent",
         "provider",
         "model",
-        "configuration",
-        "auth",
-        "record",
-        "replay",
+        "all defaults",
+        "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "live",
+        "strict offline replay",
     ] {
         wizard.set_value(value).unwrap();
         wizard.advance().unwrap();
@@ -231,10 +231,10 @@ fn wide_render_covers_every_documented_wizard_step() {
         "agent",
         "provider",
         "model",
-        "configuration",
-        "auth",
-        "record",
-        "replay",
+        "all defaults",
+        "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "live",
+        "strict offline replay",
     ];
     for (index, value) in values.iter().enumerate() {
         assert_eq!(
@@ -529,7 +529,6 @@ fn ar1668_authoritative_openrouter_wizard_completes_through_renderer_seam() {
         control_codec::{ConfigurationSnapshot, ProviderAuthMethod, Revision},
         live_projection::{Connection, LiveSnapshot},
         provider_catalog::development_openrouter_catalog,
-        wizard::Step,
     };
 
     let target = AgentTarget {
@@ -623,37 +622,73 @@ fn ar1668_authoritative_openrouter_wizard_completes_through_renderer_seam() {
         visited.push(asb_tui::wizard::element_id(state.wizard.step()));
     };
 
-    record_step(&state);
-    state.handle_key(key(KeyCode::Char('a')));
-    state.handle_key(key(KeyCode::Enter));
-    assert_eq!(state.wizard.step(), Step::Provider);
-    record_step(&state);
-    state.handle_key(key(KeyCode::Enter));
-    assert_eq!(state.wizard.step(), Step::Model);
-    record_step(&state);
-    state.handle_key(key(KeyCode::Down));
-    state.handle_key(key(KeyCode::Enter));
-    for (step, value) in [
-        (Step::Configuration, "all defaults"),
-        (
-            Step::Authentication,
-            "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        ),
-        (Step::Recording, "live"),
-        (Step::Replay, "strict offline replay"),
-    ] {
-        assert_eq!(state.wizard.step(), step);
-        record_step(&state);
-        for character in value.chars() {
-            state.handle_key(key(KeyCode::Char(character)));
-        }
-        assert_eq!(state.wizard.current_value(), value);
-        state.handle_key(key(KeyCode::Enter));
+    #[derive(Clone, Copy)]
+    enum ActionClass {
+        Selection,
+        Navigation,
+        Confirmation,
+        FreeForm,
     }
-    assert_eq!(state.wizard.step(), Step::Review);
+    let action_classes = [
+        ActionClass::Selection,
+        ActionClass::Navigation,
+        ActionClass::Confirmation,
+        ActionClass::FreeForm,
+    ];
+    let journey = [
+        (KeyCode::Char('a'), ActionClass::Selection),
+        (KeyCode::Enter, ActionClass::Confirmation),
+        (KeyCode::Enter, ActionClass::Selection),
+        (KeyCode::Down, ActionClass::Navigation),
+        (KeyCode::Enter, ActionClass::Selection),
+        (KeyCode::Enter, ActionClass::Confirmation),
+        (KeyCode::Enter, ActionClass::Confirmation),
+        (KeyCode::Enter, ActionClass::Confirmation),
+        (KeyCode::Enter, ActionClass::Confirmation),
+        (KeyCode::Enter, ActionClass::Confirmation),
+    ];
+    let mut counts = [0usize; 4];
+    let mut injected_keys = 0usize;
+    let mut prior_step = state.wizard.step();
+
     record_step(&state);
-    state.handle_key(key(KeyCode::Enter));
+    for (code, class) in journey {
+        state.handle_key(key(code));
+        injected_keys += 1;
+        counts[match class {
+            ActionClass::Selection => 0,
+            ActionClass::Navigation => 1,
+            ActionClass::Confirmation => 2,
+            ActionClass::FreeForm => 3,
+        }] += 1;
+        if state.screen == Screen::Wizard && state.wizard.step() != prior_step {
+            prior_step = state.wizard.step();
+            record_step(&state);
+            if state.wizard.has_bounded_choices() {
+                assert!(!state.wizard.bounded_choice_labels().is_empty());
+            }
+        }
+    }
     assert_eq!(state.screen, Screen::Landing);
+
+    assert_eq!(action_classes.len(), counts.len());
+    let [
+        selection_actions,
+        navigation_actions,
+        confirmation_actions,
+        free_form_characters,
+    ] = counts;
+    let total_actions = selection_actions + navigation_actions + confirmation_actions;
+    assert_eq!(injected_keys, journey.len());
+    assert_eq!(
+        total_actions, injected_keys,
+        "every injected key must be counted"
+    );
+    assert_eq!(free_form_characters, 0);
+    assert!(
+        total_actions <= 24,
+        "supported wizard used {total_actions} actions"
+    );
 
     let values = state.take_wizard_completion().unwrap();
     let draft = WorkspaceState::wizard_provider_setup_draft(&values, &agents, &providers).unwrap();
@@ -671,6 +706,9 @@ fn ar1668_authoritative_openrouter_wizard_completes_through_renderer_seam() {
     println!("AR1668_RENDERER_TRACE={}", visited.join(">"));
     println!(
         "AR1668_SELECTION=opencode,opendesk|openrouter|openai/gpt-4o|shared-defaults|live|strict-offline"
+    );
+    println!(
+        "AR1723_ACTIONS=selection:{selection_actions}|navigation:{navigation_actions}|confirmation:{confirmation_actions}|free-form:{free_form_characters}|total:{total_actions}"
     );
 }
 

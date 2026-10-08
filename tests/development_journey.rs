@@ -66,7 +66,7 @@ fn development_journey_runs_without_credentials_or_network() {
     assert_eq!(wizard.values()[Step::Model as usize], "fixture-model");
 
     wizard.advance().unwrap();
-    wizard.set_value("development defaults").unwrap();
+    wizard.set_value("all defaults").unwrap();
     wizard.advance().unwrap();
     wizard.select_development_fixture().unwrap();
     wizard.enroll_development_credential().unwrap();
@@ -79,7 +79,7 @@ fn development_journey_runs_without_credentials_or_network() {
     wizard.advance().unwrap();
 
     for (step, value) in [
-        (Step::Recording, "mock capture"),
+        (Step::Recording, "local-mock"),
         (Step::Replay, "strict offline replay"),
     ] {
         assert_eq!(wizard.step(), step);

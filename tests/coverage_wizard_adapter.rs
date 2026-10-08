@@ -25,7 +25,7 @@ fn authenticated_provider_catalog_projects_models_and_auth_methods() {
 #[test]
 fn openrouter_adapter_selection_rejects_unknown_auth_and_missing_catalog() {
     let mut wizard = Wizard::default();
-    for value in ["agent", "openrouter", "openai/gpt-4o", "defaults"] {
+    for value in ["agent", "openrouter", "openai/gpt-4o", "all defaults"] {
         wizard.set_value(value).unwrap();
         wizard.advance().unwrap();
     }
@@ -36,7 +36,7 @@ fn openrouter_adapter_selection_rejects_unknown_auth_and_missing_catalog() {
     );
 
     let mut stable = Wizard::stable();
-    for value in ["agent", "openrouter", "openai/gpt-4o", "defaults"] {
+    for value in ["agent", "openrouter", "openai/gpt-4o", "all defaults"] {
         stable.set_value(value).unwrap();
         stable.advance().unwrap();
     }

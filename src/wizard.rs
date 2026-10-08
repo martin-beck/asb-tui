@@ -29,6 +29,17 @@ use ratatui::{
 use serde::Deserialize;
 
 const MODEL: &str = include_str!("../docs/ui-state-model.json");
+const OPENROUTER_CREDENTIAL_REFERENCE: &str = "OPENROUTER_API_KEY";
+const CONFIGURATION_PRESETS: &[(&str, &str)] = &[("Shared benchmark defaults", "all defaults")];
+const AUTHENTICATION_PRESETS: &[(&str, &str)] = &[(
+    "OpenRouter environment reference (OPENROUTER_API_KEY)",
+    OPENROUTER_CREDENTIAL_REFERENCE,
+)];
+const RECORDING_PRESETS: &[(&str, &str)] = &[
+    ("Live provider recording", "live"),
+    ("Local deterministic mock", "local-mock"),
+];
+const REPLAY_PRESETS: &[(&str, &str)] = &[("Strict offline replay", "strict offline replay")];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StartupRoute {
@@ -215,6 +226,53 @@ impl Wizard {
             .as_ref()
             .and_then(SelectionSession::committed)
             .map(|selection| selection.adapter_id.as_str())
+    }
+
+    /// Whether the current supported step is a bounded preset control rather
+    /// than a free-form editor. Catalog-backed agent/provider/model steps use
+    /// their authenticated catalog controls instead.
+    #[must_use]
+    pub const fn has_bounded_choices(&self) -> bool {
+        matches!(
+            self.step,
+            Step::Configuration | Step::Authentication | Step::Recording | Step::Replay
+        )
+    }
+
+    /// Public, non-secret labels for the bounded choices rendered at the
+    /// active step. Backend values and credential-reference digests never
+    /// cross this presentation seam.
+    #[must_use]
+    pub fn bounded_choice_labels(&self) -> Vec<&'static str> {
+        bounded_choices(self.step)
+            .iter()
+            .map(|(label, _)| *label)
+            .collect()
+    }
+
+    #[must_use]
+    pub fn bounded_selected_index(&self) -> Option<usize> {
+        let choices = bounded_choices(self.step);
+        if choices.is_empty() {
+            return None;
+        }
+        let current = self.current_value();
+        choices
+            .iter()
+            .position(|(_, value)| bounded_value(self.step, value) == current)
+    }
+
+    /// Move within a closed preset list and atomically project the selected
+    /// backend value into the existing seven-field wizard contract.
+    pub fn move_bounded_choice(&mut self, offset: isize) -> Result<(), WizardError> {
+        let choices = bounded_choices(self.step);
+        if choices.is_empty() {
+            return Err(WizardError::InvalidValue);
+        }
+        let current = self.bounded_selected_index().unwrap_or(0);
+        let next = (current as isize + offset).rem_euclid(choices.len() as isize) as usize;
+        self.values[self.step as usize] = bounded_value(self.step, choices[next].1);
+        Ok(())
     }
 
     pub fn adapter_compatibility(
@@ -441,6 +499,46 @@ impl Wizard {
         Ok(())
     }
 
+    fn ensure_bounded_default(&mut self) {
+        if self.has_bounded_choices() && self.current_value().is_empty() {
+            let choices = bounded_choices(self.step);
+            if let Some((_, value)) = choices.first() {
+                self.values[self.step as usize] = bounded_value(self.step, value);
+            }
+        }
+    }
+
+    fn validate_bounded_values(&self) -> Result<(), WizardError> {
+        for step in [
+            Step::Configuration,
+            Step::Authentication,
+            Step::Recording,
+            Step::Replay,
+        ] {
+            let value = &self.values[step as usize];
+            if step == Step::Authentication {
+                let digest_reference =
+                    value
+                        .strip_prefix("credential_reference:")
+                        .is_some_and(|digest| {
+                            digest.len() == 64
+                                && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        });
+                if matches!(value.as_str(), "none" | "local_daemon") || digest_reference {
+                    continue;
+                }
+                return Err(WizardError::InvalidValue);
+            }
+            if !bounded_choices(step)
+                .iter()
+                .any(|(_, candidate)| bounded_value(step, candidate) == *value)
+            {
+                return Err(WizardError::InvalidValue);
+            }
+        }
+        Ok(())
+    }
+
     pub fn advance(&mut self) -> Result<(), WizardError> {
         if self.step != Step::Review && self.values[self.step as usize].trim().is_empty() {
             return Err(WizardError::Missing);
@@ -456,6 +554,7 @@ impl Wizard {
             Step::Review => return Err(WizardError::AtEnd),
         };
         self.select_kind_for_step();
+        self.ensure_bounded_default();
         Ok(())
     }
 
@@ -510,6 +609,7 @@ impl Wizard {
     }
 
     pub fn complete(&self) -> Result<(), WizardError> {
+        self.validate_bounded_values()?;
         if let Some(selection) = self
             .adapter_selection
             .as_ref()
@@ -547,6 +647,7 @@ pub enum FormalEvent {
     CatalogMove(isize),
     CatalogSelect,
     CatalogSelectAllAgents,
+    BoundedChoiceMove(isize),
     DevelopmentEnroll,
     DevelopmentTest,
     DevelopmentRotate,
@@ -603,6 +704,7 @@ impl WizardFormalState {
             FormalEvent::CatalogMove(_) => ("wizard_catalog_move", "wizard"),
             FormalEvent::CatalogSelect => ("wizard_catalog_select", "wizard"),
             FormalEvent::CatalogSelectAllAgents => ("wizard_catalog_select_all_agents", "wizard"),
+            FormalEvent::BoundedChoiceMove(_) => ("wizard_bounded_choice_move", "wizard"),
             FormalEvent::DevelopmentEnroll => ("wizard_development_enroll", "wizard"),
             FormalEvent::DevelopmentTest => ("wizard_development_test", "wizard"),
             FormalEvent::DevelopmentRotate => ("wizard_development_rotate", "wizard"),
@@ -638,6 +740,12 @@ impl WizardFormalState {
             .as_slice(),
             "wizard_catalog_select_all_agents" => [
                 "wizard_catalog_changed",
+                "wizard_draft_changed",
+                "focus_reset",
+            ]
+            .as_slice(),
+            "wizard_bounded_choice_move" => [
+                "wizard_bounded_choice_changed",
                 "wizard_draft_changed",
                 "focus_reset",
             ]
@@ -688,6 +796,9 @@ impl WizardFormalState {
             }
             FormalEvent::CatalogSelectAllAgents if next.route == StartupRoute::Wizard => {
                 next.wizard.select_all_agents()?
+            }
+            FormalEvent::BoundedChoiceMove(offset) if next.route == StartupRoute::Wizard => {
+                next.wizard.move_bounded_choice(offset)?
             }
             FormalEvent::DevelopmentEnroll if next.route == StartupRoute::Wizard => next
                 .wizard
@@ -817,7 +928,32 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         .block(Block::default().borders(Borders::ALL).title(" Setup ")),
         regions[0],
     );
-    let body = if let Some(catalog) = wizard.catalog() {
+    let body = if wizard.has_bounded_choices() {
+        let selected = wizard.bounded_selected_index();
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!("Step: {}", step_title(wizard.step)),
+                accent,
+            )),
+            Line::from(step_prompt(wizard.step)),
+        ];
+        for (index, label) in wizard.bounded_choice_labels().iter().enumerate() {
+            lines.push(Line::from(format!(
+                "{} {}",
+                if Some(index) == selected { ">" } else { " " },
+                label
+            )));
+        }
+        if wizard.step == Step::Authentication {
+            let auth = wizard.development_auth();
+            lines.push(Line::from(format!(
+                "Development fixture: {:?} / {:?} / generation {}",
+                auth.status, auth.method, auth.generation
+            )));
+        }
+        lines.push(Line::from(format!("Element: {}", element_id(wizard.step))));
+        lines
+    } else if let Some(catalog) = wizard.catalog() {
         let mut lines = vec![
             Line::from(Span::styled(
                 format!("Step: {}", step_title(wizard.step)),
@@ -907,7 +1043,9 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         Paragraph::new(if wizard.step == Step::Agent {
             "Space select/unselect | a all agents | Enter continue | Esc back | q cancel"
         } else if wizard.step == Step::Authentication {
-            "F fixture | N no auth | E enroll | T test | R rotate | X reset | Z restart | Enter continue | Esc back | ? help"
+            "Up/Down choose | F fixture | N no auth | E enroll | T test | R rotate | X reset | Z restart | Enter continue | ? help"
+        } else if wizard.has_bounded_choices() {
+            "Up/Down choose | Enter continue | Esc back | ? help | q cancel"
         } else {
             "Enter select/continue | Esc back | ? help | q cancel"
         })
@@ -933,13 +1071,34 @@ const fn step_prompt(step: Step) -> &'static str {
         Step::Agent => "Choose the agent used for this benchmark.",
         Step::Provider => "Choose the model provider.",
         Step::Model => "Choose the provider model.",
-        Step::Configuration => "Review benchmark configuration defaults.",
+        Step::Configuration => "Choose a supported benchmark configuration preset.",
         Step::Authentication => {
             "Choose the local development fixture to enroll, test, rotate, or reset; it creates digest-only metadata and never a provider secret. Production enrollment still uses the approved keychain/helper and credential_helper:<endpoint_sha256>:<locator_sha256>; never paste an API key."
         }
-        Step::Recording => "Choose whether to record benchmark activity.",
-        Step::Replay => "Choose the offline replay policy.",
+        Step::Recording => "Choose the explicit provider execution and recording mode.",
+        Step::Replay => "Choose a supported offline replay policy without live fallback.",
         Step::Review => "Review all choices before continuing.",
+    }
+}
+
+fn bounded_choices(step: Step) -> &'static [(&'static str, &'static str)] {
+    match step {
+        Step::Configuration => CONFIGURATION_PRESETS,
+        Step::Authentication => AUTHENTICATION_PRESETS,
+        Step::Recording => RECORDING_PRESETS,
+        Step::Replay => REPLAY_PRESETS,
+        _ => &[],
+    }
+}
+
+fn bounded_value(step: Step, value: &str) -> String {
+    if step == Step::Authentication {
+        format!(
+            "credential_reference:{}",
+            crate::sha256::digest_hex(format!("environment:{value}").as_bytes())
+        )
+    } else {
+        value.to_owned()
     }
 }
 
@@ -953,7 +1112,13 @@ mod tests {
         assert_eq!(state.route(), StartupRoute::Landing);
         state.apply(FormalEvent::OpenWizard).unwrap();
         for value in [
-            "agent", "provider", "model", "config", "auth", "record", "replay",
+            "agent",
+            "provider",
+            "model",
+            "all defaults",
+            "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "live",
+            "strict offline replay",
         ] {
             state.apply(FormalEvent::SetValue(value.into())).unwrap();
             state.apply(FormalEvent::Next).unwrap();
@@ -977,6 +1142,68 @@ mod tests {
     }
 
     #[test]
+    fn bounded_defaults_are_selection_driven_private_and_restartable() {
+        let mut wizard = Wizard::default();
+        for value in ["agent", "provider", "model"] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert_eq!(wizard.step(), Step::Configuration);
+        assert_eq!(wizard.current_value(), "all defaults");
+        assert_eq!(
+            wizard.bounded_choice_labels(),
+            ["Shared benchmark defaults"]
+        );
+
+        wizard.advance().unwrap();
+        assert_eq!(wizard.step(), Step::Authentication);
+        assert_eq!(
+            wizard.current_value(),
+            bounded_value(Step::Authentication, OPENROUTER_CREDENTIAL_REFERENCE)
+        );
+        assert!(
+            !wizard
+                .current_value()
+                .contains(OPENROUTER_CREDENTIAL_REFERENCE)
+        );
+        assert!(
+            wizard
+                .bounded_choice_labels()
+                .iter()
+                .any(|label| label.contains(OPENROUTER_CREDENTIAL_REFERENCE))
+        );
+
+        wizard.advance().unwrap();
+        assert_eq!(wizard.current_value(), "live");
+        wizard.move_bounded_choice(1).unwrap();
+        assert_eq!(wizard.current_value(), "local-mock");
+        wizard.move_bounded_choice(1).unwrap();
+        assert_eq!(wizard.current_value(), "live");
+        wizard.cancel();
+        assert!(wizard.values().iter().all(String::is_empty));
+        assert_eq!(wizard.step(), Step::Agent);
+    }
+
+    #[test]
+    fn bounded_completion_rejects_stale_or_unsupported_values_without_fallback() {
+        let mut wizard = Wizard::default();
+        for value in [
+            "agent",
+            "provider",
+            "model",
+            "unsupported defaults",
+            "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "surprise mode",
+            "strict offline replay",
+        ] {
+            wizard.set_value(value).unwrap();
+            wizard.advance().unwrap();
+        }
+        assert_eq!(wizard.step(), Step::Review);
+        assert!(matches!(wizard.complete(), Err(WizardError::InvalidValue)));
+    }
+
+    #[test]
     fn development_fixture_is_available_from_the_authentication_step() {
         let mut wizard = Wizard::default();
         wizard.enroll_development_credential().unwrap();
@@ -992,7 +1219,7 @@ mod tests {
     fn formal_development_auth_actions_are_atomic_and_restartable() {
         let mut state = WizardFormalState::new().unwrap();
         state.apply(FormalEvent::OpenWizard).unwrap();
-        for value in ["agent", "provider", "model", "config"] {
+        for value in ["agent", "provider", "model", "all defaults"] {
             state.apply(FormalEvent::SetValue(value.into())).unwrap();
             state.apply(FormalEvent::Next).unwrap();
         }
@@ -1020,7 +1247,7 @@ mod tests {
     fn enrollment_populates_a_configuration_safe_reference_for_completion() {
         let mut state = WizardFormalState::new().unwrap();
         state.apply(FormalEvent::OpenWizard).unwrap();
-        for value in ["agent", "provider", "model", "config"] {
+        for value in ["agent", "provider", "model", "all defaults"] {
             state.apply(FormalEvent::SetValue(value.into())).unwrap();
             state.apply(FormalEvent::Next).unwrap();
         }
@@ -1086,10 +1313,10 @@ mod tests {
             "agent",
             "openrouter",
             "openai/gpt-4o",
-            "defaults",
+            "all defaults",
             "none",
-            "record",
-            "replay",
+            "live",
+            "strict offline replay",
         ] {
             wizard.set_value(value).unwrap();
             wizard.advance().unwrap();
@@ -1105,10 +1332,10 @@ mod tests {
             "agent",
             "openrouter",
             "unknown/model",
-            "defaults",
+            "all defaults",
             "none",
-            "record",
-            "replay",
+            "live",
+            "strict offline replay",
         ] {
             wizard.set_value(value).unwrap();
             wizard.advance().unwrap();
@@ -1123,10 +1350,10 @@ mod tests {
             "agent",
             "openrouter",
             "openai/gpt-4o",
-            "defaults",
+            "all defaults",
             "none",
-            "record",
-            "replay",
+            "live",
+            "strict offline replay",
         ] {
             wizard.set_value(value).unwrap();
             wizard.advance().unwrap();
@@ -1141,10 +1368,10 @@ mod tests {
             "agent",
             "openrouter",
             "openai/gpt-4o",
-            "defaults",
+            "all defaults",
             "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "record",
-            "replay",
+            "live",
+            "strict offline replay",
         ] {
             wizard.set_value(value).unwrap();
             wizard.advance().unwrap();
@@ -1180,7 +1407,7 @@ mod tests {
             wizard.select_openrouter_adapter(),
             Err(WizardError::InvalidValue)
         ));
-        for value in ["agent", "openrouter", "openai/gpt-4o", "defaults"] {
+        for value in ["agent", "openrouter", "openai/gpt-4o", "all defaults"] {
             wizard.set_value(value).unwrap();
             wizard.advance().unwrap();
         }
@@ -1192,7 +1419,7 @@ mod tests {
         let _ = wizard.select_openrouter_adapter();
         wizard.set_value("none").unwrap();
         let _ = wizard.select_openrouter_adapter();
-        for value in ["record", "replay"] {
+        for value in ["live", "strict offline replay"] {
             wizard.advance().unwrap();
             wizard.set_value(value).unwrap();
         }
