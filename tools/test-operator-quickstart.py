@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -220,6 +221,93 @@ while True:
                     except ProcessLookupError:
                         pass
 
+    def test_timeout_reaps_resistant_setsid_lineage_without_ambient_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "setsid-descendant-pid"
+            child = """
+import os, signal, time
+os.setsid()
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+open(os.environ["DESCENDANT_PID_FILE"], "w").write(str(os.getpid()))
+while True:
+    time.sleep(1)
+"""
+            leader = """
+import os, pathlib, subprocess, sys, time
+subprocess.Popen([sys.executable, "-c", os.environ["DESCENDANT_SOURCE"]])
+marker = pathlib.Path(os.environ["DESCENDANT_PID_FILE"])
+deadline = time.monotonic() + 2
+while not marker.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+print("READY", flush=True)
+time.sleep(30)
+"""
+            environment = os.environ.copy()
+            environment["DESCENDANT_PID_FILE"] = str(marker)
+            environment["DESCENDANT_SOURCE"] = child
+            real_spawn = MODULE._spawn_controlling_pty
+            real_close = MODULE.os.close
+            master_fd = None
+            master_close_count = 0
+            descendant_pid = None
+            ambient = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+
+            def tracked_spawn(*args, **kwargs):
+                nonlocal master_fd
+                spawned_leader, master_fd = real_spawn(*args, **kwargs)
+                return spawned_leader, master_fd
+
+            def tracked_close(fd):
+                nonlocal master_close_count
+                if fd == master_fd:
+                    master_close_count += 1
+                return real_close(fd)
+
+            original_subreaper = MODULE._get_child_subreaper()
+            try:
+                for initial_subreaper in (False, True):
+                    with self.subTest(initial_subreaper=initial_subreaper):
+                        marker.unlink(missing_ok=True)
+                        master_fd = None
+                        master_close_count = 0
+                        MODULE._child_subreaper(initial_subreaper)
+                        with mock.patch.object(
+                            MODULE, "_spawn_controlling_pty", tracked_spawn
+                        ), mock.patch.object(MODULE.os, "close", tracked_close):
+                            with self.assertRaisesRegex(AssertionError, "timed out"):
+                                MODULE.run_asb(
+                                    Path(sys.executable),
+                                    ["-c", leader],
+                                    environment,
+                                    json_output=False,
+                                    timeout_seconds=0.3,
+                                )
+                        descendant_pid = int(marker.read_text(encoding="utf-8"))
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(descendant_pid, 0)
+                        self.assertIsNone(
+                            ambient.poll(), "ambient child was captured by fixture teardown"
+                        )
+                        self.assertEqual(
+                            MODULE._get_child_subreaper(), initial_subreaper
+                        )
+                        self.assertIsNotNone(master_fd)
+                        self.assertEqual(master_close_count, 1)
+                        with self.assertRaises(OSError):
+                            os.fstat(master_fd)
+            finally:
+                MODULE._child_subreaper(original_subreaper)
+                ambient.kill()
+                ambient.wait()
+                if descendant_pid is not None:
+                    try:
+                        os.kill(descendant_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
     def test_selector_construction_failure_restores_every_resource(self):
         self._assert_selector_failure_is_clean("construct")
 
@@ -332,8 +420,8 @@ while True:
                 leader, spawned_fd = real_spawn(*args, **kwargs)
                 return leader, spawned_fd
 
-            def terminate_then_report(leader):
-                real_terminate(leader)
+            def terminate_then_report(leader, tracked=None):
+                real_terminate(leader, tracked)
                 if cleanup_failure == "terminate":
                     raise RuntimeError("injected teardown report")
 
@@ -389,7 +477,7 @@ while True:
                                 else "injected restoration report"
                             )
                             stage = (
-                                "cleanup stage: authenticated child session"
+                                "cleanup stage: authenticated child lineage"
                                 if cleanup_failure == "terminate"
                                 else "cleanup stage: child-subreaper restoration"
                             )
