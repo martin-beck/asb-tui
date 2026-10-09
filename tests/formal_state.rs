@@ -3,8 +3,10 @@
 
 use asb_tui::{
     Capabilities,
+    control_transport::{DynamicCatalogError, TransportError},
     fanout_dispatch::{FanoutDispatchState, FanoutSelection, FanoutSelectionError},
     formal_state::{FormalEvent, FormalUiState},
+    runtime::DevelopmentRouteFailure,
     shell::Route,
     wizard::{FormalEvent as WizardEvent, WizardFormalState},
 };
@@ -148,6 +150,20 @@ fn development_provider_routes_require_refresh_classification_and_formal_handoff
         .apply(FormalEvent::OpenDevelopmentHandoff, None)
         .unwrap();
     assert_eq!(formal.route(), Route::Landing);
+}
+
+#[test]
+fn development_route_error_boundary_is_typed_and_publicly_stable() {
+    let unsupported = DevelopmentRouteFailure::from(DynamicCatalogError::ProtocolUnsupported);
+    assert_eq!(unsupported, DevelopmentRouteFailure::ProtocolUnsupported);
+    assert_eq!(unsupported.to_string(), unsupported.cli_message());
+
+    let transport = DynamicCatalogError::Transport(TransportError::Io);
+    assert_eq!(transport.to_string(), "Transport(Io)");
+    assert_eq!(
+        DevelopmentRouteFailure::from(transport),
+        DevelopmentRouteFailure::ControlTransport
+    );
 }
 
 #[test]
