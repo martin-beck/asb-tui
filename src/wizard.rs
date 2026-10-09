@@ -689,6 +689,16 @@ impl WizardFormalState {
             wizard,
         })
     }
+
+    /// Restore a validated secret-free draft while keeping the formal state
+    /// and renderer projection synchronized. Startup route selection uses this
+    /// seam instead of mutating the renderer-owned wizard directly.
+    pub fn restore_values(&mut self, values: [String; 7]) -> Result<(), WizardError> {
+        let mut next = self.clone();
+        next.wizard.restore_values(values)?;
+        *self = next;
+        Ok(())
+    }
     pub fn apply(&mut self, event: FormalEvent) -> Result<(), WizardError> {
         let mut next = self.clone();
         let model: Model = serde_json::from_str(MODEL).map_err(|_| WizardError::InvalidModel)?;

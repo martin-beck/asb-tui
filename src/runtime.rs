@@ -4,7 +4,7 @@
 
 use crate::{
     app::{Action, AppError, AppState},
-    control_transport::AuthenticatedBrokerSession,
+    control_transport::{AuthenticatedBrokerSession, DynamicCatalogError},
     live_projection::ControlProjection,
     startup::ReadinessProvider,
     terminal::{RenderPolicy, frame_dimensions_are_safe},
@@ -106,6 +106,89 @@ impl<B: Backend<Error = io::Error>> Backend for BoundedBackend<B> {
 /// Terminal startup, input, or restoration error.
 #[derive(Debug)]
 pub struct RuntimeError(io::Error);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DevelopmentRouteFailure {
+    ProtocolUnsupported,
+    CatalogUnavailable(crate::control_codec::ProviderCatalogDiagnostic),
+    CatalogStatic,
+    CatalogMissing,
+    ControlTransport,
+    LiveHandoffRejected,
+}
+
+impl DevelopmentRouteFailure {
+    #[must_use]
+    pub const fn exit_code(&self) -> u8 {
+        match self {
+            Self::ControlTransport => 2,
+            Self::ProtocolUnsupported => 3,
+            Self::CatalogUnavailable(_) => 4,
+            Self::CatalogStatic => 5,
+            Self::CatalogMissing => 6,
+            Self::LiveHandoffRejected => 7,
+        }
+    }
+
+    #[must_use]
+    pub fn cli_message(&self) -> String {
+        match self {
+            Self::ProtocolUnsupported =>
+                "development route failed: dynamic_catalog_protocol_unsupported; network=not_attempted".into(),
+            Self::CatalogUnavailable(diagnostic) => format!(
+                "development route failed: dynamic_catalog_unavailable; detail={}; network={}",
+                diagnostic.code(),
+                match diagnostic {
+                    crate::control_codec::ProviderCatalogDiagnostic::Unavailable => "unknown",
+                    crate::control_codec::ProviderCatalogDiagnostic::HttpStatus(_)
+                    | crate::control_codec::ProviderCatalogDiagnostic::TooLarge
+                    | crate::control_codec::ProviderCatalogDiagnostic::Malformed => "used",
+                }
+            ),
+            Self::CatalogStatic =>
+                "development route failed: dynamic_catalog_static_no_fallback; network=not_used".into(),
+            Self::CatalogMissing =>
+                "development route failed: dynamic_catalog_response_missing; network=unknown".into(),
+            Self::ControlTransport =>
+                "development route failed: development_control_transport_failed; network=unknown".into(),
+            Self::LiveHandoffRejected =>
+                "development route failed: live_provider_handoff_rejected; network=not_used".into(),
+        }
+    }
+}
+
+impl fmt::Display for DevelopmentRouteFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.cli_message())
+    }
+}
+
+impl std::error::Error for DevelopmentRouteFailure {}
+
+impl From<DynamicCatalogError> for DevelopmentRouteFailure {
+    fn from(error: DynamicCatalogError) -> Self {
+        match error {
+            DynamicCatalogError::ProtocolUnsupported => Self::ProtocolUnsupported,
+            DynamicCatalogError::Unavailable(diagnostic) => Self::CatalogUnavailable(diagnostic),
+            DynamicCatalogError::Static => Self::CatalogStatic,
+            DynamicCatalogError::Missing => Self::CatalogMissing,
+            DynamicCatalogError::Transport(_) => Self::ControlTransport,
+        }
+    }
+}
+
+impl RuntimeError {
+    fn development_route(failure: DevelopmentRouteFailure) -> Self {
+        Self(io::Error::other(failure))
+    }
+
+    #[must_use]
+    pub fn development_route_failure(&self) -> Option<&DevelopmentRouteFailure> {
+        self.0
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<DevelopmentRouteFailure>())
+    }
+}
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -370,20 +453,70 @@ pub fn run_interactive_with_control(
     run_interactive_with_control_context(state, policy, session, false)
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DevelopmentBrokerRoute {
+    #[default]
+    Standard,
+    DynamicCatalog,
+    LiveProvider,
+}
+
+impl DevelopmentBrokerRoute {
+    const fn requires_dynamic_catalog(self) -> bool {
+        matches!(self, Self::DynamicCatalog | Self::LiveProvider)
+    }
+
+    const fn selects_live_handoff(self) -> bool {
+        matches!(self, Self::LiveProvider)
+    }
+}
+
 pub fn run_interactive_with_control_context(
     state: &mut AppState,
     policy: RenderPolicy,
     session: &mut AuthenticatedBrokerSession,
     development_mode: bool,
 ) -> Result<(), RuntimeError> {
+    run_interactive_with_control_route(
+        state,
+        policy,
+        session,
+        development_mode,
+        DevelopmentBrokerRoute::Standard,
+    )
+}
+
+pub fn run_interactive_with_control_route(
+    state: &mut AppState,
+    policy: RenderPolicy,
+    session: &mut AuthenticatedBrokerSession,
+    development_mode: bool,
+    route: DevelopmentBrokerRoute,
+) -> Result<(), RuntimeError> {
     let mut projection = ControlProjection::default();
     let mut workspace = ui::WorkspaceState::from_persisted_environment();
     session
         .poll_projection_with_context_for_runtime(&mut projection, development_mode)
-        .map_err(|error| RuntimeError(io::Error::other(error)))?;
+        .map_err(|error| {
+            if route.requires_dynamic_catalog() {
+                RuntimeError::development_route(DevelopmentRouteFailure::ControlTransport)
+            } else {
+                RuntimeError(io::Error::other(error))
+            }
+        })?;
+    if route.requires_dynamic_catalog() {
+        session
+            .refresh_dynamic_provider_catalog(&mut projection)
+            .map_err(|error| RuntimeError::development_route(error.into()))?;
+    }
     workspace.apply_live_snapshot(projection.snapshot());
     if development_mode {
         workspace.use_development_context();
+    }
+    if route.selects_live_handoff() {
+        workspace.use_live_provider_context().map_err(|_| {
+            RuntimeError::development_route(DevelopmentRouteFailure::LiveHandoffRejected)
+        })?;
     }
     run_interactive_loop(
         state,
@@ -1076,6 +1209,44 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyEventState};
     use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn development_routes_have_distinct_catalog_and_handoff_requirements() {
+        assert!(!DevelopmentBrokerRoute::Standard.requires_dynamic_catalog());
+        assert!(!DevelopmentBrokerRoute::Standard.selects_live_handoff());
+        assert!(DevelopmentBrokerRoute::DynamicCatalog.requires_dynamic_catalog());
+        assert!(!DevelopmentBrokerRoute::DynamicCatalog.selects_live_handoff());
+        assert!(DevelopmentBrokerRoute::LiveProvider.requires_dynamic_catalog());
+        assert!(DevelopmentBrokerRoute::LiveProvider.selects_live_handoff());
+    }
+
+    #[test]
+    fn dynamic_catalog_failures_retain_public_route_classification() {
+        let unavailable = DevelopmentRouteFailure::from(DynamicCatalogError::Unavailable(
+            crate::control_codec::ProviderCatalogDiagnostic::HttpStatus(429),
+        ));
+        assert_eq!(unavailable.exit_code(), 4);
+        assert!(
+            unavailable
+                .cli_message()
+                .contains("detail=quota_unavailable")
+        );
+        assert!(unavailable.cli_message().contains("network=used"));
+        assert_eq!(
+            DevelopmentRouteFailure::from(DynamicCatalogError::Static),
+            DevelopmentRouteFailure::CatalogStatic
+        );
+        assert_eq!(
+            DevelopmentRouteFailure::from(DynamicCatalogError::Missing),
+            DevelopmentRouteFailure::CatalogMissing
+        );
+        assert_eq!(
+            DevelopmentRouteFailure::from(DynamicCatalogError::Transport(
+                crate::control_transport::TransportError::Io,
+            )),
+            DevelopmentRouteFailure::ControlTransport
+        );
+    }
 
     struct FakeOps {
         calls: Rc<RefCell<Vec<&'static str>>>,
