@@ -1239,13 +1239,13 @@ impl WorkspaceState {
                     }
                     UiAction::None
                 }
-                KeyCode::Char('a')
+                KeyCode::Char('A')
                     if self.wizard.step() == wizard::Step::Agent
                         && self.wizard.catalog().is_some() =>
                 {
                     if self
                         .wizard_formal
-                        .apply(FormalEvent::CatalogSelectAllAgents)
+                        .apply(FormalEvent::CatalogToggleVisibleAgents)
                         .is_ok()
                     {
                         self.wizard = self.wizard_formal.wizard().clone();
@@ -1583,7 +1583,7 @@ impl WorkspaceState {
                 self.toggle_visible_group();
                 UiAction::None
             }
-            KeyCode::Char('a') if self.screen == Screen::Measures && self.search.is_empty() => {
+            KeyCode::Char('A') if self.screen == Screen::Measures => {
                 self.toggle_all_measures();
                 UiAction::None
             }
@@ -1767,9 +1767,30 @@ impl WorkspaceState {
     }
 
     fn toggle_all_measures(&mut self) {
+        let visible = self.visible_indices();
         if let Some(selection) = self.benchmark_selection.as_mut() {
-            selection.set_explicit_all(!selection.explicit_all());
+            if self.search.is_empty() {
+                selection.set_explicit_all(!selection.explicit_all());
+            } else {
+                let select = visible.iter().any(|index| !self.measures[*index].selected);
+                for index in visible {
+                    let id = self.measures[index].id.clone();
+                    let _ = selection.set_measure_selected(&id, select);
+                }
+            }
             self.sync_measure_projection();
+        } else if let Some(selection) = self.selection.as_mut() {
+            let select = visible.iter().any(|index| !self.measures[*index].selected);
+            for index in visible {
+                let id = self.measures[index].id.clone();
+                let _ = selection.set_measure_selected(&id, select);
+            }
+            self.sync_measure_projection();
+        } else {
+            let select = visible.iter().any(|index| !self.measures[*index].selected);
+            for index in visible {
+                self.measures[index].selected = select;
+            }
         }
     }
 
@@ -2301,7 +2322,7 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
     frame.render_stateful_widget(
         List::new(items)
             .block(panel(
-                " Pool > Group > Benchmark > Measure - Space item, a select/clear visible, b benchmark, g group, P pool ",
+                " Pool > Group > Benchmark > Measure - Space item, A select/clear visible, b benchmark, g group, P pool ",
                 policy,
             ))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
@@ -2327,7 +2348,7 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
                 .chain([
                     Line::from(""),
                     Line::from("Up/Down navigate  Space toggle"),
-                    Line::from("a select/clear visible  b benchmark"),
+                    Line::from("A select/clear visible  b benchmark"),
                     Line::from("g group  P pool  Type to search"),
                 ])
                 .collect::<Vec<_>>(),
@@ -2845,7 +2866,26 @@ mod tests {
         assert!(rendered.contains("Pool > Group > Benchmark > Measure"));
         assert!(rendered.contains("Selection summary"));
         assert!(rendered.contains("[x]"));
-        assert!(rendered.contains("a select/clear visible"));
+        assert!(rendered.contains("A select/clear visible"));
+    }
+
+    #[test]
+    fn bulk_measure_key_toggles_only_filtered_visible_rows_and_never_becomes_search_text() {
+        let mut state = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        for character in "latency".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(state.search, "latency");
+        assert_eq!(state.visible_indices().len(), 1);
+        state.handle_key(key(KeyCode::Char('A')));
+        assert_eq!(state.search, "latency");
+        assert!(!state.measures[2].selected);
+        assert!(state.measures[0].selected && state.measures[1].selected);
+        state.handle_key(key(KeyCode::Char('A')));
+        assert!(state.measures[2].selected);
     }
 
     #[test]
@@ -2868,12 +2908,12 @@ mod tests {
             scope,
             crate::recording_campaign::WorkloadScope::Selected(vec!["efficiency".into()])
         );
-        state.handle_key(key(KeyCode::Char('a')));
+        state.handle_key(key(KeyCode::Char('A')));
         assert_eq!(
             state.recording_workload_scope().unwrap(),
             crate::recording_campaign::WorkloadScope::All
         );
-        state.handle_key(key(KeyCode::Char('a')));
+        state.handle_key(key(KeyCode::Char('A')));
         assert!(state.recording_workload_scope().is_err());
     }
 

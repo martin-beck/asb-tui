@@ -321,23 +321,42 @@ impl WizardCatalogState {
         Ok(())
     }
 
-    /// Select every available agent in the authenticated catalog. This keeps
-    /// the meaning of “all agents” explicit and bounded to the catalog.
-    pub fn select_all_agents(&mut self) -> Result<(), String> {
+    /// Select every visible available agent, or clear the visible set when it
+    /// is already selected. Filtering remains an explicit scope boundary:
+    /// hidden agents retain their prior selection.
+    pub fn toggle_visible_agents(&mut self) -> Result<(), String> {
         if self.kind != OptionKind::Agent {
             return Err("all-agent selection is only available on the agent step".into());
         }
-        self.selected_agents = self
+        let visible = self
+            .visible_options()
+            .into_iter()
+            .filter(|option| option.available)
+            .map(|option| option.id.clone())
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            return Err("no available agents are present in the catalog".into());
+        }
+        let clear = visible
+            .iter()
+            .all(|id| self.selected_agents.iter().any(|selected| selected == id));
+        if clear {
+            self.selected_agents
+                .retain(|id| !visible.iter().any(|item| item == id));
+        } else {
+            for id in visible {
+                if !self.selected_agents.iter().any(|selected| selected == &id) {
+                    self.selected_agents.push(id);
+                }
+            }
+            self.selected_agents.sort();
+        }
+        self.all_agents = self
             .catalog
             .options(OptionKind::Agent)
             .iter()
             .filter(|option| option.available)
-            .map(|option| option.id.clone())
-            .collect();
-        if self.selected_agents.is_empty() {
-            return Err("no available agents are present in the catalog".into());
-        }
-        self.all_agents = true;
+            .all(|option| self.selected_agents.iter().any(|id| id == &option.id));
         self.selected_agent = self.selected_agents.first().cloned();
         self.selected_provider = None;
         self.selected_model = None;
@@ -513,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_picker_supports_explicit_multi_and_all_selection() {
+    fn agent_picker_supports_explicit_multi_and_visible_bulk_selection() {
         let agents = vec![
             WizardOption::new("agent-a", "Agent A", true).unwrap(),
             WizardOption::new("agent-b", "Agent B", true).unwrap(),
@@ -542,12 +561,38 @@ mod tests {
         state.set_kind(OptionKind::Provider);
         assert_eq!(state.visible_options()[0].id, "shared");
         state.set_kind(OptionKind::Agent);
-        state.select_all_agents().unwrap();
+        state.reset_draft();
+        state.toggle_visible_agents().unwrap();
         assert!(state.all_agents_selected());
         assert_eq!(
             state.selected_ids(OptionKind::Agent),
             ["agent-a", "agent-b"]
         );
+    }
+
+    #[test]
+    fn visible_agent_bulk_toggle_preserves_hidden_choices_and_clears_on_repeat() {
+        let catalog = WizardCatalog::new(
+            vec![
+                WizardOption::new("agent-a", "Agent A", true).unwrap(),
+                WizardOption::new("agent-b", "Agent B", true).unwrap(),
+            ],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let mut state = WizardCatalogState::new(catalog, OptionKind::Agent);
+        state.set_query("agent-a").unwrap();
+        state.toggle_visible_agents().unwrap();
+        assert_eq!(state.selected_ids(OptionKind::Agent), ["agent-a"]);
+        state.set_query("agent-b").unwrap();
+        state.toggle_visible_agents().unwrap();
+        assert_eq!(
+            state.selected_ids(OptionKind::Agent),
+            ["agent-a", "agent-b"]
+        );
+        state.toggle_visible_agents().unwrap();
+        assert_eq!(state.selected_ids(OptionKind::Agent), ["agent-a"]);
     }
 
     #[test]
@@ -564,7 +609,7 @@ mod tests {
         assert_eq!(catalog.options(OptionKind::Provider)[0].id, "development");
         assert_eq!(catalog.options(OptionKind::Model)[0].id, "fixture-model");
         let mut state = WizardCatalogState::new(catalog, OptionKind::Agent);
-        state.select_all_agents().unwrap();
+        state.toggle_visible_agents().unwrap();
         state.set_kind(OptionKind::Provider);
         assert_eq!(state.visible_options()[0].id, "development");
         state.select_cursor().unwrap();

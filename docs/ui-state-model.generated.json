@@ -201,9 +201,9 @@
       "key": "Enter"
     },
     {
-      "action": "wizard_catalog_select_all_agents",
+      "action": "wizard_catalog_toggle_visible_agents",
       "element": "wizard.agent",
-      "key": "a"
+      "key": "A"
     },
     {
       "action": "wizard_development_enroll",
@@ -278,7 +278,7 @@
     {
       "action": "toggle_all_measures",
       "element": "measures.group_toggle",
-      "key": "a"
+      "key": "A"
     },
     {
       "action": "toggle_group",
@@ -1052,7 +1052,7 @@
       ]
     },
     {
-      "event": "wizard_catalog_select_all_agents",
+      "event": "wizard_catalog_toggle_visible_agents",
       "from": "wizard",
       "to": "wizard",
       "effects": [
@@ -1498,7 +1498,7 @@
     },
     {
       "id": "wizard.controls",
-      "text": "Use Up or Down for bounded choices, Enter to confirm, or question mark for contextual help."
+      "text": "Use Up or Down for bounded choices, Space to toggle an agent, a to select or clear visible agents, Enter to confirm, or question mark for contextual help."
     },
     {
       "id": "wizard.shell_footer",

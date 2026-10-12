@@ -396,7 +396,7 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["wizard_catalog_changed", "focus_reset"].as_slice()
         } else if matches!(
             transition.event.as_str(),
-            "wizard_catalog_select" | "wizard_catalog_select_all_agents"
+            "wizard_catalog_select" | "wizard_catalog_toggle_visible_agents"
         ) {
             [
                 "wizard_catalog_changed",

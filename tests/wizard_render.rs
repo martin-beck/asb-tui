@@ -185,7 +185,33 @@ fn wizard_selection_rows_and_summary_are_textually_unambiguous() {
     assert!(text.contains("> [ ] Agent B — unavailable: not available for this setup"));
     assert!(text.contains("Selection summary"));
     assert!(text.contains("Agent: 1 selected"));
-    assert!(text.contains("Space toggles; a selects all or clears all"));
+    assert!(text.contains("Space toggles; A selects all or clears all"));
+}
+
+#[test]
+fn narrow_selection_summary_keeps_selected_name_and_context_action_visible() {
+    let catalog = WizardCatalog::new(
+        vec![WizardOption::new("agent-a", "Agent A", true).unwrap()],
+        vec![
+            WizardOption::new("provider", "Provider", true)
+                .unwrap()
+                .compatible_with(vec!["agent-a".into()])
+                .unwrap(),
+        ],
+        vec![
+            WizardOption::new("model", "Model", true)
+                .unwrap()
+                .compatible_with(vec!["provider".into()])
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut state = WizardFormalState::new_with_catalog(catalog).unwrap();
+    state.apply(FormalEvent::OpenWizard).unwrap();
+    state.apply(FormalEvent::CatalogSelect).unwrap();
+    let text = rendered_text(state.wizard(), policy(false), 40, 12);
+    assert!(text.contains("Agent A"));
+    assert!(text.contains("Space toggle; A select/clear visible."));
 }
 
 #[test]
@@ -274,7 +300,17 @@ fn formal_wizard_model_checks_typed_multi_agent_and_all_agent_actions() {
     state.apply(FormalEvent::OpenWizard).unwrap();
     state.apply(FormalEvent::CatalogSelect).unwrap();
     assert_eq!(state.wizard().values()[0], "agent-a");
-    state.apply(FormalEvent::CatalogSelectAllAgents).unwrap();
+    state
+        .apply(FormalEvent::CatalogToggleVisibleAgents)
+        .unwrap();
+    assert_eq!(state.wizard().values()[0], "agent-a,agent-b");
+    state
+        .apply(FormalEvent::CatalogToggleVisibleAgents)
+        .unwrap();
+    assert_eq!(state.wizard().values()[0], "");
+    state
+        .apply(FormalEvent::CatalogToggleVisibleAgents)
+        .unwrap();
     assert_eq!(state.wizard().values()[0], "agent-a,agent-b");
     state.apply(FormalEvent::Next).unwrap();
     assert_eq!(
@@ -592,7 +628,7 @@ fn authenticated_projection_drives_repeatable_setup_without_secret_defaults() {
 
     state.open_wizard();
     assert_eq!(state.wizard.step(), Step::Agent);
-    state.wizard.select_all_agents().unwrap();
+    state.wizard.toggle_visible_agents().unwrap();
     state.wizard.advance().unwrap();
     state.wizard.select_catalog_cursor().unwrap();
     state.wizard.advance().unwrap();
@@ -760,7 +796,7 @@ fn ar1668_authoritative_openrouter_wizard_completes_through_renderer_seam() {
         ActionClass::FreeForm,
     ];
     let journey = [
-        (KeyCode::Char('a'), ActionClass::Selection),
+        (KeyCode::Char('A'), ActionClass::Selection),
         (KeyCode::Enter, ActionClass::Confirmation),
         (KeyCode::Enter, ActionClass::Selection),
         (KeyCode::Down, ActionClass::Navigation),

@@ -77,12 +77,24 @@ pub fn summary_text(title: &str, selected: &[&str], mode: SelectionMode) -> Vec<
     ]
 }
 
+/// Compact narrow-terminal action guidance.
+///
+/// The selected value is deliberately rendered on its own line by the caller,
+/// so this stays short enough to remain useful on supported narrow terminals.
+#[must_use]
+pub fn compact_action_hint(mode: SelectionMode) -> String {
+    match mode {
+        SelectionMode::Single => "Enter selects focused choice.".to_owned(),
+        SelectionMode::Multiple => "Space toggle; A select/clear visible.".to_owned(),
+    }
+}
+
 /// The documented actions are intentionally finite and context-neutral.
 #[must_use]
 pub const fn action_hint(mode: SelectionMode) -> &'static str {
     match mode {
         SelectionMode::Single => "Enter selects the focused available choice.",
-        SelectionMode::Multiple => "Space toggles; a selects all or clears all visible choices.",
+        SelectionMode::Multiple => "Space toggles; A selects all or clears all visible choices.",
     }
 }
 
@@ -111,6 +123,14 @@ mod tests {
         assert_eq!(
             summary_text("Provider", &["OpenRouter"], SelectionMode::Single),
             ["Provider: 1 selected", "OpenRouter"]
+        );
+    }
+
+    #[test]
+    fn compact_summary_retains_selected_names_and_its_action() {
+        assert_eq!(
+            compact_action_hint(SelectionMode::Multiple),
+            "Space toggle; A select/clear visible."
         );
     }
 
