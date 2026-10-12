@@ -19,6 +19,8 @@ const MODEL_JSON: &str = include_str!("../docs/ui-state-model.json");
 // renderer rather than emitted as a literal at the call site.  The source
 // parity gate checks these IDs against the authored model.
 pub const RENDERED_ELEMENT_BINDINGS: &[&str] = &[
+    "wizard.shell_header",
+    "wizard.step_region",
     "configuration.control_status",
     "configuration.preflight",
     "wizard.controls",
@@ -26,6 +28,7 @@ pub const RENDERED_ELEMENT_BINDINGS: &[&str] = &[
     "benchmarks.pool",
     "benchmarks.group_toggle",
     "benchmarks.row",
+    "wizard.shell_footer",
 ];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
