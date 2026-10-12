@@ -429,7 +429,15 @@ fn explicit_workload_selection_is_declared_as_a_formal_state_transition() {
             .any(|field| field == "explicit_all")
     );
     assert!(model["bindings"].as_array().unwrap().iter().any(|binding| {
-        binding["action"] == "toggle_all_measures" && binding["element"] == "measures.group_toggle"
+        binding["action"] == "toggle_all_measures"
+            && binding["element"] == "measures.group_toggle"
+            && binding["key"] == "A"
+    }));
+    assert!(model["help"].as_array().unwrap().iter().any(|element| {
+        element["id"] == "wizard.controls"
+            && element["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("A to select or clear visible agents"))
     }));
     assert!(
         model["transitions"]

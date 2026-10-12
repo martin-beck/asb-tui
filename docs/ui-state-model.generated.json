@@ -1498,7 +1498,7 @@
     },
     {
       "id": "wizard.controls",
-      "text": "Use Up or Down for bounded choices, Space to toggle an agent, a to select or clear visible agents, Enter to confirm, or question mark for contextual help."
+      "text": "Use Up or Down for bounded choices, Space to toggle an agent, A to select or clear visible agents, Enter to confirm, or question mark for contextual help."
     },
     {
       "id": "wizard.shell_footer",

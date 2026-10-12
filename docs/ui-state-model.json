@@ -220,7 +220,7 @@
     {"id":"wizard.recording","text":"Choose an explicit live or local-mock recording mode without fallback."},
     {"id":"wizard.replay","text":"Choose strict offline replay from the bounded policy list without live fallback."},
     {"id":"wizard.review","text":"Review every setup choice before completing the wizard."},
-    {"id":"wizard.controls","text":"Use Up or Down for bounded choices, Space to toggle an agent, a to select or clear visible agents, Enter to confirm, or question mark for contextual help."},
+    {"id":"wizard.controls","text":"Use Up or Down for bounded choices, Space to toggle an agent, A to select or clear visible agents, Enter to confirm, or question mark for contextual help."},
     {"id":"wizard.shell_footer","text":"The keyboard footer lists the safe keys available for the current setup step and remains visible while navigating."},
     {"id":"measures.search","text":"Type to filter benchmark measures by group or name."},
     {"id":"measures.row","text":"Select or clear this measure for the benchmark."},

@@ -1769,10 +1769,17 @@ impl WorkspaceState {
     fn toggle_all_measures(&mut self) {
         let visible = self.visible_indices();
         if let Some(selection) = self.benchmark_selection.as_mut() {
+            // The bulk action follows the rendered visible rows, not the
+            // provenance marker. A user can manually select every visible
+            // measure while `explicit_all` remains false.
+            let select = visible.iter().any(|index| !self.measures[*index].selected);
             if self.search.is_empty() {
-                selection.set_explicit_all(!selection.explicit_all());
+                // An unfiltered visible set is the active pool. Preserve the
+                // explicit-all meaning when selecting it, and clear it (and
+                // the active selection) only when every visible row is
+                // already selected.
+                selection.set_explicit_all(select);
             } else {
-                let select = visible.iter().any(|index| !self.measures[*index].selected);
                 for index in visible {
                     let id = self.measures[index].id.clone();
                     let _ = selection.set_measure_selected(&id, select);
@@ -2886,6 +2893,50 @@ mod tests {
         assert!(state.measures[0].selected && state.measures[1].selected);
         state.handle_key(key(KeyCode::Char('A')));
         assert!(state.measures[2].selected);
+    }
+
+    #[test]
+    fn unfiltered_bulk_measure_key_clears_a_manually_completed_visible_set() {
+        let mut state = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        let visible_ids = state
+            .visible_indices()
+            .into_iter()
+            .map(|index| state.measures[index].id.clone())
+            .collect::<Vec<_>>();
+        let selection = state
+            .benchmark_selection
+            .as_mut()
+            .expect("default workspace has a benchmark selection");
+        for id in &visible_ids {
+            selection.set_measure_selected(id, true).unwrap();
+        }
+        assert!(!selection.explicit_all());
+        state.sync_measure_projection();
+        assert!(
+            state
+                .visible_indices()
+                .into_iter()
+                .all(|index| state.measures[index].selected)
+        );
+
+        state.handle_key(key(KeyCode::Char('A')));
+
+        assert!(
+            !state
+                .benchmark_selection
+                .as_ref()
+                .expect("selection remains available")
+                .explicit_all()
+        );
+        assert!(
+            state
+                .visible_indices()
+                .into_iter()
+                .all(|index| !state.measures[index].selected)
+        );
     }
 
     #[test]
