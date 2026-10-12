@@ -102,6 +102,9 @@ fn ui_model_owns_every_persistent_wizard_shell_region() {
     for id in [
         "wizard.shell_header",
         "wizard.step_region",
+        "wizard.selection_list",
+        "wizard.choice_details",
+        "wizard.selection_summary",
         "wizard.shell_footer",
     ] {
         assert!(elements.iter().any(|element| element == id), "missing {id}");
@@ -143,12 +146,46 @@ fn wizard_shell_keeps_identity_progress_content_and_contextual_footer_visible() 
         "Progress",
         "▶ Agent",
         "· Provider",
-        "Current selection",
+        "Choice details",
+        "Selection summary",
         "Keyboard help",
         "Space select/unselect",
     ] {
         assert!(text.contains(label), "missing shell label {label:?}");
     }
+}
+
+#[test]
+fn wizard_selection_rows_and_summary_are_textually_unambiguous() {
+    let catalog = WizardCatalog::new(
+        vec![
+            WizardOption::new("agent-a", "Agent A", true).unwrap(),
+            WizardOption::new("agent-b", "Agent B", false).unwrap(),
+        ],
+        vec![
+            WizardOption::new("provider", "Provider", true)
+                .unwrap()
+                .compatible_with(vec!["agent-a".into(), "agent-b".into()])
+                .unwrap(),
+        ],
+        vec![
+            WizardOption::new("model", "Model", true)
+                .unwrap()
+                .compatible_with(vec!["provider".into()])
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut state = WizardFormalState::new_with_catalog(catalog).unwrap();
+    state.apply(FormalEvent::OpenWizard).unwrap();
+    state.apply(FormalEvent::CatalogSelect).unwrap();
+    state.apply(FormalEvent::CatalogMove(1)).unwrap();
+    let text = rendered_text(state.wizard(), policy(false), 120, 24);
+    assert!(text.contains("[x] Agent A"));
+    assert!(text.contains("> [ ] Agent B — unavailable: not available for this setup"));
+    assert!(text.contains("Selection summary"));
+    assert!(text.contains("Agent: 1 selected"));
+    assert!(text.contains("Space toggles; a selects all or clears all"));
 }
 
 #[test]
@@ -353,7 +390,8 @@ fn wide_render_covers_every_documented_wizard_step() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("Current selection"));
+    assert!(text.contains("Choice details"));
+    assert!(text.contains("Selection summary"));
     assert!(text.contains("Review all choices"));
 }
 

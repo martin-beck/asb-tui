@@ -94,8 +94,8 @@
   ],
   "routes": [
     {"id":"landing","elements":["landing.primary","navigation","status.connection"]},
-    {"id":"wizard","elements":["wizard.shell_header","wizard.step_region","wizard.agent","wizard.provider","wizard.model","wizard.configuration","wizard.authentication","wizard.recording","wizard.replay","wizard.review","wizard.controls","wizard.shell_footer","navigation"]},
-    {"id":"measurement_selection","elements":["benchmarks.search","benchmarks.pool","benchmarks.group_toggle","benchmarks.row","measures.search","measures.row","measures.group_toggle","navigation"]},
+    {"id":"wizard","elements":["wizard.shell_header","wizard.step_region","wizard.selection_list","wizard.choice_details","wizard.selection_summary","wizard.agent","wizard.provider","wizard.model","wizard.configuration","wizard.authentication","wizard.recording","wizard.replay","wizard.review","wizard.controls","wizard.shell_footer","navigation"]},
+    {"id":"measurement_selection","elements":["benchmarks.search","benchmarks.pool","benchmarks.group_toggle","benchmarks.row","measures.search","measures.row","measures.group_toggle","measures.selection_summary","navigation"]},
     {"id":"configuration","elements":["configuration.entry","configuration.search","configuration.control_status","configuration.preflight","navigation"]},
     {"id":"run_control","elements":["run.status","run.start","run.cancel","navigation"]},
     {"id":"recent_runs","elements":["runs.row","runs.refresh","navigation"]},
@@ -128,6 +128,9 @@
     {"id":"status.connection","route":"landing","role":"status","help_id":"status.connection","focusable":false,"hoverable":true,"parent":null},
     {"id":"wizard.shell_header","route":"wizard","role":"status","help_id":"wizard.shell_header","focusable":false,"hoverable":true,"parent":null},
     {"id":"wizard.step_region","route":"wizard","role":"status","help_id":"wizard.step_region","focusable":false,"hoverable":true,"parent":"wizard.shell_header"},
+    {"id":"wizard.selection_list","route":"wizard","role":"selectable","help_id":"wizard.selection_list","focusable":true,"hoverable":true,"parent":null},
+    {"id":"wizard.choice_details","route":"wizard","role":"status","help_id":"wizard.choice_details","focusable":false,"hoverable":true,"parent":"wizard.selection_list"},
+    {"id":"wizard.selection_summary","route":"wizard","role":"status","help_id":"wizard.selection_summary","focusable":false,"hoverable":true,"parent":"wizard.selection_list"},
     {"id":"wizard.agent","route":"wizard","role":"editable","help_id":"wizard.agent","focusable":true,"hoverable":true,"parent":null},
     {"id":"wizard.provider","route":"wizard","role":"editable","help_id":"wizard.provider","focusable":true,"hoverable":true,"parent":null},
     {"id":"wizard.model","route":"wizard","role":"editable","help_id":"wizard.model","focusable":true,"hoverable":true,"parent":null},
@@ -138,6 +141,7 @@
     {"id":"wizard.review","route":"wizard","role":"status","help_id":"wizard.review","focusable":true,"hoverable":true,"parent":null},
     {"id":"wizard.controls","route":"wizard","role":"navigation","help_id":"wizard.controls","focusable":false,"hoverable":true,"parent":null},
     {"id":"wizard.shell_footer","route":"wizard","role":"status","help_id":"wizard.shell_footer","focusable":false,"hoverable":true,"parent":null}
+    ,{"id":"measures.selection_summary","route":"measurement_selection","role":"status","help_id":"measures.selection_summary","focusable":false,"hoverable":true,"parent":"measures.row"}
   ],
   "transitions": [
     {"event":"resize","from":"landing","to":"landing","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
@@ -205,6 +209,9 @@
     {"id":"screen.development_handoff","text":"Review development-only provenance, warnings, cancellation, and recovery actions."},
     {"id":"wizard.shell_header","text":"The wizard header identifies the current ASB setup journey and keeps its purpose visible while choices change."},
     {"id":"wizard.step_region","text":"The progress region shows completed, current, and remaining setup stages without changing the current selection."},
+    {"id":"wizard.selection_list","text":"Every selectable wizard row displays an unchecked or checked marker and an independent focus cursor."},
+    {"id":"wizard.choice_details","text":"Choice details explain the focused item and its availability without mixing them with the selected-value summary."},
+    {"id":"wizard.selection_summary","text":"The framed selection summary lists the current choices separately from the focused-item description."},
     {"id":"wizard.agent","text":"Search and choose an available agent for this benchmark."},
     {"id":"wizard.provider","text":"Search and choose a provider for the selected agent."},
     {"id":"wizard.model","text":"Search and choose a model exposed by the selected provider."},
@@ -217,6 +224,7 @@
     {"id":"wizard.shell_footer","text":"The keyboard footer lists the safe keys available for the current setup step and remains visible while navigating."},
     {"id":"measures.search","text":"Type to filter benchmark measures by group or name."},
     {"id":"measures.row","text":"Select or clear this measure for the benchmark."},
+    {"id":"measures.selection_summary","text":"The framed measure summary lists chosen measures separately from the selectable catalog rows."},
     {"id":"measures.group_toggle","text":"Select or clear every visible measure in this group."},
     {"id":"benchmarks.search","text":"Search the nested pool, group, benchmark, and measure catalog."},
     {"id":"benchmarks.pool","text":"Choose the benchmark pool whose groups and benchmarks are visible."},

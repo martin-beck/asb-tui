@@ -21,6 +21,9 @@ const MODEL_JSON: &str = include_str!("../docs/ui-state-model.json");
 pub const RENDERED_ELEMENT_BINDINGS: &[&str] = &[
     "wizard.shell_header",
     "wizard.step_region",
+    "wizard.selection_list",
+    "wizard.choice_details",
+    "wizard.selection_summary",
     "configuration.control_status",
     "configuration.preflight",
     "wizard.controls",
@@ -28,6 +31,7 @@ pub const RENDERED_ELEMENT_BINDINGS: &[&str] = &[
     "benchmarks.pool",
     "benchmarks.group_toggle",
     "benchmarks.row",
+    "measures.selection_summary",
     "wizard.shell_footer",
 ];
 

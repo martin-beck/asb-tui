@@ -16,6 +16,7 @@ use crate::{
         BenchmarkCatalog, BenchmarkDefinition, BenchmarkGroup, BenchmarkMeasure, BenchmarkPool,
         BenchmarkSelection, MAX_QUERY_BYTES, Measurement, MeasurementSelection, NodeSelection,
     },
+    selection_control::{SelectionRow, row_text, summary_text},
     startup::{self, StartupInput},
     terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
     wizard::{self, FormalEvent, Wizard, WizardFormalState},
@@ -2286,15 +2287,13 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
     let items: Vec<ListItem> = state
         .visible_indices()
         .iter()
-        .map(|i| {
+        .enumerate()
+        .map(|(visible_index, i)| {
             let row = &state.measures[*i];
-            ListItem::new(Line::from(vec![
-                Span::styled(if row.selected { "[x] " } else { "[ ] " }, accent(policy)),
-                Span::styled(
-                    format!("{} / {} / {}", row.group, row.benchmark, row.name),
-                    Style::default(),
-                ),
-            ]))
+            let label = format!("{} / {} / {}", row.group, row.benchmark, row.name);
+            let selection =
+                SelectionRow::enabled(&label, row.selected, state.measure_cursor == visible_index);
+            ListItem::new(Span::styled(row_text(&selection), Style::default()))
         })
         .collect();
     let mut ls = ListState::default();
@@ -2302,27 +2301,38 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
     frame.render_stateful_widget(
         List::new(items)
             .block(panel(
-                " Pool > Group > Benchmark > Measure - Space item, b benchmark, g group, P pool ",
+                " Pool > Group > Benchmark > Measure - Space item, a select/clear visible, b benchmark, g group, P pool ",
                 policy,
             ))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
         list_area,
         &mut ls,
     );
+    let selected = state
+        .measures
+        .iter()
+        .filter(|row| row.selected)
+        .map(|row| row.name.as_str())
+        .collect::<Vec<_>>();
+    let summary = summary_text(
+        "Measures",
+        &selected,
+        crate::selection_control::SelectionMode::Multiple,
+    );
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from("Grouped selection"),
-            Line::from(""),
-            Line::from(format!(
-                "{} selected",
-                state.measures.iter().filter(|m| m.selected).count()
-            )),
-            Line::from(""),
-            Line::from("Up/Down navigate   Space measure"),
-            Line::from("b benchmark   g group   P pool"),
-            Line::from("Type to search nested catalog"),
-        ])
-        .block(panel(" Selection ", policy))
+        Paragraph::new(
+            summary
+                .into_iter()
+                .map(Line::from)
+                .chain([
+                    Line::from(""),
+                    Line::from("Up/Down navigate  Space toggle"),
+                    Line::from("a select/clear visible  b benchmark"),
+                    Line::from("g group  P pool  Type to search"),
+                ])
+                .collect::<Vec<_>>(),
+        )
+        .block(panel(" Selection summary ", policy))
         .wrap(Wrap { trim: true }),
         cols[1],
     );
@@ -2833,6 +2843,9 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("Pool > Group > Benchmark > Measure"));
+        assert!(rendered.contains("Selection summary"));
+        assert!(rendered.contains("[x]"));
+        assert!(rendered.contains("a select/clear visible"));
     }
 
     #[test]

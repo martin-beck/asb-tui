@@ -16,6 +16,7 @@ use crate::{
         DevelopmentAuthError, DevelopmentAuthFlow, DevelopmentAuthMethod, DevelopmentAuthSnapshot,
     },
     provider_catalog::{ProviderProfile, wizard_options},
+    selection_control::{SelectionMode, SelectionRow, action_hint, row_text, summary_text},
     terminal::RenderPolicy,
     visual::{LabelFit, LayoutTier, SemanticRole},
     wizard_catalog::{OptionKind, WizardCatalog, WizardCatalogState},
@@ -943,7 +944,7 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         regions[0],
     );
     frame.render_widget(wizard_step_region(wizard, policy, regions[1]), regions[1]);
-    let body = if wizard.has_bounded_choices() {
+    let (details, summary) = if wizard.has_bounded_choices() {
         let selected = wizard.bounded_selected_index();
         let mut lines = vec![
             Line::from(Span::styled(
@@ -953,10 +954,11 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
             Line::from(step_prompt(wizard.step)),
         ];
         for (index, label) in wizard.bounded_choice_labels().iter().enumerate() {
-            lines.push(Line::from(format!(
-                "{} {}",
-                if Some(index) == selected { ">" } else { " " },
-                label
+            let row =
+                SelectionRow::enabled(label, Some(index) == selected, Some(index) == selected);
+            lines.push(Line::from(Span::styled(
+                row_text(&row),
+                choice_style(&row, policy),
             )));
         }
         if wizard.step == Step::Authentication {
@@ -967,7 +969,19 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
             )));
         }
         lines.push(Line::from(format!("Element: {}", element_id(wizard.step))));
-        lines
+        let selected_labels = selected
+            .and_then(|index| wizard.bounded_choice_labels().get(index).copied())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let summary = summary_text(
+            step_title(wizard.step),
+            &selected_labels,
+            SelectionMode::Single,
+        )
+        .into_iter()
+        .map(Line::from)
+        .collect();
+        (lines, summary)
     } else if let Some(catalog) = wizard.catalog() {
         let mut lines = vec![
             Line::from(Span::styled(
@@ -991,6 +1005,21 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
             }),
             Line::from(format!("Element: {}", element_id(wizard.step))),
         ];
+        for (index, option) in catalog.visible_options().into_iter().take(8).enumerate() {
+            let cursor = catalog.cursor() == index;
+            let selected = catalog
+                .selected_ids(catalog.kind())
+                .contains(&option.id.as_str());
+            let row = if option.available {
+                SelectionRow::enabled(&option.label, selected, cursor)
+            } else {
+                SelectionRow::disabled(&option.label, cursor, "not available for this setup")
+            };
+            lines.push(Line::from(Span::styled(
+                row_text(&row),
+                choice_style(&row, policy),
+            )));
+        }
         if wizard.step == Step::Agent && !wizard.adapter_options().is_empty() {
             lines.push(Line::from("Coding-agent adapters (selection-driven):"));
             for option in wizard.adapter_options() {
@@ -1013,21 +1042,31 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
                 "Stable adapters require an authoritative catalog and compatible authentication."
             }));
         }
-        for (index, option) in catalog.visible_options().into_iter().take(8).enumerate() {
-            let cursor = catalog.cursor() == index;
-            let selected = catalog
-                .selected_ids(catalog.kind())
-                .contains(&option.id.as_str());
-            lines.push(Line::from(format!(
-                "{}{} {}",
-                if cursor { ">" } else { " " },
-                if selected { "*" } else { " " },
-                option.label
-            )));
-        }
-        lines
+        let selected_labels = catalog
+            .selected_ids(catalog.kind())
+            .into_iter()
+            .filter_map(|id| {
+                catalog
+                    .catalog()
+                    .options(catalog.kind())
+                    .iter()
+                    .find(|option| option.id == id)
+                    .map(|option| option.label.as_str())
+            })
+            .collect::<Vec<_>>();
+        let selection_mode = if catalog.kind() == OptionKind::Agent {
+            SelectionMode::Multiple
+        } else {
+            SelectionMode::Single
+        };
+        let mut summary = summary_text(step_title(wizard.step), &selected_labels, selection_mode)
+            .into_iter()
+            .map(Line::from)
+            .collect::<Vec<_>>();
+        summary.push(Line::from(action_hint(selection_mode)));
+        (lines, summary)
     } else {
-        vec![
+        let details = vec![
             Line::from(Span::styled(
                 format!("Step: {}", step_title(wizard.step)),
                 shell_style(SemanticRole::Focus, policy),
@@ -1044,15 +1083,46 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
             },
             Line::from(format!("Value: {}", wizard.current_value())),
             Line::from(format!("Element: {}", element_id(wizard.step))),
-        ]
+        ];
+        let selected = (!wizard.current_value().is_empty())
+            .then_some(wizard.current_value())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let summary = summary_text(step_title(wizard.step), &selected, SelectionMode::Single)
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        (details, summary)
+    };
+    let body_regions = if regions[2].width < 78 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(4), Constraint::Length(3)])
+            .split(regions[2])
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .split(regions[2])
     };
     frame.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: true }).block(
+        Paragraph::new(details).wrap(Wrap { trim: true }).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Current selection "),
+                .title(" Choice details "),
         ),
-        regions[2],
+        body_regions[0],
+    );
+    frame.render_widget(
+        Paragraph::new(summary)
+            .style(shell_style(SemanticRole::Selected, policy))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Selection summary "),
+            ),
+        body_regions[1],
     );
     frame.render_widget(
         Paragraph::new(if wizard.step == Step::Agent {
@@ -1073,6 +1143,19 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         ),
         regions[3],
     );
+}
+
+fn choice_style(row: &SelectionRow<'_>, policy: RenderPolicy) -> Style {
+    let role = if !row.enabled {
+        SemanticRole::Disabled
+    } else if row.focused {
+        SemanticRole::Focus
+    } else if row.selected {
+        SemanticRole::Selected
+    } else {
+        SemanticRole::Text
+    };
+    shell_style(role, policy)
 }
 
 const WIZARD_STEPS: [Step; 8] = [
