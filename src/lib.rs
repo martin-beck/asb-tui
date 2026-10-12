@@ -52,6 +52,7 @@ pub mod reports;
 pub mod revision;
 pub mod runtime;
 pub mod selection;
+pub mod selection_control;
 mod sha256;
 pub mod shell;
 pub mod startup;

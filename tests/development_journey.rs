@@ -49,7 +49,7 @@ fn development_journey_runs_without_credentials_or_network() {
 
     let mut wizard = Wizard::with_catalog(WizardCatalog::development().unwrap());
     assert_eq!(wizard.step(), Step::Agent);
-    wizard.select_all_agents().unwrap();
+    wizard.toggle_visible_agents().unwrap();
     assert_eq!(
         wizard.values()[Step::Agent as usize],
         "fake-alpha,fake-beta"

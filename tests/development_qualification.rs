@@ -122,7 +122,7 @@ fn clean_fixture_composes_install_wizard_benchmark_replay_and_comparison() {
 
     let mut wizard = Wizard::with_catalog(WizardCatalog::development().unwrap());
     assert_eq!(wizard.step(), Step::Agent);
-    wizard.select_all_agents().unwrap();
+    wizard.toggle_visible_agents().unwrap();
     for value in [
         "development",
         "fixture-model",

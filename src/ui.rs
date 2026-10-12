@@ -16,6 +16,7 @@ use crate::{
         BenchmarkCatalog, BenchmarkDefinition, BenchmarkGroup, BenchmarkMeasure, BenchmarkPool,
         BenchmarkSelection, MAX_QUERY_BYTES, Measurement, MeasurementSelection, NodeSelection,
     },
+    selection_control::{SelectionRow, row_text, summary_text},
     startup::{self, StartupInput},
     terminal::{CapabilityTier, RenderPolicy, ResponsiveLayout, frame_dimensions_are_safe},
     wizard::{self, FormalEvent, Wizard, WizardFormalState},
@@ -1238,13 +1239,13 @@ impl WorkspaceState {
                     }
                     UiAction::None
                 }
-                KeyCode::Char('a')
+                KeyCode::Char('A')
                     if self.wizard.step() == wizard::Step::Agent
                         && self.wizard.catalog().is_some() =>
                 {
                     if self
                         .wizard_formal
-                        .apply(FormalEvent::CatalogSelectAllAgents)
+                        .apply(FormalEvent::CatalogToggleVisibleAgents)
                         .is_ok()
                     {
                         self.wizard = self.wizard_formal.wizard().clone();
@@ -1582,7 +1583,7 @@ impl WorkspaceState {
                 self.toggle_visible_group();
                 UiAction::None
             }
-            KeyCode::Char('a') if self.screen == Screen::Measures && self.search.is_empty() => {
+            KeyCode::Char('A') if self.screen == Screen::Measures => {
                 self.toggle_all_measures();
                 UiAction::None
             }
@@ -1766,9 +1767,37 @@ impl WorkspaceState {
     }
 
     fn toggle_all_measures(&mut self) {
+        let visible = self.visible_indices();
         if let Some(selection) = self.benchmark_selection.as_mut() {
-            selection.set_explicit_all(!selection.explicit_all());
+            // The bulk action follows the rendered visible rows, not the
+            // provenance marker. A user can manually select every visible
+            // measure while `explicit_all` remains false.
+            let select = visible.iter().any(|index| !self.measures[*index].selected);
+            if self.search.is_empty() {
+                // An unfiltered visible set is the active pool. Preserve the
+                // explicit-all meaning when selecting it, and clear it (and
+                // the active selection) only when every visible row is
+                // already selected.
+                selection.set_explicit_all(select);
+            } else {
+                for index in visible {
+                    let id = self.measures[index].id.clone();
+                    let _ = selection.set_measure_selected(&id, select);
+                }
+            }
             self.sync_measure_projection();
+        } else if let Some(selection) = self.selection.as_mut() {
+            let select = visible.iter().any(|index| !self.measures[*index].selected);
+            for index in visible {
+                let id = self.measures[index].id.clone();
+                let _ = selection.set_measure_selected(&id, select);
+            }
+            self.sync_measure_projection();
+        } else {
+            let select = visible.iter().any(|index| !self.measures[*index].selected);
+            for index in visible {
+                self.measures[index].selected = select;
+            }
         }
     }
 
@@ -2286,15 +2315,13 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
     let items: Vec<ListItem> = state
         .visible_indices()
         .iter()
-        .map(|i| {
+        .enumerate()
+        .map(|(visible_index, i)| {
             let row = &state.measures[*i];
-            ListItem::new(Line::from(vec![
-                Span::styled(if row.selected { "[x] " } else { "[ ] " }, accent(policy)),
-                Span::styled(
-                    format!("{} / {} / {}", row.group, row.benchmark, row.name),
-                    Style::default(),
-                ),
-            ]))
+            let label = format!("{} / {} / {}", row.group, row.benchmark, row.name);
+            let selection =
+                SelectionRow::enabled(&label, row.selected, state.measure_cursor == visible_index);
+            ListItem::new(Span::styled(row_text(&selection), Style::default()))
         })
         .collect();
     let mut ls = ListState::default();
@@ -2302,27 +2329,38 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
     frame.render_stateful_widget(
         List::new(items)
             .block(panel(
-                " Pool > Group > Benchmark > Measure - Space item, b benchmark, g group, P pool ",
+                " Pool > Group > Benchmark > Measure - Space item, A select/clear visible, b benchmark, g group, P pool ",
                 policy,
             ))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
         list_area,
         &mut ls,
     );
+    let selected = state
+        .measures
+        .iter()
+        .filter(|row| row.selected)
+        .map(|row| row.name.as_str())
+        .collect::<Vec<_>>();
+    let summary = summary_text(
+        "Measures",
+        &selected,
+        crate::selection_control::SelectionMode::Multiple,
+    );
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from("Grouped selection"),
-            Line::from(""),
-            Line::from(format!(
-                "{} selected",
-                state.measures.iter().filter(|m| m.selected).count()
-            )),
-            Line::from(""),
-            Line::from("Up/Down navigate   Space measure"),
-            Line::from("b benchmark   g group   P pool"),
-            Line::from("Type to search nested catalog"),
-        ])
-        .block(panel(" Selection ", policy))
+        Paragraph::new(
+            summary
+                .into_iter()
+                .map(Line::from)
+                .chain([
+                    Line::from(""),
+                    Line::from("Up/Down navigate  Space toggle"),
+                    Line::from("A select/clear visible  b benchmark"),
+                    Line::from("g group  P pool  Type to search"),
+                ])
+                .collect::<Vec<_>>(),
+        )
+        .block(panel(" Selection summary ", policy))
         .wrap(Wrap { trim: true }),
         cols[1],
     );
@@ -2833,6 +2871,139 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("Pool > Group > Benchmark > Measure"));
+        assert!(rendered.contains("Selection summary"));
+        assert!(rendered.contains("[x]"));
+        assert!(rendered.contains("A select/clear visible"));
+    }
+
+    #[test]
+    fn bulk_measure_key_toggles_only_filtered_visible_rows_and_never_becomes_search_text() {
+        let mut state = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        for character in "latency".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(state.search, "latency");
+        assert_eq!(state.visible_indices().len(), 1);
+        state.handle_key(key(KeyCode::Char('A')));
+        assert_eq!(state.search, "latency");
+        assert!(!state.measures[2].selected);
+        assert!(state.measures[0].selected && state.measures[1].selected);
+        state.handle_key(key(KeyCode::Char('A')));
+        assert!(state.measures[2].selected);
+    }
+
+    #[test]
+    fn unfiltered_bulk_measure_key_clears_a_manually_completed_visible_set() {
+        let mut state = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        let visible_ids = state
+            .visible_indices()
+            .into_iter()
+            .map(|index| state.measures[index].id.clone())
+            .collect::<Vec<_>>();
+        let selection = state
+            .benchmark_selection
+            .as_mut()
+            .expect("default workspace has a benchmark selection");
+        for id in &visible_ids {
+            selection.set_measure_selected(id, true).unwrap();
+        }
+        assert!(!selection.explicit_all());
+        state.sync_measure_projection();
+        assert!(
+            state
+                .visible_indices()
+                .into_iter()
+                .all(|index| state.measures[index].selected)
+        );
+
+        state.handle_key(key(KeyCode::Char('A')));
+
+        assert!(
+            !state
+                .benchmark_selection
+                .as_ref()
+                .expect("selection remains available")
+                .explicit_all()
+        );
+        assert!(
+            state
+                .visible_indices()
+                .into_iter()
+                .all(|index| !state.measures[index].selected)
+        );
+    }
+
+    #[test]
+    fn formal_bulk_measure_transition_matches_manual_all_runtime_clear() {
+        use crate::formal_state::{
+            FormalEvent, FormalUiState, VisibleMeasureAction, VisibleMeasureScope,
+        };
+
+        let mut runtime = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        let visible_ids = runtime
+            .visible_indices()
+            .into_iter()
+            .map(|index| runtime.measures[index].id.clone())
+            .collect::<Vec<_>>();
+        let selection = runtime
+            .benchmark_selection
+            .as_mut()
+            .expect("default workspace has a benchmark selection");
+        for id in &visible_ids {
+            selection.set_measure_selected(id, true).unwrap();
+        }
+        assert!(!selection.explicit_all());
+        runtime.sync_measure_projection();
+
+        let capabilities = crate::Capabilities {
+            analysis: true,
+            artifacts: true,
+            cancel: true,
+            events: true,
+            history: true,
+            launch: true,
+            planning: true,
+            repeat: true,
+        };
+        let mut formal = FormalUiState::new(100, 30).unwrap();
+        formal
+            .apply(FormalEvent::OpenMeasurementSelection, Some(&capabilities))
+            .unwrap();
+        formal
+            .apply(
+                FormalEvent::ToggleAllMeasures {
+                    action: VisibleMeasureAction::ClearVisible,
+                    scope: VisibleMeasureScope::ActivePool,
+                },
+                Some(&capabilities),
+            )
+            .unwrap();
+
+        runtime.handle_key(key(KeyCode::Char('A')));
+        assert_eq!(
+            runtime
+                .benchmark_selection
+                .as_ref()
+                .expect("selection remains available")
+                .explicit_all(),
+            formal.explicit_all()
+        );
+        assert!(!formal.explicit_all());
+        assert!(
+            runtime
+                .visible_indices()
+                .into_iter()
+                .all(|index| !runtime.measures[index].selected)
+        );
     }
 
     #[test]
@@ -2855,12 +3026,12 @@ mod tests {
             scope,
             crate::recording_campaign::WorkloadScope::Selected(vec!["efficiency".into()])
         );
-        state.handle_key(key(KeyCode::Char('a')));
+        state.handle_key(key(KeyCode::Char('A')));
         assert_eq!(
             state.recording_workload_scope().unwrap(),
             crate::recording_campaign::WorkloadScope::All
         );
-        state.handle_key(key(KeyCode::Char('a')));
+        state.handle_key(key(KeyCode::Char('A')));
         assert!(state.recording_workload_scope().is_err());
     }
 

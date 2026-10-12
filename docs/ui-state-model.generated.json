@@ -34,6 +34,8 @@
     "query",
     "selection",
     "explicit_all",
+    "visible_measure_action",
+    "visible_measure_scope",
     "benchmark_catalog",
     "benchmark_selection",
     "benchmark_catalog_generation",
@@ -201,9 +203,9 @@
       "key": "Enter"
     },
     {
-      "action": "wizard_catalog_select_all_agents",
+      "action": "wizard_catalog_toggle_visible_agents",
       "element": "wizard.agent",
-      "key": "a"
+      "key": "A"
     },
     {
       "action": "wizard_development_enroll",
@@ -278,7 +280,7 @@
     {
       "action": "toggle_all_measures",
       "element": "measures.group_toggle",
-      "key": "a"
+      "key": "A"
     },
     {
       "action": "toggle_group",
@@ -460,6 +462,9 @@
       "elements": [
         "wizard.shell_header",
         "wizard.step_region",
+        "wizard.selection_list",
+        "wizard.choice_details",
+        "wizard.selection_summary",
         "wizard.agent",
         "wizard.provider",
         "wizard.model",
@@ -483,6 +488,7 @@
         "measures.search",
         "measures.row",
         "measures.group_toggle",
+        "measures.selection_summary",
         "navigation"
       ]
     },
@@ -757,6 +763,33 @@
       "parent": "wizard.shell_header"
     },
     {
+      "id": "wizard.selection_list",
+      "route": "wizard",
+      "role": "selectable",
+      "help_id": "wizard.selection_list",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "wizard.choice_details",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.choice_details",
+      "focusable": false,
+      "hoverable": true,
+      "parent": "wizard.selection_list"
+    },
+    {
+      "id": "wizard.selection_summary",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.selection_summary",
+      "focusable": false,
+      "hoverable": true,
+      "parent": "wizard.selection_list"
+    },
+    {
       "id": "wizard.agent",
       "route": "wizard",
       "role": "editable",
@@ -845,6 +878,15 @@
       "focusable": false,
       "hoverable": true,
       "parent": null
+    },
+    {
+      "id": "measures.selection_summary",
+      "route": "measurement_selection",
+      "role": "status",
+      "help_id": "measures.selection_summary",
+      "focusable": false,
+      "hoverable": true,
+      "parent": "measures.row"
     }
   ],
   "transitions": [
@@ -1012,7 +1054,7 @@
       ]
     },
     {
-      "event": "wizard_catalog_select_all_agents",
+      "event": "wizard_catalog_toggle_visible_agents",
       "from": "wizard",
       "to": "wizard",
       "effects": [
@@ -1119,8 +1161,8 @@
       "from": "measurement_selection",
       "to": "measurement_selection",
       "effects": [
-        "explicit_all_changed",
-        "selection_changed"
+        "selection_changed",
+        "explicit_all_reconciled"
       ]
     },
     {
@@ -1413,6 +1455,18 @@
       "text": "The progress region shows completed, current, and remaining setup stages without changing the current selection."
     },
     {
+      "id": "wizard.selection_list",
+      "text": "Every selectable wizard row displays an unchecked or checked marker and an independent focus cursor."
+    },
+    {
+      "id": "wizard.choice_details",
+      "text": "Choice details explain the focused item and its availability without mixing them with the selected-value summary."
+    },
+    {
+      "id": "wizard.selection_summary",
+      "text": "The framed selection summary lists the current choices separately from the focused-item description."
+    },
+    {
       "id": "wizard.agent",
       "text": "Search and choose an available agent for this benchmark."
     },
@@ -1446,7 +1500,7 @@
     },
     {
       "id": "wizard.controls",
-      "text": "Use Up or Down for bounded choices, Enter to confirm, or question mark for contextual help."
+      "text": "Use Up or Down for bounded choices, Space to toggle an agent, A to select or clear visible agents, Enter to confirm, or question mark for contextual help."
     },
     {
       "id": "wizard.shell_footer",
@@ -1459,6 +1513,10 @@
     {
       "id": "measures.row",
       "text": "Select or clear this measure for the benchmark."
+    },
+    {
+      "id": "measures.selection_summary",
+      "text": "The framed measure summary lists chosen measures separately from the selectable catalog rows."
     },
     {
       "id": "measures.group_toggle",

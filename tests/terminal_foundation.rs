@@ -1959,6 +1959,8 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
             && after
             && text.contains("ASB setup wizard")
             && text.contains("Progress")
+            && text.contains("Choice details")
+            && text.contains("Selection summary")
             && text.contains("Keyboard help")
         {
             true
