@@ -73,7 +73,10 @@ pub enum FormalEvent {
     OpenLanding,
     OpenConfiguration,
     OpenMeasurementSelection,
-    ToggleAllMeasures,
+    ToggleAllMeasures {
+        action: VisibleMeasureAction,
+        scope: VisibleMeasureScope,
+    },
     OpenRunControl,
     OpenRecentRuns,
     OpenReports,
@@ -89,8 +92,28 @@ pub enum FormalEvent {
     StartRun,
     CancelRun,
     Reconnect,
-    Resize { columns: u16, lines: u16 },
+    Resize {
+        columns: u16,
+        lines: u16,
+    },
     Focus(&'static str),
+}
+
+/// The concrete outcome of a visible-measure bulk action.
+///
+/// The renderer determines this from the currently projected rows before
+/// asking the formal model to check the resulting transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VisibleMeasureAction {
+    SelectVisible,
+    ClearVisible,
+}
+
+/// Whether the visible rows represent the whole active pool or a filter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VisibleMeasureScope {
+    ActivePool,
+    Filtered,
 }
 
 impl FormalEvent {
@@ -99,7 +122,7 @@ impl FormalEvent {
             Self::OpenLanding => Some("open_landing"),
             Self::OpenConfiguration => Some("open_configuration"),
             Self::OpenMeasurementSelection => Some("open_measurement_selection"),
-            Self::ToggleAllMeasures => Some("toggle_all_measures"),
+            Self::ToggleAllMeasures { .. } => Some("toggle_all_measures"),
             Self::OpenRunControl => Some("open_run_control"),
             Self::OpenRecentRuns => Some("open_recent_runs"),
             Self::OpenReports => Some("open_reports"),
@@ -234,8 +257,8 @@ impl FormalUiState {
                     &["development_handoff_changed", "focus_reset"]
                 } else if event == FormalEvent::GoBack {
                     &["route_restored", "focus_reset"]
-                } else if event == FormalEvent::ToggleAllMeasures {
-                    &["explicit_all_changed", "selection_changed"]
+                } else if matches!(event, FormalEvent::ToggleAllMeasures { .. }) {
+                    &["selection_changed", "explicit_all_reconciled"]
                 } else if event == FormalEvent::OpenHelp {
                     &["return_route_saved", "route_changed", "focus_reset"]
                 } else if matches!(
@@ -272,8 +295,14 @@ impl FormalUiState {
                 } else {
                     destination
                 };
-                if event == FormalEvent::ToggleAllMeasures {
-                    self.explicit_all = !self.explicit_all;
+                if let FormalEvent::ToggleAllMeasures { action, scope } = event {
+                    self.explicit_all = matches!(
+                        (action, scope),
+                        (
+                            VisibleMeasureAction::SelectVisible,
+                            VisibleMeasureScope::ActivePool
+                        )
+                    );
                 }
                 self.focus = None;
             }
@@ -418,7 +447,7 @@ fn validate_document(model: &Document) -> Result<(), String> {
         } else if transition.event == "go_back" {
             ["route_restored", "focus_reset"].as_slice()
         } else if transition.event == "toggle_all_measures" {
-            ["explicit_all_changed", "selection_changed"].as_slice()
+            ["selection_changed", "explicit_all_reconciled"].as_slice()
         } else if transition.event == "open_help" {
             ["return_route_saved", "route_changed", "focus_reset"].as_slice()
         } else if transition.event == "cancel_wizard" {

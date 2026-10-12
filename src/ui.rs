@@ -2940,6 +2940,73 @@ mod tests {
     }
 
     #[test]
+    fn formal_bulk_measure_transition_matches_manual_all_runtime_clear() {
+        use crate::formal_state::{
+            FormalEvent, FormalUiState, VisibleMeasureAction, VisibleMeasureScope,
+        };
+
+        let mut runtime = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        let visible_ids = runtime
+            .visible_indices()
+            .into_iter()
+            .map(|index| runtime.measures[index].id.clone())
+            .collect::<Vec<_>>();
+        let selection = runtime
+            .benchmark_selection
+            .as_mut()
+            .expect("default workspace has a benchmark selection");
+        for id in &visible_ids {
+            selection.set_measure_selected(id, true).unwrap();
+        }
+        assert!(!selection.explicit_all());
+        runtime.sync_measure_projection();
+
+        let capabilities = crate::Capabilities {
+            analysis: true,
+            artifacts: true,
+            cancel: true,
+            events: true,
+            history: true,
+            launch: true,
+            planning: true,
+            repeat: true,
+        };
+        let mut formal = FormalUiState::new(100, 30).unwrap();
+        formal
+            .apply(FormalEvent::OpenMeasurementSelection, Some(&capabilities))
+            .unwrap();
+        formal
+            .apply(
+                FormalEvent::ToggleAllMeasures {
+                    action: VisibleMeasureAction::ClearVisible,
+                    scope: VisibleMeasureScope::ActivePool,
+                },
+                Some(&capabilities),
+            )
+            .unwrap();
+
+        runtime.handle_key(key(KeyCode::Char('A')));
+        assert_eq!(
+            runtime
+                .benchmark_selection
+                .as_ref()
+                .expect("selection remains available")
+                .explicit_all(),
+            formal.explicit_all()
+        );
+        assert!(!formal.explicit_all());
+        assert!(
+            runtime
+                .visible_indices()
+                .into_iter()
+                .all(|index| !runtime.measures[index].selected)
+        );
+    }
+
+    #[test]
     fn recording_scope_defaults_to_all_and_tracks_selected_workloads() {
         let mut state = WorkspaceState::default();
         assert_eq!(

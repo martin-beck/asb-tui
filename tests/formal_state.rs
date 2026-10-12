@@ -5,7 +5,7 @@ use asb_tui::{
     Capabilities,
     control_transport::{DynamicCatalogError, TransportError},
     fanout_dispatch::{FanoutDispatchState, FanoutSelection, FanoutSelectionError},
-    formal_state::{FormalEvent, FormalUiState},
+    formal_state::{FormalEvent, FormalUiState, VisibleMeasureAction, VisibleMeasureScope},
     runtime::DevelopmentRouteFailure,
     shell::Route,
     wizard::{FormalEvent as WizardEvent, WizardFormalState},
@@ -450,8 +450,10 @@ fn explicit_workload_selection_is_declared_as_a_formal_state_transition() {
                     && transition["to"] == "measurement_selection"
                     && transition["effects"].as_array().is_some_and(|effects| {
                         effects
-                            .iter()
-                            .any(|effect| effect == "explicit_all_changed")
+                            == &vec![
+                                serde_json::Value::String("selection_changed".into()),
+                                serde_json::Value::String("explicit_all_reconciled".into()),
+                            ]
                     })
             })
     );
@@ -462,11 +464,23 @@ fn explicit_workload_selection_is_declared_as_a_formal_state_transition() {
         .unwrap();
     assert!(!state.explicit_all());
     state
-        .apply(FormalEvent::ToggleAllMeasures, Some(&capabilities))
+        .apply(
+            FormalEvent::ToggleAllMeasures {
+                action: VisibleMeasureAction::SelectVisible,
+                scope: VisibleMeasureScope::ActivePool,
+            },
+            Some(&capabilities),
+        )
         .unwrap();
     assert!(state.explicit_all());
     state
-        .apply(FormalEvent::ToggleAllMeasures, Some(&capabilities))
+        .apply(
+            FormalEvent::ToggleAllMeasures {
+                action: VisibleMeasureAction::ClearVisible,
+                scope: VisibleMeasureScope::ActivePool,
+            },
+            Some(&capabilities),
+        )
         .unwrap();
     assert!(!state.explicit_all());
 }

@@ -34,6 +34,8 @@
     "query",
     "selection",
     "explicit_all",
+    "visible_measure_action",
+    "visible_measure_scope",
     "benchmark_catalog",
     "benchmark_selection",
     "benchmark_catalog_generation",
@@ -1159,8 +1161,8 @@
       "from": "measurement_selection",
       "to": "measurement_selection",
       "effects": [
-        "explicit_all_changed",
-        "selection_changed"
+        "selection_changed",
+        "explicit_all_reconciled"
       ]
     },
     {
