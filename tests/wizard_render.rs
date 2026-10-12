@@ -29,6 +29,20 @@ fn policy(unicode: bool) -> RenderPolicy {
     }
 }
 
+fn rendered_text(wizard: &Wizard, policy: RenderPolicy, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| render(frame, wizard, policy))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
 #[test]
 fn setup_is_required_only_when_authoritative_readiness_is_false() {
     assert_eq!(startup_route(false), StartupRoute::Wizard);
@@ -75,6 +89,33 @@ fn ui_model_declares_runner_setup_and_recording_projection_state() {
 }
 
 #[test]
+fn ui_model_owns_every_persistent_wizard_shell_region() {
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+    let wizard = model["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|route| route["id"] == "wizard")
+        .unwrap();
+    let elements = wizard["elements"].as_array().unwrap();
+    for id in [
+        "wizard.shell_header",
+        "wizard.step_region",
+        "wizard.shell_footer",
+    ] {
+        assert!(elements.iter().any(|element| element == id), "missing {id}");
+        assert!(
+            model["help"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == id)
+        );
+    }
+}
+
+#[test]
 fn wizard_render_has_stable_context_and_tiny_fallback() {
     let wizard = Wizard::default();
     assert_eq!(element_id(wizard.step()), "wizard.agent");
@@ -91,6 +132,51 @@ fn wizard_render_has_stable_context_and_tiny_fallback() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(text.contains("ASB setup wizard"));
+}
+
+#[test]
+fn wizard_shell_keeps_identity_progress_content_and_contextual_footer_visible() {
+    let wizard = Wizard::default();
+    let text = rendered_text(&wizard, policy(true), 120, 24);
+    for label in [
+        "Wizard shell",
+        "Progress",
+        "▶ Agent",
+        "· Provider",
+        "Current selection",
+        "Keyboard help",
+        "Space select/unselect",
+    ] {
+        assert!(text.contains(label), "missing shell label {label:?}");
+    }
+}
+
+#[test]
+fn compact_monochrome_shell_uses_textual_progress_and_never_sets_colours() {
+    let wizard = Wizard::default();
+    let backend = TestBackend::new(60, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render(frame, &wizard, policy(false)))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("Step 1/8: Agent"));
+    assert!(text.contains("Keyboard help"));
+    assert!(
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .all(|cell| cell.fg == ratatui::style::Color::Reset
+                && cell.bg == ratatui::style::Color::Reset)
+    );
 }
 
 #[test]
@@ -267,7 +353,7 @@ fn wide_render_covers_every_documented_wizard_step() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("Current step"));
+    assert!(text.contains("Current selection"));
     assert!(text.contains("Review all choices"));
 }
 

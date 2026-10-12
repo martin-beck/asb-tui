@@ -458,6 +458,8 @@
     {
       "id": "wizard",
       "elements": [
+        "wizard.shell_header",
+        "wizard.step_region",
         "wizard.agent",
         "wizard.provider",
         "wizard.model",
@@ -467,6 +469,7 @@
         "wizard.replay",
         "wizard.review",
         "wizard.controls",
+        "wizard.shell_footer",
         "navigation"
       ]
     },
@@ -736,6 +739,24 @@
       "parent": null
     },
     {
+      "id": "wizard.shell_header",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.shell_header",
+      "focusable": false,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "wizard.step_region",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.step_region",
+      "focusable": false,
+      "hoverable": true,
+      "parent": "wizard.shell_header"
+    },
+    {
       "id": "wizard.agent",
       "route": "wizard",
       "role": "editable",
@@ -812,6 +833,15 @@
       "route": "wizard",
       "role": "navigation",
       "help_id": "wizard.controls",
+      "focusable": false,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "wizard.shell_footer",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.shell_footer",
       "focusable": false,
       "hoverable": true,
       "parent": null
@@ -1375,6 +1405,14 @@
       "text": "Review development-only provenance, warnings, cancellation, and recovery actions."
     },
     {
+      "id": "wizard.shell_header",
+      "text": "The wizard header identifies the current ASB setup journey and keeps its purpose visible while choices change."
+    },
+    {
+      "id": "wizard.step_region",
+      "text": "The progress region shows completed, current, and remaining setup stages without changing the current selection."
+    },
+    {
       "id": "wizard.agent",
       "text": "Search and choose an available agent for this benchmark."
     },
@@ -1409,6 +1447,10 @@
     {
       "id": "wizard.controls",
       "text": "Use Up or Down for bounded choices, Enter to confirm, or question mark for contextual help."
+    },
+    {
+      "id": "wizard.shell_footer",
+      "text": "The keyboard footer lists the safe keys available for the current setup step and remains visible while navigating."
     },
     {
       "id": "measures.search",

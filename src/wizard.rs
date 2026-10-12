@@ -17,12 +17,13 @@ use crate::{
     },
     provider_catalog::{ProviderProfile, wizard_options},
     terminal::RenderPolicy,
+    visual::{LabelFit, LayoutTier, SemanticRole},
     wizard_catalog::{OptionKind, WizardCatalog, WizardCatalogState},
 };
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -913,37 +914,41 @@ pub fn plain_text(wizard: &Wizard) -> String {
 
 pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
     let area = frame.area();
-    let accent = Style::default().fg(if policy.unicode {
-        Color::Cyan
-    } else {
-        Color::White
-    });
-    if area.width < 30 || area.height < 8 {
-        frame.render_widget(Paragraph::new(plain_text(wizard)).style(accent), area);
+    if area.width < 30 || area.height < 10 {
+        frame.render_widget(
+            Paragraph::new(plain_text(wizard)).style(shell_style(SemanticRole::Accent, policy)),
+            area,
+        );
         return;
     }
     let regions = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Min(5),
             Constraint::Length(2),
+            Constraint::Min(5),
+            Constraint::Length(3),
         ])
         .split(area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("ASB", accent),
-            Span::raw(" setup wizard"),
+            Span::styled("ASB", shell_style(SemanticRole::Accent, policy)),
+            Span::styled(" setup wizard", shell_style(SemanticRole::Text, policy)),
         ]))
-        .block(Block::default().borders(Borders::ALL).title(" Setup ")),
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Wizard shell "),
+        ),
         regions[0],
     );
+    frame.render_widget(wizard_step_region(wizard, policy, regions[1]), regions[1]);
     let body = if wizard.has_bounded_choices() {
         let selected = wizard.bounded_selected_index();
         let mut lines = vec![
             Line::from(Span::styled(
                 format!("Step: {}", step_title(wizard.step)),
-                accent,
+                shell_style(SemanticRole::Focus, policy),
             )),
             Line::from(step_prompt(wizard.step)),
         ];
@@ -967,7 +972,7 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         let mut lines = vec![
             Line::from(Span::styled(
                 format!("Step: {}", step_title(wizard.step)),
-                accent,
+                shell_style(SemanticRole::Focus, policy),
             )),
             Line::from(step_prompt(wizard.step)),
             Line::from(format!("Search: {}", catalog.query())),
@@ -1025,7 +1030,7 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         vec![
             Line::from(Span::styled(
                 format!("Step: {}", step_title(wizard.step)),
-                accent,
+                shell_style(SemanticRole::Focus, policy),
             )),
             Line::from(step_prompt(wizard.step)),
             if wizard.step == Step::Authentication {
@@ -1045,23 +1050,119 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         Paragraph::new(body).wrap(Wrap { trim: true }).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Current step "),
+                .title(" Current selection "),
         ),
-        regions[1],
+        regions[2],
     );
     frame.render_widget(
         Paragraph::new(if wizard.step == Step::Agent {
-            "Space select/unselect | a all agents | Enter continue | Esc back | q cancel"
+            "Space select/unselect  |  a all agents  |  Enter continue  |  Esc back  |  q cancel"
         } else if wizard.step == Step::Authentication {
-            "Up/Down choose | F fixture | N no auth | E enroll | T test | R rotate | X reset | Z restart | Enter continue | ? help"
+            "Up/Down choose  |  F fixture  |  N no auth  |  Enter continue  |  ? help"
         } else if wizard.has_bounded_choices() {
-            "Up/Down choose | Enter continue | Esc back | ? help | q cancel"
+            "Up/Down choose  |  Enter continue  |  Esc back  |  ? help  |  q cancel"
         } else {
-            "Enter select/continue | Esc back | ? help | q cancel"
+            "Enter select/continue  |  Esc back  |  ? help  |  q cancel"
         })
-        .style(accent),
-        regions[2],
+        .style(shell_style(SemanticRole::Muted, policy))
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .title(" Keyboard help "),
+        ),
+        regions[3],
     );
+}
+
+const WIZARD_STEPS: [Step; 8] = [
+    Step::Agent,
+    Step::Provider,
+    Step::Model,
+    Step::Configuration,
+    Step::Authentication,
+    Step::Recording,
+    Step::Replay,
+    Step::Review,
+];
+
+fn wizard_step_region(
+    wizard: &Wizard,
+    policy: RenderPolicy,
+    area: ratatui::layout::Rect,
+) -> Paragraph<'static> {
+    let current = WIZARD_STEPS
+        .iter()
+        .position(|step| *step == wizard.step)
+        .expect("every wizard step is listed");
+    let tier = LayoutTier::from_dimensions(area.width, area.height.saturating_add(22));
+    let text = if matches!(tier, LayoutTier::Compact) {
+        format!(
+            "Step {}/{}: {}",
+            current + 1,
+            WIZARD_STEPS.len(),
+            step_title(wizard.step)
+        )
+    } else {
+        let complete = if policy.unicode { "✓" } else { "x" };
+        let current_marker = if policy.unicode { "▶" } else { ">" };
+        WIZARD_STEPS
+            .iter()
+            .enumerate()
+            .map(|(index, step)| {
+                if index < current {
+                    format!("{complete} {}", step_title(*step))
+                } else if index == current {
+                    format!("{current_marker} {}", step_title(*step))
+                } else {
+                    format!(
+                        "{} {}",
+                        if policy.unicode { "·" } else { "." },
+                        step_title(*step)
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    let fitted = match LabelFit::fit(&text, area.width.saturating_sub(2) as usize) {
+        LabelFit::Full(text) | LabelFit::Truncated { text, .. } => text,
+    };
+    Paragraph::new(fitted)
+        .style(shell_style(SemanticRole::Focus, policy))
+        .block(Block::default().borders(Borders::TOP).title(" Progress "))
+}
+
+fn shell_style(role: SemanticRole, policy: RenderPolicy) -> Style {
+    if matches!(policy.tier, crate::terminal::CapabilityTier::Plain) {
+        return match role {
+            SemanticRole::Focus | SemanticRole::Selected => {
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            }
+            SemanticRole::StepComplete | SemanticRole::Success => {
+                Style::default().add_modifier(Modifier::BOLD)
+            }
+            SemanticRole::Muted | SemanticRole::Disabled | SemanticRole::Stale => {
+                Style::default().add_modifier(Modifier::DIM)
+            }
+            _ => Style::default(),
+        };
+    }
+    let color = match role {
+        SemanticRole::Surface | SemanticRole::Text => Color::Reset,
+        SemanticRole::Muted | SemanticRole::Disabled => Color::DarkGray,
+        SemanticRole::Accent => Color::Cyan,
+        SemanticRole::Focus | SemanticRole::Selected => Color::White,
+        SemanticRole::StepComplete | SemanticRole::Success => Color::Green,
+        SemanticRole::Warning | SemanticRole::Stale => Color::Yellow,
+        SemanticRole::Error => Color::Red,
+    };
+    let style = Style::default().fg(color);
+    match role {
+        SemanticRole::Focus | SemanticRole::Selected => style.add_modifier(Modifier::BOLD),
+        SemanticRole::StepComplete | SemanticRole::Success => style.add_modifier(Modifier::BOLD),
+        _ => style,
+    }
 }
 
 const fn step_title(step: Step) -> &'static str {

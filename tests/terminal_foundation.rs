@@ -1946,6 +1946,44 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     }
     assert!(bounded_tmux(
         &tmux_socket,
+        &["send-keys", "-t", &tmux_session, "w"],
+    ));
+    let wizard_shell_visible = (0..RENDER_WAIT_ATTEMPTS).any(|_| {
+        let Some((before, pane, after)) =
+            tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+        else {
+            return false;
+        };
+        let text = String::from_utf8_lossy(&pane);
+        if before
+            && after
+            && text.contains("ASB setup wizard")
+            && text.contains("Progress")
+            && text.contains("Keyboard help")
+        {
+            true
+        } else {
+            thread::sleep(Duration::from_millis(25));
+            false
+        }
+    });
+    assert!(
+        wizard_shell_visible,
+        "tmux wizard did not render the persistent visual shell"
+    );
+    assert!(bounded_tmux(
+        &tmux_socket,
+        &["send-keys", "-t", &tmux_session, "q"],
+    ));
+    assert!(
+        wait_for_tmux_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
+            tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+        })
+        .is_ok(),
+        "wizard cancellation did not return to the landing screen"
+    );
+    assert!(bounded_tmux(
+        &tmux_socket,
         &["send-keys", "-t", &tmux_session, "q"],
     ));
     let tmux_restored = wait_for_marker(&tmux_marker);
