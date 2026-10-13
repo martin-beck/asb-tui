@@ -230,6 +230,23 @@ impl RecordingDispatchState {
         self.progress_requests
     }
 
+    #[must_use]
+    pub const fn progress_available(&self) -> bool {
+        self.progress_requests < MAX_PROGRESS_REQUESTS
+    }
+
+    #[must_use]
+    pub fn authenticated_cassette_count(&self) -> usize {
+        self.authenticated_catalog
+            .as_ref()
+            .map_or(0, |catalog| catalog.entries.len())
+    }
+
+    #[must_use]
+    pub const fn has_selected_cassette(&self) -> bool {
+        self.selected_cassette_sha256.is_some()
+    }
+
     pub fn select_cassette(&mut self, cassette_sha256: impl Into<String>) {
         self.selected_cassette_sha256 = Some(cassette_sha256.into());
     }

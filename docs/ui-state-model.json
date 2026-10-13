@@ -17,7 +17,7 @@
   "catalog_contract": "Agent catalog entries may be explicitly unavailable with incomplete provenance; only complete authenticated closures are selectable. Provider setup review is catalog-bound and applies at most once for the observed generation. Adapter and provider/model/auth tuples are stable-mode fail-closed and development-mode warning-only against an explicit fixture catalog; connected catalogs expose both OpenCode and OpenDesk routes, and their deterministic matrix report retains typed unavailable reasons. Wizard configuration defaults, credential-reference names, recording mode, and replay policy use bounded preset controls on the supported path; invalid restored values fail before materialization or dispatch and never fall back silently. Materialized benchmark campaigns remain bound to the reviewed pool, group, benchmark, and available-measure membership. Live benchmark catalog projections are digest-validated and generation-fenced, so stale publications cannot replace the authoritative snapshot; a provisional raw control revision zero is retained separately from the non-zero local picker generation and cannot alias the first durable revision. Recording all-workloads is an explicit operator choice represented by the all toggle; an empty workload selection is never inferred as all and fails closed before dispatch. Offline cassette replay requires an explicit authenticated digest selection before dispatch. Seal, reopen, remove, retry, and live/offline comparison actions carry runner, campaign/run, generation, and idempotency identity through typed control dispatch; report cursor selection supplies the selected run and bounded comparison pair to those actions. Selected-agent fan-out admission canonicalizes the selected agent/workload matrix before the versioned control request, returns exact runner member identities for cancellation, and projects stable human/JSON status without secrets; selected-agent comparison orchestration rejects duplicate members, requires a terminal reference for every selected agent/workload pair, joins each selected member to an online or offline terminal reference, and preserves the evidence source in human and JSON results. Cancellation and offline authority constraints remain explicit while work is pending or unavailable. Wizard editing and development handoff projections remain bounded, recoverable, and credential-free across their tested boundary states.",
   "initial": "landing",
   "layouts": ["wide", "compact", "tiny"],
-  "state_fields": ["route", "focus", "hover", "query", "selection", "explicit_all", "visible_measure_action", "visible_measure_scope", "benchmark_catalog", "benchmark_selection", "benchmark_catalog_generation", "benchmark_control_revision", "revision_lifecycle", "measurement_catalog", "connection", "capabilities", "provider_catalog", "provider_catalog_generation", "dynamic_provider_catalog_mode", "dynamic_provider_catalog_digest", "dynamic_provider_catalog_diagnostic", "development_broker_route", "development_route_failure", "development_route_network", "live_provider_handoff_selected", "provider_registry_profile", "provider_registry_status", "provider_registry_model_count", "live_setup_catalog", "development_catalog_fallback", "development_handoff", "wizard_mode", "wizard_adapter", "configuration", "auth_status", "auth_unavailable", "auth_development_only", "auth_unavailable_reason", "recording_campaign", "recording_estimate", "recording_campaign_lifecycle", "recording_dispatch_action", "recording_progress_requests", "fanout_projection", "selected_agent_comparison", "run_error", "analysis_summary", "startup_wizard_opened", "responsive_layout", "contextual_help", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_bounded_choices", "wizard_completion", "provider_setup_review", "configuration_persistence"],
+  "state_fields": ["route", "focus", "hover", "query", "selection", "explicit_all", "visible_measure_action", "visible_measure_scope", "benchmark_catalog", "benchmark_selection", "benchmark_catalog_generation", "benchmark_control_revision", "revision_lifecycle", "measurement_catalog", "connection", "capabilities", "provider_catalog", "provider_catalog_generation", "dynamic_provider_catalog_mode", "dynamic_provider_catalog_digest", "dynamic_provider_catalog_diagnostic", "development_broker_route", "development_route_failure", "development_route_network", "live_provider_handoff_selected", "provider_registry_profile", "provider_registry_status", "provider_registry_model_count", "live_setup_catalog", "development_catalog_fallback", "development_handoff", "wizard_mode", "wizard_adapter", "configuration", "auth_status", "auth_unavailable", "auth_development_only", "auth_unavailable_reason", "recording_campaign", "recording_estimate", "recording_campaign_lifecycle", "recording_dispatch_action", "recording_progress_requests", "fanout_projection", "selected_agent_comparison", "run_error", "analysis_summary", "startup_wizard_opened", "responsive_layout", "contextual_help", "context_help_open", "context_help_selection", "context_help_return_focus", "wizard_step", "wizard_draft", "wizard_catalog", "wizard_bounded_choices", "wizard_completion", "provider_setup_review", "configuration_persistence"],
   "bindings": [
     {"action":"quit","element":"navigation","key":"q"},
     {"action":"go_back","element":"navigation","key":"Esc"},
@@ -58,7 +58,7 @@
     {"action":"wizard_back_left","element":"navigation","key":"Left"},
     {"action":"wizard_back_empty","element":"navigation","key":"Backspace when the current editable value or search is empty"},
     {"action":"cancel_wizard","element":"navigation","key":"q"},
-    {"action":"open_help","element":"navigation","key":"?"},
+    {"action":"open_help","element":"navigation","key":"?/h or F1 while editing"},
     {"action":"reconnect","element":"navigation","key":"x"},
     {"action":"focus_search","element":"help.search","key":"/"},
     {"action":"focus_measure_search","element":"measures.search","key":"/"},
@@ -67,7 +67,6 @@
     {"action":"toggle_group","element":"measures.group_toggle","key":"g"},
     {"action":"focus_benchmark_search","element":"benchmarks.search","key":"/"},
     {"action":"select_benchmark_pool","element":"benchmarks.pool","key":"P"},
-    {"action":"toggle_benchmark_group","element":"benchmarks.group_toggle","key":"g"},
     {"action":"toggle_benchmark","element":"benchmarks.row","key":"b"}
     ,{"action":"focus_configuration","element":"configuration.entry","key":"Enter"}
     ,{"action":"save_configuration","element":"configuration.entry","key":"Ctrl-S"}
@@ -97,16 +96,24 @@
     ,{"action":"remove_recording_cassette","element":"run.status","key":"D"}
     ,{"action":"admit_fanout","element":"run.start","key":"A"}
     ,{"action":"cancel_fanout","element":"run.cancel","key":"Ctrl-Z"}
+    ,{"action":"move_measure_cursor","element":"measures.row","key":"Up/Down"}
+    ,{"action":"edit_measure_search","element":"measures.search","key":"Character"}
+    ,{"action":"backspace_measure_search","element":"measures.search","key":"Backspace"}
+    ,{"action":"move_configuration","element":"configuration.entry","key":"Up/Down"}
+    ,{"action":"move_report_cursor","element":"reports.row","key":"Up/Down"}
+    ,{"action":"toggle_report_selection","element":"reports.row","key":"Space"}
+    ,{"action":"move_context_help","element":"context_help.entry","key":"Up/Down or j/k"}
+    ,{"action":"close_context_help","element":"context_help.overlay","key":"Esc/?/h/F1"}
   ],
   "routes": [
-    {"id":"landing","elements":["landing.primary","navigation","status.connection"]},
-    {"id":"wizard","elements":["wizard.shell_header","wizard.step_region","wizard.selection_list","wizard.choice_details","wizard.selection_summary","wizard.agent","wizard.provider","wizard.model","wizard.configuration","wizard.authentication","wizard.workload_stage","wizard.measure_stage","wizard.recording","wizard.replay","wizard.review","wizard.execution_stage","wizard.results_stage","wizard.comparison_stage","wizard.controls","wizard.shell_footer","navigation"]},
-    {"id":"measurement_selection","elements":["benchmarks.search","benchmarks.pool","benchmarks.group_toggle","benchmarks.row","measures.search","measures.row","measures.group_toggle","measures.selection_summary","navigation"]},
-    {"id":"configuration","elements":["configuration.entry","configuration.search","configuration.control_status","configuration.preflight","navigation"]},
-    {"id":"run_control","elements":["run.status","run.start","run.cancel","navigation"]},
-    {"id":"recent_runs","elements":["runs.row","runs.refresh","navigation"]},
-    {"id":"reports","elements":["reports.row","reports.compare","navigation"]},
-    {"id":"help","elements":["help.search","help.entry","navigation"]}
+    {"id":"landing","elements":["landing.primary","navigation","status.connection","context_help.footer","context_help.overlay","context_help.entry"]},
+    {"id":"wizard","elements":["wizard.shell_header","wizard.step_region","wizard.selection_list","wizard.choice_details","wizard.selection_summary","wizard.agent","wizard.provider","wizard.model","wizard.configuration","wizard.authentication","wizard.workload_stage","wizard.measure_stage","wizard.recording","wizard.replay","wizard.review","wizard.execution_stage","wizard.results_stage","wizard.comparison_stage","wizard.controls","wizard.shell_footer","navigation","context_help.footer","context_help.overlay","context_help.entry"]},
+    {"id":"measurement_selection","elements":["benchmarks.search","benchmarks.pool","benchmarks.group_toggle","benchmarks.row","measures.search","measures.row","measures.group_toggle","measures.selection_summary","navigation","context_help.footer","context_help.overlay","context_help.entry"]},
+    {"id":"configuration","elements":["configuration.entry","configuration.search","configuration.control_status","configuration.preflight","navigation","context_help.footer","context_help.overlay","context_help.entry"]},
+    {"id":"run_control","elements":["run.status","run.start","run.cancel","navigation","context_help.footer","context_help.overlay","context_help.entry"]},
+    {"id":"recent_runs","elements":["runs.row","runs.refresh","navigation","context_help.footer","context_help.overlay","context_help.entry"]},
+    {"id":"reports","elements":["reports.row","reports.compare","navigation","context_help.footer","context_help.overlay","context_help.entry"]},
+    {"id":"help","elements":["help.search","help.entry","navigation","context_help.footer","context_help.overlay","context_help.entry"]}
   ],
   "elements": [
     {"id":"landing.primary","route":"landing","role":"action","help_id":"screen.landing","focusable":true,"hoverable":true,"parent":null},
@@ -153,6 +160,9 @@
     {"id":"wizard.controls","route":"wizard","role":"navigation","help_id":"wizard.controls","focusable":true,"hoverable":true,"parent":null},
     {"id":"wizard.shell_footer","route":"wizard","role":"status","help_id":"wizard.shell_footer","focusable":false,"hoverable":true,"parent":null}
     ,{"id":"measures.selection_summary","route":"measurement_selection","role":"status","help_id":"measures.selection_summary","focusable":false,"hoverable":true,"parent":"measures.row"}
+    ,{"id":"context_help.footer","route":"global","role":"status","help_id":"context_help.footer","focusable":false,"hoverable":true,"parent":null}
+    ,{"id":"context_help.overlay","route":"global","role":"navigation","help_id":"context_help.overlay","focusable":true,"hoverable":true,"parent":null}
+    ,{"id":"context_help.entry","route":"global","role":"selectable","help_id":"context_help.entry","focusable":true,"hoverable":true,"parent":"context_help.overlay"}
   ],
   "transitions": [
     {"event":"resize","from":"landing","to":"landing","effects":["dimensions_changed","layout_recomputed","focus_preserved"]},
@@ -215,6 +225,30 @@
     ,{"event":"commit_configuration_edit","from":"configuration","to":"configuration","effects":["configuration_draft_changed","focus_reset"]}
     ,{"event":"open_preflight","from":"configuration","to":"configuration","effects":["preflight_opened","focus_reset"]}
     ,{"event":"apply_preflight","from":"configuration","to":"configuration","effects":["configuration_materialized","focus_reset"]}
+    ,{"event":"open_context_help","from":"landing","to":"landing","effects":["context_help_opened","focus_saved","draft_preserved"]}
+    ,{"event":"move_context_help","from":"landing","to":"landing","effects":["context_help_selection_changed","focus_preserved","draft_preserved"]}
+    ,{"event":"close_context_help","from":"landing","to":"landing","effects":["context_help_closed","focus_restored","draft_preserved"]}
+    ,{"event":"open_context_help","from":"wizard","to":"wizard","effects":["context_help_opened","focus_saved","draft_preserved"]}
+    ,{"event":"move_context_help","from":"wizard","to":"wizard","effects":["context_help_selection_changed","focus_preserved","draft_preserved"]}
+    ,{"event":"close_context_help","from":"wizard","to":"wizard","effects":["context_help_closed","focus_restored","draft_preserved"]}
+    ,{"event":"open_context_help","from":"measurement_selection","to":"measurement_selection","effects":["context_help_opened","focus_saved","draft_preserved"]}
+    ,{"event":"move_context_help","from":"measurement_selection","to":"measurement_selection","effects":["context_help_selection_changed","focus_preserved","draft_preserved"]}
+    ,{"event":"close_context_help","from":"measurement_selection","to":"measurement_selection","effects":["context_help_closed","focus_restored","draft_preserved"]}
+    ,{"event":"open_context_help","from":"configuration","to":"configuration","effects":["context_help_opened","focus_saved","draft_preserved"]}
+    ,{"event":"move_context_help","from":"configuration","to":"configuration","effects":["context_help_selection_changed","focus_preserved","draft_preserved"]}
+    ,{"event":"close_context_help","from":"configuration","to":"configuration","effects":["context_help_closed","focus_restored","draft_preserved"]}
+    ,{"event":"open_context_help","from":"run_control","to":"run_control","effects":["context_help_opened","focus_saved","draft_preserved"]}
+    ,{"event":"move_context_help","from":"run_control","to":"run_control","effects":["context_help_selection_changed","focus_preserved","draft_preserved"]}
+    ,{"event":"close_context_help","from":"run_control","to":"run_control","effects":["context_help_closed","focus_restored","draft_preserved"]}
+    ,{"event":"open_context_help","from":"recent_runs","to":"recent_runs","effects":["context_help_opened","focus_saved","draft_preserved"]}
+    ,{"event":"move_context_help","from":"recent_runs","to":"recent_runs","effects":["context_help_selection_changed","focus_preserved","draft_preserved"]}
+    ,{"event":"close_context_help","from":"recent_runs","to":"recent_runs","effects":["context_help_closed","focus_restored","draft_preserved"]}
+    ,{"event":"open_context_help","from":"reports","to":"reports","effects":["context_help_opened","focus_saved","draft_preserved"]}
+    ,{"event":"move_context_help","from":"reports","to":"reports","effects":["context_help_selection_changed","focus_preserved","draft_preserved"]}
+    ,{"event":"close_context_help","from":"reports","to":"reports","effects":["context_help_closed","focus_restored","draft_preserved"]}
+    ,{"event":"open_context_help","from":"help","to":"help","effects":["context_help_opened","focus_saved","draft_preserved"]}
+    ,{"event":"move_context_help","from":"help","to":"help","effects":["context_help_selection_changed","focus_preserved","draft_preserved"]}
+    ,{"event":"close_context_help","from":"help","to":"help","effects":["context_help_closed","focus_restored","draft_preserved"]}
   ],
   "help": [
     {"id":"screen.landing","text":"Choose a benchmark task or open another screen."},
@@ -261,6 +295,9 @@
     {"id":"help.search","text":"Type to find an action or explanation."},
     {"id":"help.entry","text":"Read the explanation and key for this action."},
     {"id":"navigation","text":"Move between screens with the arrow keys or Tab."},
-    {"id":"status.connection","text":"Shows whether the ASB control connection is ready."}
+    {"id":"status.connection","text":"Shows whether the ASB control connection is ready."},
+    {"id":"context_help.footer","text":"Shows legal keys and concise guidance for the currently focused element."},
+    {"id":"context_help.overlay","text":"Groups only actions that are legal in the current visible context."},
+    {"id":"context_help.entry","text":"Explains the selected legal action and how to perform it safely."}
   ]
 }

@@ -78,6 +78,9 @@
     "startup_wizard_opened",
     "responsive_layout",
     "contextual_help",
+    "context_help_open",
+    "context_help_selection",
+    "context_help_return_focus",
     "wizard_step",
     "wizard_draft",
     "wizard_catalog",
@@ -285,7 +288,7 @@
     {
       "action": "open_help",
       "element": "navigation",
-      "key": "?"
+      "key": "?/h or F1 while editing"
     },
     {
       "action": "reconnect",
@@ -326,11 +329,6 @@
       "action": "select_benchmark_pool",
       "element": "benchmarks.pool",
       "key": "P"
-    },
-    {
-      "action": "toggle_benchmark_group",
-      "element": "benchmarks.group_toggle",
-      "key": "g"
     },
     {
       "action": "toggle_benchmark",
@@ -476,6 +474,46 @@
       "action": "cancel_fanout",
       "element": "run.cancel",
       "key": "Ctrl-Z"
+    },
+    {
+      "action": "move_measure_cursor",
+      "element": "measures.row",
+      "key": "Up/Down"
+    },
+    {
+      "action": "edit_measure_search",
+      "element": "measures.search",
+      "key": "Character"
+    },
+    {
+      "action": "backspace_measure_search",
+      "element": "measures.search",
+      "key": "Backspace"
+    },
+    {
+      "action": "move_configuration",
+      "element": "configuration.entry",
+      "key": "Up/Down"
+    },
+    {
+      "action": "move_report_cursor",
+      "element": "reports.row",
+      "key": "Up/Down"
+    },
+    {
+      "action": "toggle_report_selection",
+      "element": "reports.row",
+      "key": "Space"
+    },
+    {
+      "action": "move_context_help",
+      "element": "context_help.entry",
+      "key": "Up/Down or j/k"
+    },
+    {
+      "action": "close_context_help",
+      "element": "context_help.overlay",
+      "key": "Esc/?/h/F1"
     }
   ],
   "routes": [
@@ -484,7 +522,10 @@
       "elements": [
         "landing.primary",
         "navigation",
-        "status.connection"
+        "status.connection",
+        "context_help.footer",
+        "context_help.overlay",
+        "context_help.entry"
       ]
     },
     {
@@ -510,7 +551,10 @@
         "wizard.comparison_stage",
         "wizard.controls",
         "wizard.shell_footer",
-        "navigation"
+        "navigation",
+        "context_help.footer",
+        "context_help.overlay",
+        "context_help.entry"
       ]
     },
     {
@@ -524,7 +568,10 @@
         "measures.row",
         "measures.group_toggle",
         "measures.selection_summary",
-        "navigation"
+        "navigation",
+        "context_help.footer",
+        "context_help.overlay",
+        "context_help.entry"
       ]
     },
     {
@@ -534,7 +581,10 @@
         "configuration.search",
         "configuration.control_status",
         "configuration.preflight",
-        "navigation"
+        "navigation",
+        "context_help.footer",
+        "context_help.overlay",
+        "context_help.entry"
       ]
     },
     {
@@ -543,7 +593,10 @@
         "run.status",
         "run.start",
         "run.cancel",
-        "navigation"
+        "navigation",
+        "context_help.footer",
+        "context_help.overlay",
+        "context_help.entry"
       ]
     },
     {
@@ -551,7 +604,10 @@
       "elements": [
         "runs.row",
         "runs.refresh",
-        "navigation"
+        "navigation",
+        "context_help.footer",
+        "context_help.overlay",
+        "context_help.entry"
       ]
     },
     {
@@ -559,7 +615,10 @@
       "elements": [
         "reports.row",
         "reports.compare",
-        "navigation"
+        "navigation",
+        "context_help.footer",
+        "context_help.overlay",
+        "context_help.entry"
       ]
     },
     {
@@ -567,7 +626,10 @@
       "elements": [
         "help.search",
         "help.entry",
-        "navigation"
+        "navigation",
+        "context_help.footer",
+        "context_help.overlay",
+        "context_help.entry"
       ]
     }
   ],
@@ -967,6 +1029,33 @@
       "focusable": false,
       "hoverable": true,
       "parent": "measures.row"
+    },
+    {
+      "id": "context_help.footer",
+      "route": "global",
+      "role": "status",
+      "help_id": "context_help.footer",
+      "focusable": false,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "context_help.overlay",
+      "route": "global",
+      "role": "navigation",
+      "help_id": "context_help.overlay",
+      "focusable": true,
+      "hoverable": true,
+      "parent": null
+    },
+    {
+      "id": "context_help.entry",
+      "route": "global",
+      "role": "selectable",
+      "help_id": "context_help.entry",
+      "focusable": true,
+      "hoverable": true,
+      "parent": "context_help.overlay"
     }
   ],
   "transitions": [
@@ -1523,6 +1612,246 @@
         "configuration_materialized",
         "focus_reset"
       ]
+    },
+    {
+      "event": "open_context_help",
+      "from": "landing",
+      "to": "landing",
+      "effects": [
+        "context_help_opened",
+        "focus_saved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "move_context_help",
+      "from": "landing",
+      "to": "landing",
+      "effects": [
+        "context_help_selection_changed",
+        "focus_preserved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "close_context_help",
+      "from": "landing",
+      "to": "landing",
+      "effects": [
+        "context_help_closed",
+        "focus_restored",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "open_context_help",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "context_help_opened",
+        "focus_saved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "move_context_help",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "context_help_selection_changed",
+        "focus_preserved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "close_context_help",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "context_help_closed",
+        "focus_restored",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "open_context_help",
+      "from": "measurement_selection",
+      "to": "measurement_selection",
+      "effects": [
+        "context_help_opened",
+        "focus_saved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "move_context_help",
+      "from": "measurement_selection",
+      "to": "measurement_selection",
+      "effects": [
+        "context_help_selection_changed",
+        "focus_preserved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "close_context_help",
+      "from": "measurement_selection",
+      "to": "measurement_selection",
+      "effects": [
+        "context_help_closed",
+        "focus_restored",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "open_context_help",
+      "from": "configuration",
+      "to": "configuration",
+      "effects": [
+        "context_help_opened",
+        "focus_saved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "move_context_help",
+      "from": "configuration",
+      "to": "configuration",
+      "effects": [
+        "context_help_selection_changed",
+        "focus_preserved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "close_context_help",
+      "from": "configuration",
+      "to": "configuration",
+      "effects": [
+        "context_help_closed",
+        "focus_restored",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "open_context_help",
+      "from": "run_control",
+      "to": "run_control",
+      "effects": [
+        "context_help_opened",
+        "focus_saved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "move_context_help",
+      "from": "run_control",
+      "to": "run_control",
+      "effects": [
+        "context_help_selection_changed",
+        "focus_preserved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "close_context_help",
+      "from": "run_control",
+      "to": "run_control",
+      "effects": [
+        "context_help_closed",
+        "focus_restored",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "open_context_help",
+      "from": "recent_runs",
+      "to": "recent_runs",
+      "effects": [
+        "context_help_opened",
+        "focus_saved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "move_context_help",
+      "from": "recent_runs",
+      "to": "recent_runs",
+      "effects": [
+        "context_help_selection_changed",
+        "focus_preserved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "close_context_help",
+      "from": "recent_runs",
+      "to": "recent_runs",
+      "effects": [
+        "context_help_closed",
+        "focus_restored",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "open_context_help",
+      "from": "reports",
+      "to": "reports",
+      "effects": [
+        "context_help_opened",
+        "focus_saved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "move_context_help",
+      "from": "reports",
+      "to": "reports",
+      "effects": [
+        "context_help_selection_changed",
+        "focus_preserved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "close_context_help",
+      "from": "reports",
+      "to": "reports",
+      "effects": [
+        "context_help_closed",
+        "focus_restored",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "open_context_help",
+      "from": "help",
+      "to": "help",
+      "effects": [
+        "context_help_opened",
+        "focus_saved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "move_context_help",
+      "from": "help",
+      "to": "help",
+      "effects": [
+        "context_help_selection_changed",
+        "focus_preserved",
+        "draft_preserved"
+      ]
+    },
+    {
+      "event": "close_context_help",
+      "from": "help",
+      "to": "help",
+      "effects": [
+        "context_help_closed",
+        "focus_restored",
+        "draft_preserved"
+      ]
     }
   ],
   "help": [
@@ -1705,6 +2034,18 @@
     {
       "id": "status.connection",
       "text": "Shows whether the ASB control connection is ready."
+    },
+    {
+      "id": "context_help.footer",
+      "text": "Shows legal keys and concise guidance for the currently focused element."
+    },
+    {
+      "id": "context_help.overlay",
+      "text": "Groups only actions that are legal in the current visible context."
+    },
+    {
+      "id": "context_help.entry",
+      "text": "Explains the selected legal action and how to perform it safely."
     }
   ]
 }

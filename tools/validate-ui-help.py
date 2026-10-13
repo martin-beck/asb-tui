@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "docs" / "ui-help.json"
 ACTION_SOURCE = ROOT / "src" / "actions.rs"
+FORMAL_MODEL = ROOT / "docs" / "ui-state-model.json"
 ROUTES = {"landing", "wizard", "configuration", "measurement_selection", "run_control", "recent_runs", "reports", "help", "global"}
 KINDS = {"screen", "action", "widget", "dialog", "status", "editable", "selectable"}
 BAD_PHRASES = ("todo", "tbd", "lorem ipsum", "placeholder", "help text", "coming soon")
@@ -41,6 +42,25 @@ def _action_ids() -> set[str]:
     # Rust's action id conversion is intentionally mirrored here and checked
     # against the manifest.  A changed registry must update its documentation.
     return {"action." + re.sub(r"(?<!^)([A-Z])", r"_\1", variant).lower() for variant in variants}
+
+
+def _formal_action_ids() -> set[str]:
+    """Return every action named by the formal key-binding model."""
+    document = json.loads(FORMAL_MODEL.read_text(encoding="utf-8"))
+    bindings = document.get("bindings")
+    if not isinstance(bindings, list):
+        raise ValueError("formal model bindings must be an array")
+    actions: set[str] = set()
+    for binding in bindings:
+        action = binding.get("action") if isinstance(binding, dict) else None
+        if not isinstance(action, str) or not action:
+            raise ValueError("formal model binding action must be a non-empty string")
+        actions.add("action." + action)
+    return actions
+
+
+def _documented_action_ids() -> set[str]:
+    return _action_ids() | _formal_action_ids()
 
 
 def _meaningful(value: object, label: str, field: str, errors: list[str], element_id: str) -> None:
@@ -126,8 +146,8 @@ def main() -> int:
         print(f"catalog: cannot read valid JSON: {error}", file=sys.stderr)
         return 1
     try:
-        action_ids = _action_ids()
-    except (OSError, ValueError) as error:
+        action_ids = _documented_action_ids()
+    except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"action registry: cannot discover registered actions: {error}", file=sys.stderr)
         return 1
     errors = validate_document(document, action_ids)

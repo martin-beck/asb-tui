@@ -791,6 +791,7 @@ fn run_interactive_loop(
             workspace.apply_live_snapshot(snapshot);
             next_live_refresh = Instant::now() + Duration::from_millis(500);
         }
+        workspace.sync_recording_context(recording_state.as_ref());
         terminal.draw(|frame| ui::render(frame, &workspace, policy))?;
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {

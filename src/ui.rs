@@ -10,7 +10,7 @@ use crate::{
     control_codec::{
         ConfigurationSelection, MeasurementCatalog, ProviderAuthMethod, ProviderCatalog,
     },
-    help::document_help_text,
+    help::{ContextAction, HelpCategory, context_action, document_help_entry},
     live_projection::{Connection, LiveSnapshot},
     selection::{
         BenchmarkCatalog, BenchmarkDefinition, BenchmarkGroup, BenchmarkMeasure, BenchmarkPool,
@@ -70,7 +70,10 @@ pub struct WorkspaceState {
     pub screen: Screen,
     pub development_handoff: crate::development_handoff::HandoffProjection,
     pub help: bool,
+    help_cursor: usize,
+    context_help_formal: Option<crate::formal_state::ContextHelpFormalState>,
     pub search: String,
+    measure_search_focused: bool,
     pub measure_cursor: usize,
     pub measures: Vec<MeasureRow>,
     /// Generation-bound nested benchmark catalog used by the production
@@ -123,6 +126,9 @@ pub struct WorkspaceState {
     /// Rendering still uses the frame's authoritative area, so a missed
     /// event cannot make the renderer allocate from stale dimensions.
     layout: ResponsiveLayout,
+    recording_catalog_entries: usize,
+    recording_cassette_selected: bool,
+    recording_progress_available: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,7 +160,10 @@ impl Default for WorkspaceState {
             development_catalog_fallback: false,
             authoritative_provider_catalog_seen: false,
             help: false,
+            help_cursor: 0,
+            context_help_formal: None,
             search: String::new(),
+            measure_search_focused: false,
             measure_cursor: 0,
             measures: vec![
                 MeasureRow {
@@ -226,6 +235,9 @@ impl Default for WorkspaceState {
             benchmark_selection: Some(benchmark_selection),
             benchmark_control_revision: None,
             layout: ResponsiveLayout::from_dimensions(None, None),
+            recording_catalog_entries: 0,
+            recording_cassette_selected: false,
+            recording_progress_available: true,
         }
     }
 }
@@ -764,9 +776,9 @@ impl WorkspaceState {
         self.run_error = None;
     }
 
-    /// Build a fresh digest-bound bundle from the current reviewed wizard and
-    /// nested benchmark selections. No file is changed by this operation.
-    pub fn prepare_preflight(&mut self) -> Result<(), String> {
+    fn build_preflight_bundle(
+        &self,
+    ) -> Result<crate::configuration_materialization::MaterializedBundle, String> {
         let values = self.wizard.values();
         let selection = Self::wizard_configuration_selection(&values)?;
         let draft = if let Some(draft) = self.reviewed_provider_setup.clone() {
@@ -801,14 +813,20 @@ impl WorkspaceState {
             asb_version: "development".into(),
             execution_mode: self.execution_mode_for_values(&values)?,
         };
-        let bundle = crate::configuration_materialization::MaterializedBundle::build(
+        crate::configuration_materialization::MaterializedBundle::build(
             input,
             &draft,
             benchmark_selection.catalog(),
             draft.catalog_generation(),
             benchmark_selection.catalog().generation(),
         )
-        .map_err(|error| format!("preflight rejected: {error:?}"))?;
+        .map_err(|error| format!("preflight rejected: {error:?}"))
+    }
+
+    /// Build a fresh digest-bound bundle from the current reviewed wizard and
+    /// nested benchmark selections. No file is changed by this operation.
+    pub fn prepare_preflight(&mut self) -> Result<(), String> {
+        let bundle = self.build_preflight_bundle()?;
         self.preflight = Some(bundle.preflight_summary());
         self.preflight_bundle = Some(bundle);
         self.preflight_error = None;
@@ -934,6 +952,7 @@ impl WorkspaceState {
     pub fn open_wizard(&mut self) {
         self.provider_setup_apply.restart();
         if self.wizard_formal.apply(FormalEvent::OpenWizard).is_ok() {
+            self.close_context_help_before_route_change();
             self.screen = Screen::Wizard;
         }
     }
@@ -1124,10 +1143,779 @@ impl WorkspaceState {
         self.clamp_measure_cursor();
     }
 
+    /// Stable help identifier for the currently highlighted or focused
+    /// workspace element. Display text is deliberately never used as a key.
+    #[must_use]
+    pub fn contextual_help_element(&self) -> &'static str {
+        match self.screen {
+            Screen::Landing => "screen.landing",
+            Screen::DevelopmentHandoff => "screen.development_handoff",
+            Screen::Wizard => match self.wizard_formal.pane() {
+                crate::wizard_stepper::WizardPane::Progress => "wizard.step_region",
+                crate::wizard_stepper::WizardPane::Choices => {
+                    wizard::element_id(self.wizard.step())
+                }
+                crate::wizard_stepper::WizardPane::Summary => "wizard.selection_summary",
+                crate::wizard_stepper::WizardPane::Controls => "wizard.controls",
+            },
+            Screen::Measures
+                if self.measure_search_focused || self.visible_indices().is_empty() =>
+            {
+                "measures.search"
+            }
+            Screen::Measures => "measures.row",
+            Screen::Configuration => "configuration.entry",
+            Screen::RunControl => match self.launch_state.as_ref().map(|state| state.state()) {
+                Some(
+                    crate::launch_statistics::RunState::Launching
+                    | crate::launch_statistics::RunState::Running
+                    | crate::launch_statistics::RunState::Cancelling,
+                ) => "run.cancel",
+                Some(
+                    crate::launch_statistics::RunState::Completed
+                    | crate::launch_statistics::RunState::Failed
+                    | crate::launch_statistics::RunState::Cancelled
+                    | crate::launch_statistics::RunState::Unavailable,
+                ) => "run.status",
+                Some(crate::launch_statistics::RunState::Idle)
+                    if self.preflight_bundle.is_some() =>
+                {
+                    "run.start"
+                }
+                _ => "run.status",
+            },
+            Screen::Reports if self.report_entry_count() > 0 => "reports.row",
+            Screen::Reports => "reports.compare",
+            Screen::Help => "help.entry",
+        }
+    }
+
+    /// Synchronize the renderer's cassette-selection predicates with the
+    /// runtime-owned recording dispatcher. Only bounded availability facts
+    /// cross this seam; cassette identities remain private to the dispatcher.
+    pub(crate) fn sync_recording_context(
+        &mut self,
+        recording: Option<&crate::recording_dispatch::RecordingDispatchState>,
+    ) {
+        self.recording_catalog_entries =
+            recording.map_or(0, |state| state.authenticated_cassette_count());
+        self.recording_cassette_selected =
+            recording.is_some_and(|state| state.has_selected_cassette());
+        self.recording_progress_available =
+            recording.is_none_or(|state| state.progress_available());
+    }
+
+    fn control_capabilities(&self) -> Option<&crate::control_codec::Capabilities> {
+        self.live.as_ref()?.capabilities.as_ref()
+    }
+
+    fn recording_phase(&self) -> Option<(crate::recording_campaign::CampaignPhase, bool)> {
+        use crate::recording_campaign::CampaignObservation;
+        let snapshot = self.live.as_ref()?;
+        let observation = snapshot
+            .recording_campaign_lifecycle
+            .as_ref()
+            .and_then(|value| CampaignObservation::try_from(value).ok())
+            .or_else(|| {
+                snapshot
+                    .recording_campaign
+                    .as_ref()
+                    .and_then(|value| CampaignObservation::try_from(value).ok())
+            })?;
+        Some((observation.phase, observation.coverage.is_complete()))
+    }
+
+    fn recording_prerequisites_ready(&self) -> bool {
+        self.recording_workload_scope().is_ok()
+            && self.live.as_ref().is_some_and(|live| {
+                live.configuration.as_ref().is_some_and(|configuration| {
+                    configuration.configured
+                        && !configuration.agent_ids.is_empty()
+                        && configuration
+                            .provider_id
+                            .as_ref()
+                            .is_some_and(|id| !id.is_empty())
+                        && configuration
+                            .model_id
+                            .as_ref()
+                            .is_some_and(|id| !id.is_empty())
+                })
+            })
+    }
+
+    fn action_is_legal(&self, action: crate::actions::UiAction) -> bool {
+        use crate::actions::UiAction as Action;
+        use crate::recording_campaign::CampaignPhase;
+        let capabilities = self.control_capabilities();
+        match action {
+            Action::Quit
+            | Action::GoBack
+            | Action::OpenLanding
+            | Action::OpenConfiguration
+            | Action::OpenMeasurementSelection
+            | Action::OpenRunControl
+            | Action::OpenReports
+            | Action::OpenHelp => true,
+            Action::OpenRecentRuns | Action::RefreshRuns | Action::CompareRuns => false,
+            Action::FocusSearch => self.screen == Screen::Help,
+            Action::ToggleAllMeasures
+            | Action::ToggleMeasure
+            | Action::ToggleGroup
+            | Action::SelectBenchmarkPool
+            | Action::ToggleBenchmark => {
+                self.screen == Screen::Measures
+                    && !self.measure_search_focused
+                    && !self.visible_indices().is_empty()
+            }
+            Action::FocusBenchmarkSearch => self.screen == Screen::Measures,
+            Action::StartRun => {
+                self.preflight_bundle.is_some()
+                    && capabilities.is_some_and(|caps| caps.run_control)
+                    && self.launch_state.as_ref().is_none_or(|launch| {
+                        matches!(launch.state(), crate::launch_statistics::RunState::Idle)
+                    })
+            }
+            Action::AdmitFanout => {
+                self.preflight_bundle.is_some()
+                    && capabilities.is_some_and(|caps| caps.run_control)
+                    && self.live.as_ref().is_some_and(|live| live.fanout.is_none())
+            }
+            Action::CancelRun => {
+                capabilities.is_some_and(|caps| caps.run_control && caps.events)
+                    && self.launch_state.as_ref().is_some_and(|launch| {
+                        matches!(
+                            launch.state(),
+                            crate::launch_statistics::RunState::Launching
+                                | crate::launch_statistics::RunState::Running
+                                | crate::launch_statistics::RunState::Cancelling
+                        )
+                    })
+            }
+            Action::CancelFanout => {
+                capabilities.is_some_and(|caps| caps.run_control && caps.events)
+                    && self.live.as_ref().is_some_and(|live| live.fanout.is_some())
+            }
+            Action::RefreshProviderCatalog => {
+                capabilities.is_some_and(|caps| caps.validate_settings)
+            }
+            Action::EstimateRecording | Action::PlanRecording => {
+                capabilities.is_some_and(|caps| caps.validate_settings)
+                    && self.recording_prerequisites_ready()
+                    && self.recording_phase().is_none_or(|(phase, _)| {
+                        matches!(
+                            phase,
+                            CampaignPhase::None | CampaignPhase::Cancelled | CampaignPhase::Failed
+                        )
+                    })
+            }
+            Action::ConfirmRecordingCapture => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self
+                        .recording_phase()
+                        .is_some_and(|(phase, _)| phase == CampaignPhase::Planned)
+            }
+            Action::ProgressRecording => {
+                capabilities.is_some_and(|caps| caps.events)
+                    && self.recording_progress_available
+                    && self.recording_phase().is_some_and(|(phase, _)| {
+                        matches!(
+                            phase,
+                            CampaignPhase::Recording | CampaignPhase::NeedsReconciliation
+                        )
+                    })
+            }
+            Action::CancelRecording => {
+                capabilities.is_some_and(|caps| caps.run_control && caps.events)
+                    && self.recording_phase().is_some_and(|(phase, _)| {
+                        matches!(
+                            phase,
+                            CampaignPhase::Planned
+                                | CampaignPhase::Recording
+                                | CampaignPhase::NeedsReconciliation
+                        )
+                    })
+            }
+            Action::ReconcileRecording => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self
+                        .recording_phase()
+                        .is_some_and(|(phase, _)| phase == CampaignPhase::NeedsReconciliation)
+            }
+            Action::ActivateOfflineDefault | Action::SealRecording => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self.recording_phase().is_some_and(|(phase, complete)| {
+                        phase == CampaignPhase::Complete && complete
+                    })
+            }
+            Action::ReopenRecording => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self.recording_phase().is_some_and(|(phase, _)| {
+                        matches!(
+                            phase,
+                            CampaignPhase::Complete
+                                | CampaignPhase::Failed
+                                | CampaignPhase::Cancelled
+                                | CampaignPhase::NeedsReconciliation
+                        )
+                    })
+            }
+            Action::RemoveRecordingCassette => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self
+                        .recording_phase()
+                        .is_some_and(|(phase, _)| phase == CampaignPhase::Complete)
+                    && self.recording_catalog_entries > 0
+                    && self.recording_cassette_selected
+            }
+            Action::SelectOfflineCassette => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self.recording_catalog_entries > 0
+            }
+            Action::ReplaySelected => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self.recording_catalog_entries > 0
+                    && self.recording_cassette_selected
+            }
+            Action::RetryRun => {
+                capabilities.is_some_and(|caps| caps.repeat)
+                    && self
+                        .live
+                        .as_ref()
+                        .is_some_and(|live| live.runs.get(self.report_cursor).is_some())
+            }
+            Action::CompareLiveOffline => {
+                capabilities.is_some_and(|caps| caps.analysis)
+                    && self.report_selection.len() == 2
+                    && self.report_selection[0] != self.report_selection[1]
+                    && self.live.as_ref().is_some_and(|live| {
+                        self.report_selection
+                            .iter()
+                            .all(|selected| live.runs.iter().any(|run| &run.run_id == selected))
+                    })
+            }
+            Action::Reconnect => self.launch_state.is_some(),
+            Action::WizardDevelopmentEnroll => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentEnroll)
+                .is_ok(),
+            Action::WizardDevelopmentTest => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentTest)
+                .is_ok(),
+            Action::WizardDevelopmentRotate => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentRotate)
+                .is_ok(),
+            Action::WizardDevelopmentReset => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentReset)
+                .is_ok(),
+            Action::WizardDevelopmentSelectFixture => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentSelectFixture)
+                .is_ok(),
+            Action::WizardDevelopmentSelectNone => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentSelectNone)
+                .is_ok(),
+            Action::WizardDevelopmentRestart => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentRestart)
+                .is_ok(),
+            Action::OpenPreflight => self.build_preflight_bundle().is_ok(),
+            Action::ApplyPreflight => {
+                self.preflight_bundle.is_some() && self.configuration_path.is_some()
+            }
+            Action::OpenDevelopmentHandoff => self.screen == Screen::Landing,
+            Action::MaterializeDevelopment => {
+                self.screen == Screen::DevelopmentHandoff
+                    && self.development_handoff.phase == crate::development_handoff::Phase::Ready
+            }
+            Action::CancelDevelopment => {
+                self.screen == Screen::DevelopmentHandoff
+                    && matches!(
+                        self.development_handoff.phase,
+                        crate::development_handoff::Phase::Cloning
+                            | crate::development_handoff::Phase::Building
+                            | crate::development_handoff::Phase::Installing
+                    )
+            }
+            Action::RetryDevelopment => {
+                self.screen == Screen::DevelopmentHandoff
+                    && matches!(
+                        self.development_handoff.phase,
+                        crate::development_handoff::Phase::Cancelled
+                            | crate::development_handoff::Phase::RolledBack
+                            | crate::development_handoff::Phase::Failed
+                            | crate::development_handoff::Phase::Incompatible
+                    )
+            }
+        }
+    }
+
+    fn documented_action_is_legal(&self, id: &str) -> bool {
+        if let Some(action) = crate::actions::UiAction::ALL
+            .into_iter()
+            .find(|action| action.id() == id)
+        {
+            return self.action_is_legal(action);
+        }
+        let wizard_event_legal = |event| self.wizard_formal.clone().apply(event).is_ok();
+        match id {
+            "wizard_cycle_pane" => wizard_event_legal(crate::wizard::FormalEvent::CyclePane),
+            "wizard_back" => wizard_event_legal(crate::wizard::FormalEvent::Back),
+            "cancel_wizard" => wizard_event_legal(crate::wizard::FormalEvent::Cancel),
+            "complete_wizard" => wizard_event_legal(crate::wizard::FormalEvent::Complete),
+            "wizard_catalog_move" => wizard_event_legal(crate::wizard::FormalEvent::CatalogMove(0)),
+            "wizard_catalog_query" => self.wizard.catalog().is_some(),
+            "wizard_catalog_backspace" => self
+                .wizard
+                .catalog()
+                .is_some_and(|catalog| !catalog.query().is_empty()),
+            "wizard_catalog_select" => {
+                wizard_event_legal(crate::wizard::FormalEvent::CatalogSelect)
+            }
+            "wizard_catalog_toggle_visible_agents" => {
+                wizard_event_legal(crate::wizard::FormalEvent::CatalogToggleVisibleAgents)
+            }
+            "wizard_bounded_choice_move" => {
+                wizard_event_legal(crate::wizard::FormalEvent::BoundedChoiceMove(0))
+            }
+            "wizard_next" => wizard_event_legal(crate::wizard::FormalEvent::Next),
+            "wizard_edit" => self.screen == Screen::Wizard && !self.wizard.has_bounded_choices(),
+            "wizard_backspace" => {
+                self.screen == Screen::Wizard && !self.wizard.current_value().is_empty()
+            }
+            "move_measure_cursor" | "focus_measure_search" => self.screen == Screen::Measures,
+            "edit_measure_search" => self.screen == Screen::Measures && self.measure_search_focused,
+            "backspace_measure_search" => {
+                self.screen == Screen::Measures
+                    && self.measure_search_focused
+                    && !self.search.is_empty()
+            }
+            "move_configuration" => {
+                self.screen == Screen::Configuration && !self.configuration_editing
+            }
+            "focus_configuration" => {
+                self.screen == Screen::Configuration
+                    && !self.configuration_editing
+                    && self
+                        .configuration_draft
+                        .visible_settings()
+                        .get(self.config_cursor)
+                        .is_some()
+            }
+            "edit_configuration" | "commit_configuration_edit" => {
+                self.screen == Screen::Configuration && self.configuration_editing
+            }
+            "backspace_configuration" => {
+                self.screen == Screen::Configuration
+                    && self.configuration_editing
+                    && !self.configuration_edit_buffer.is_empty()
+            }
+            "save_configuration" => {
+                self.screen == Screen::Configuration
+                    && !self.configuration_editing
+                    && self.configuration_path.is_some()
+            }
+            "move_report_cursor" => self.screen == Screen::Reports && self.report_entry_count() > 0,
+            "toggle_report_selection" => {
+                self.screen == Screen::Reports
+                    && self
+                        .live
+                        .as_ref()
+                        .is_some_and(|live| live.runs.get(self.report_cursor).is_some())
+            }
+            _ => false,
+        }
+    }
+
+    fn legal_control_action(&self, action: crate::actions::UiAction) -> UiAction {
+        if self.action_is_legal(action) {
+            UiAction::Control(action)
+        } else {
+            UiAction::None
+        }
+    }
+
+    /// Context-filtered actions accepted by the current workspace state.
+    /// Every returned action resolves through the document-backed help
+    /// catalog. Disabled operations are omitted and explained separately by
+    /// [`Self::contextual_unavailable_reason`].
+    #[must_use]
+    pub fn contextual_help_actions(&self) -> Vec<ContextAction> {
+        use HelpCategory::{Editing, Help, Lifecycle, Navigation, Selection};
+        let mut actions = Vec::new();
+        let mut add = |id, key, category| {
+            if self.documented_action_is_legal(id)
+                && let Some(action) = context_action(id, key, category)
+            {
+                actions.push(action);
+            }
+        };
+
+        match self.screen {
+            Screen::Landing => {
+                add("open_development_handoff", "d", Lifecycle);
+                add("open_wizard", "w", Navigation);
+            }
+            Screen::DevelopmentHandoff => {
+                use crate::development_handoff::Phase;
+                if self.development_handoff.phase == Phase::Ready {
+                    add("materialize_development", "Enter / Space", Lifecycle);
+                }
+                if matches!(
+                    self.development_handoff.phase,
+                    Phase::Cloning | Phase::Building | Phase::Installing
+                ) {
+                    add("cancel_development", "x", Lifecycle);
+                }
+                if matches!(
+                    self.development_handoff.phase,
+                    Phase::Cancelled | Phase::RolledBack | Phase::Failed | Phase::Incompatible
+                ) {
+                    add("retry_development", "r", Lifecycle);
+                }
+                add("go_back", "Esc", Navigation);
+            }
+            Screen::Wizard => {
+                add("wizard_cycle_pane", "Tab", Navigation);
+                add("wizard_back", "Esc / Left", Navigation);
+                add("cancel_wizard", "q", Lifecycle);
+                if self.wizard.step() == wizard::Step::Review {
+                    add("complete_wizard", "Enter", Lifecycle);
+                } else if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) {
+                    add("wizard_catalog_move", "Up / Down / j / k", Navigation);
+                    add("wizard_catalog_query", "Type", Editing);
+                    add("wizard_catalog_backspace", "Backspace", Editing);
+                    add(
+                        "wizard_catalog_select",
+                        if self.wizard.step() == wizard::Step::Agent {
+                            "Enter / Space"
+                        } else {
+                            "Enter"
+                        },
+                        Selection,
+                    );
+                    if self.wizard.step() == wizard::Step::Agent {
+                        add("wizard_catalog_toggle_visible_agents", "A", Selection);
+                    }
+                } else if self.wizard.has_bounded_choices() {
+                    add(
+                        "wizard_bounded_choice_move",
+                        "Up / Down / j / k",
+                        Navigation,
+                    );
+                    add("wizard_next", "Enter", Selection);
+                } else {
+                    add("wizard_edit", "Type", Editing);
+                    add("wizard_backspace", "Backspace", Editing);
+                    add("wizard_next", "Enter", Selection);
+                }
+                if self.wizard.step() == wizard::Step::Authentication {
+                    add("wizard_development_enroll", "E", Lifecycle);
+                    add("wizard_development_test", "T", Lifecycle);
+                    add("wizard_development_rotate", "R", Lifecycle);
+                    add("wizard_development_reset", "X", Lifecycle);
+                    add("wizard_development_select_fixture", "F", Selection);
+                    add("wizard_development_select_none", "N", Selection);
+                    add("wizard_development_restart", "Z", Lifecycle);
+                }
+            }
+            Screen::Measures => {
+                if self.measure_search_focused {
+                    add("edit_measure_search", "Type", Editing);
+                    if !self.search.is_empty() {
+                        add("backspace_measure_search", "Backspace", Editing);
+                    }
+                    add("focus_measure_search", "Esc / Enter", Navigation);
+                } else {
+                    add("move_measure_cursor", "Up / Down", Navigation);
+                    add("focus_measure_search", "/", Editing);
+                }
+                if !self.measure_search_focused && !self.visible_indices().is_empty() {
+                    add("toggle_measure", "Space", Selection);
+                    add("toggle_all_measures", "A", Selection);
+                    add("toggle_group", "g", Selection);
+                    add("toggle_benchmark", "b", Selection);
+                    add("select_benchmark_pool", "P", Selection);
+                }
+            }
+            Screen::Configuration => {
+                add("move_configuration", "Up / Down", Navigation);
+                if self.configuration_editing {
+                    add("edit_configuration", "Type", Editing);
+                    add("backspace_configuration", "Backspace", Editing);
+                    add("commit_configuration_edit", "Enter", Editing);
+                } else {
+                    add("focus_configuration", "Enter", Editing);
+                }
+                add("save_configuration", "Ctrl-S", Lifecycle);
+                add("refresh_provider_catalog", "f", Lifecycle);
+                add("open_preflight", "V", Lifecycle);
+                if self.preflight_bundle.is_some() {
+                    add("apply_preflight", "A", Lifecycle);
+                }
+            }
+            Screen::RunControl => {
+                if self.preflight_bundle.is_some() && self.live.is_some() {
+                    add("start_run", "Enter", Lifecycle);
+                    add("admit_fanout", "A", Lifecycle);
+                }
+                if self.launch_state.as_ref().is_some_and(|state| {
+                    matches!(
+                        state.state(),
+                        crate::launch_statistics::RunState::Launching
+                            | crate::launch_statistics::RunState::Running
+                            | crate::launch_statistics::RunState::Cancelling
+                    )
+                }) {
+                    add("cancel_run", "Ctrl-C", Lifecycle);
+                }
+                if self
+                    .live
+                    .as_ref()
+                    .and_then(|live| live.fanout.as_ref())
+                    .is_some()
+                {
+                    add("cancel_fanout", "Ctrl-Z", Lifecycle);
+                }
+                if self.live.is_some() {
+                    for (id, key) in [
+                        ("estimate_recording", "e"),
+                        ("plan_recording", "P"),
+                        ("confirm_recording_capture", "C"),
+                        ("progress_recording", "G"),
+                        ("cancel_recording", "X"),
+                        ("reconcile_recording", "Y"),
+                        ("activate_offline_default", "o"),
+                        ("seal_recording", "S"),
+                        ("reopen_recording", "U"),
+                        ("remove_recording_cassette", "D"),
+                        ("select_offline_cassette", "]"),
+                        ("replay_selected", "J"),
+                    ] {
+                        add(id, key, Lifecycle);
+                    }
+                }
+                if self.launch_state.is_some() {
+                    add("reconnect", "x", Lifecycle);
+                }
+            }
+            Screen::Reports => {
+                add("move_report_cursor", "Up / Down", Navigation);
+                if self.live.as_ref().is_some_and(|live| !live.runs.is_empty()) {
+                    add("toggle_report_selection", "Space", Selection);
+                    add("retry_run", "t", Lifecycle);
+                }
+                if self.report_selection.len() == 2 {
+                    add("compare_live_offline", "v / C", Lifecycle);
+                }
+            }
+            Screen::Help => {
+                add("focus_search", "/", Editing);
+            }
+        }
+
+        let text_input_focused = self.configuration_editing || self.measure_search_focused;
+        if !text_input_focused
+            && !matches!(self.screen, Screen::DevelopmentHandoff | Screen::Wizard)
+        {
+            for (id, key) in [
+                ("open_landing", "1"),
+                ("open_measurement_selection", "2"),
+                ("open_configuration", "3"),
+                ("open_run_control", "s"),
+                ("open_reports", "4"),
+            ] {
+                add(id, key, Navigation);
+            }
+            add("quit", "q", Lifecycle);
+        }
+        add(
+            "open_help",
+            if text_input_focused { "F1" } else { "? / h" },
+            Help,
+        );
+        actions
+    }
+
+    /// Actionable explanation for a highlighted item that cannot currently be
+    /// used. This remains separate from the legal-action list.
+    #[must_use]
+    pub fn contextual_unavailable_reason(&self) -> Option<&'static str> {
+        match self.screen {
+            Screen::Wizard
+                if self.wizard.catalog().is_some_and(|catalog| {
+                    catalog
+                        .visible_options()
+                        .get(catalog.cursor())
+                        .is_some_and(|option| !option.available)
+                }) =>
+            {
+                Some(
+                    "Unavailable in the current catalog; choose an enabled item or refresh the authoritative setup catalog.",
+                )
+            }
+            Screen::Measures if self.visible_indices().is_empty() => Some(
+                "No measures match this search; remove part of the query to restore selectable rows.",
+            ),
+            Screen::RunControl if self.preflight_bundle.is_none() => Some(
+                "No reviewed configuration is ready; open Configuration, prepare preflight with V, then apply it with A.",
+            ),
+            Screen::RunControl if self.control_capabilities().is_none() => Some(
+                "Runner capabilities are unavailable; reconnect to the authenticated control endpoint before starting or recording.",
+            ),
+            Screen::RunControl
+                if self.recording_phase().is_some() && self.recording_catalog_entries == 0 =>
+            {
+                Some(
+                    "Recording actions follow the current campaign phase; activate a complete campaign before selecting or replaying a cassette.",
+                )
+            }
+            Screen::Reports
+                if self
+                    .live
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.runs.is_empty()) =>
+            {
+                Some("No runs are available; complete a benchmark before opening report actions.")
+            }
+            Screen::Reports if self.control_capabilities().is_none() => Some(
+                "Runner capabilities are unavailable; reconnect before retrying or comparing runs.",
+            ),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn contextual_help_selected(&self) -> usize {
+        self.context_help_formal
+            .as_ref()
+            .map_or(self.help_cursor, |formal| formal.selection())
+            .min(self.contextual_help_actions().len().saturating_sub(1))
+    }
+
+    fn open_context_help(&mut self) {
+        let route = self.context_help_route();
+        let Ok(mut formal) = crate::formal_state::ContextHelpFormalState::new(
+            route,
+            Some(self.contextual_focus_element()),
+        ) else {
+            return;
+        };
+        if formal
+            .apply(crate::formal_state::FormalEvent::OpenContextHelp, route)
+            .is_ok()
+        {
+            self.help = formal.is_open();
+            self.help_cursor = formal.selection();
+            self.context_help_formal = Some(formal);
+        }
+    }
+
+    fn move_context_help(&mut self, delta: isize) {
+        let count = self.contextual_help_actions().len();
+        let Ok(delta) = i8::try_from(delta) else {
+            return;
+        };
+        let route = self.context_help_route();
+        let Some(formal) = self.context_help_formal.as_mut() else {
+            return;
+        };
+        if formal
+            .apply(
+                crate::formal_state::FormalEvent::MoveContextHelp {
+                    delta,
+                    item_count: count,
+                },
+                route,
+            )
+            .is_err()
+        {
+            self.help_cursor = 0;
+            return;
+        }
+        self.help_cursor = formal.selection();
+    }
+
+    fn close_context_help(&mut self) {
+        let route = self.context_help_route();
+        let Some(formal) = self.context_help_formal.as_mut() else {
+            return;
+        };
+        if formal
+            .apply(crate::formal_state::FormalEvent::CloseContextHelp, route)
+            .is_ok()
+        {
+            self.help = formal.is_open();
+            self.help_cursor = formal.selection();
+            self.context_help_formal = None;
+        } else {
+            // An authenticated refresh can replace the landing route with the
+            // setup wizard while this modal is open. Never trap the operator
+            // behind a stale route-bound overlay; the underlying input-focus
+            // flags and drafts remain untouched.
+            self.help = false;
+            self.help_cursor = 0;
+            self.context_help_formal = None;
+        }
+    }
+
+    fn close_context_help_before_route_change(&mut self) {
+        if self.help {
+            self.close_context_help();
+        }
+    }
+
+    fn contextual_focus_element(&self) -> &'static str {
+        match self.screen {
+            Screen::Landing | Screen::DevelopmentHandoff => "landing.primary",
+            Screen::Wizard => match self.wizard_formal.pane() {
+                crate::wizard_stepper::WizardPane::Progress => "wizard.step_region",
+                crate::wizard_stepper::WizardPane::Choices => "wizard.selection_list",
+                crate::wizard_stepper::WizardPane::Summary => "wizard.selection_summary",
+                crate::wizard_stepper::WizardPane::Controls => "wizard.controls",
+            },
+            Screen::Measures if self.measure_search_focused => "measures.search",
+            Screen::Measures => "measures.row",
+            Screen::Configuration => "configuration.entry",
+            Screen::RunControl => match self.contextual_help_element() {
+                "run.start" => "run.start",
+                "run.cancel" => "run.cancel",
+                _ => "navigation",
+            },
+            Screen::Reports if self.report_entry_count() > 0 => "reports.row",
+            Screen::Reports => "reports.compare",
+            Screen::Help => "help.entry",
+        }
+    }
+
+    fn context_help_route(&self) -> &'static str {
+        match self.screen {
+            Screen::Landing | Screen::DevelopmentHandoff => "landing",
+            Screen::Wizard => "wizard",
+            Screen::Measures => "measurement_selection",
+            Screen::Configuration => "configuration",
+            Screen::RunControl => "run_control",
+            Screen::Reports => "reports",
+            Screen::Help => "help",
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> UiAction {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.screen == Screen::RunControl {
-                if self.run_control_formal(crate::formal_state::FormalEvent::CancelRun) {
+                if self.action_is_legal(crate::actions::UiAction::CancelRun)
+                    && self.run_control_formal(crate::formal_state::FormalEvent::CancelRun)
+                {
                     return UiAction::Control(crate::actions::UiAction::CancelRun);
                 }
                 return UiAction::None;
@@ -1135,12 +1923,18 @@ impl WorkspaceState {
             return UiAction::Quit;
         }
         if self.help {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h')
-            ) {
-                self.help = false;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::F(1) => {
+                    self.close_context_help();
+                }
+                KeyCode::Up | KeyCode::Char('k') => self.move_context_help(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_context_help(1),
+                _ => {}
             }
+            return UiAction::None;
+        }
+        if key.code == KeyCode::F(1) {
+            self.open_context_help();
             return UiAction::None;
         }
         if self.screen == Screen::Wizard {
@@ -1289,7 +2083,7 @@ impl WorkspaceState {
                     UiAction::None
                 }
                 KeyCode::Char('?') | KeyCode::Char('h') => {
-                    self.help = true;
+                    self.open_context_help();
                     UiAction::None
                 }
                 KeyCode::Char(_) if self.wizard.has_bounded_choices() => UiAction::None,
@@ -1384,11 +2178,86 @@ impl WorkspaceState {
                     UiAction::Control(crate::actions::UiAction::RetryDevelopment)
                 }
                 KeyCode::Char('?') | KeyCode::Char('h') => {
-                    self.help = true;
+                    self.open_context_help();
                     UiAction::None
                 }
                 _ => UiAction::None,
             };
+        }
+        if self.screen == Screen::Configuration && self.configuration_editing {
+            match key.code {
+                KeyCode::Esc => {
+                    self.configuration_editing = false;
+                    self.configuration_edit_error = None;
+                    return UiAction::None;
+                }
+                KeyCode::Enter => {
+                    let _ = self.commit_configuration_edit();
+                    return UiAction::None;
+                }
+                KeyCode::Backspace => {
+                    self.configuration_edit_buffer.pop();
+                    self.apply_configuration_edit_buffer();
+                    return UiAction::None;
+                }
+                KeyCode::Char(c)
+                    if !c.is_control()
+                        && !key.modifiers.intersects(
+                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                        ) =>
+                {
+                    if self.configuration_edit_buffer.chars().count()
+                        < crate::configuration::MAX_STRING_SCALARS
+                    {
+                        self.configuration_edit_buffer.push(c);
+                        self.apply_configuration_edit_buffer();
+                    }
+                    return UiAction::None;
+                }
+                _ => {}
+            }
+        }
+        if self.screen == Screen::Measures && self.measure_search_focused {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.measure_search_focused = false;
+                    return UiAction::None;
+                }
+                KeyCode::Backspace => {
+                    self.search.pop();
+                    if let Some(selection) = self.selection.as_mut() {
+                        let _ = selection.set_query(self.search.clone());
+                    }
+                    if let Some(selection) = self.benchmark_selection.as_mut() {
+                        let _ = selection.set_query(self.search.clone());
+                    }
+                    self.sync_measure_projection();
+                    self.measure_cursor = 0;
+                    return UiAction::None;
+                }
+                KeyCode::Char(c)
+                    if !c.is_control()
+                        && !key.modifiers.intersects(
+                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                        ) =>
+                {
+                    let mut candidate = self.search.clone();
+                    candidate.push(c);
+                    if candidate.chars().count() <= MAX_QUERY_BYTES {
+                        self.search = candidate;
+                        if let Some(selection) = self.selection.as_mut() {
+                            let _ = selection.set_query(self.search.clone());
+                        }
+                        if let Some(selection) = self.benchmark_selection.as_mut() {
+                            let _ = selection.set_query(self.search.clone());
+                        }
+                        self.sync_measure_projection();
+                    }
+                    self.measure_cursor = 0;
+                    return UiAction::None;
+                }
+                _ => return UiAction::None,
+            }
         }
         if self.screen == Screen::Configuration
             && key.code == KeyCode::Char('s')
@@ -1419,7 +2288,9 @@ impl WorkspaceState {
             return UiAction::Control(crate::actions::UiAction::ApplyPreflight);
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('x') {
-            if self.run_control_formal(crate::formal_state::FormalEvent::Reconnect) {
+            if self.action_is_legal(crate::actions::UiAction::Reconnect)
+                && self.run_control_formal(crate::formal_state::FormalEvent::Reconnect)
+            {
                 if let Some(launch) = self.launch_state_mut() {
                     launch.reconnect_started();
                 }
@@ -1428,13 +2299,13 @@ impl WorkspaceState {
             return UiAction::None;
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('A') {
-            return UiAction::Control(crate::actions::UiAction::AdmitFanout);
+            return self.legal_control_action(crate::actions::UiAction::AdmitFanout);
         }
         if self.screen == Screen::RunControl
             && key.code == KeyCode::Char('z')
             && key.modifiers.contains(KeyModifiers::CONTROL)
         {
-            return UiAction::Control(crate::actions::UiAction::CancelFanout);
+            return self.legal_control_action(crate::actions::UiAction::CancelFanout);
         }
         if self.screen == Screen::Reports && key.code == KeyCode::Char(' ') {
             if let Some(run_id) = self
@@ -1456,19 +2327,19 @@ impl WorkspaceState {
             return UiAction::None;
         }
         if self.screen == Screen::Reports && key.code == KeyCode::Char('t') {
-            return UiAction::Control(crate::actions::UiAction::RetryRun);
+            return self.legal_control_action(crate::actions::UiAction::RetryRun);
         }
         if self.screen == Screen::Reports && key.code == KeyCode::Char('v') {
-            return UiAction::Control(crate::actions::UiAction::CompareLiveOffline);
+            return self.legal_control_action(crate::actions::UiAction::CompareLiveOffline);
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('S') {
-            return UiAction::Control(crate::actions::UiAction::SealRecording);
+            return self.legal_control_action(crate::actions::UiAction::SealRecording);
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('U') {
-            return UiAction::Control(crate::actions::UiAction::ReopenRecording);
+            return self.legal_control_action(crate::actions::UiAction::ReopenRecording);
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('D') {
-            return UiAction::Control(crate::actions::UiAction::RemoveRecordingCassette);
+            return self.legal_control_action(crate::actions::UiAction::RemoveRecordingCassette);
         }
         match key.code {
             KeyCode::Char('d') if self.screen == Screen::Landing => {
@@ -1476,35 +2347,41 @@ impl WorkspaceState {
                 UiAction::None
             }
             KeyCode::Char('f') if self.screen == Screen::Configuration => {
-                UiAction::Control(crate::actions::UiAction::RefreshProviderCatalog)
+                self.legal_control_action(crate::actions::UiAction::RefreshProviderCatalog)
             }
-            KeyCode::Char('e') if self.screen == Screen::Reports => {
-                UiAction::Control(crate::actions::UiAction::EstimateRecording)
+            KeyCode::Char('e') if self.screen == Screen::RunControl => {
+                self.legal_control_action(crate::actions::UiAction::EstimateRecording)
             }
-            KeyCode::Char('P') if self.screen != Screen::Measures => {
-                UiAction::Control(crate::actions::UiAction::PlanRecording)
+            KeyCode::Char('P') if self.screen == Screen::RunControl => {
+                self.legal_control_action(crate::actions::UiAction::PlanRecording)
             }
             KeyCode::Char('C') if self.screen == Screen::Reports => {
-                UiAction::Control(crate::actions::UiAction::CompareLiveOffline)
+                self.legal_control_action(crate::actions::UiAction::CompareLiveOffline)
             }
-            KeyCode::Char('C') => {
-                UiAction::Control(crate::actions::UiAction::ConfirmRecordingCapture)
+            KeyCode::Char('C') if self.screen == Screen::RunControl => {
+                self.legal_control_action(crate::actions::UiAction::ConfirmRecordingCapture)
             }
-            KeyCode::Char('G') => UiAction::Control(crate::actions::UiAction::ProgressRecording),
-            KeyCode::Char('X') => UiAction::Control(crate::actions::UiAction::CancelRecording),
-            KeyCode::Char('Y') => UiAction::Control(crate::actions::UiAction::ReconcileRecording),
-            KeyCode::Char('o') => {
-                UiAction::Control(crate::actions::UiAction::ActivateOfflineDefault)
+            KeyCode::Char('G') if self.screen == Screen::RunControl => {
+                self.legal_control_action(crate::actions::UiAction::ProgressRecording)
+            }
+            KeyCode::Char('X') if self.screen == Screen::RunControl => {
+                self.legal_control_action(crate::actions::UiAction::CancelRecording)
+            }
+            KeyCode::Char('Y') if self.screen == Screen::RunControl => {
+                self.legal_control_action(crate::actions::UiAction::ReconcileRecording)
+            }
+            KeyCode::Char('o') if self.screen == Screen::RunControl => {
+                self.legal_control_action(crate::actions::UiAction::ActivateOfflineDefault)
             }
             KeyCode::Char('J') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::ReplaySelected)
+                self.legal_control_action(crate::actions::UiAction::ReplaySelected)
             }
             KeyCode::Char(']') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::SelectOfflineCassette)
+                self.legal_control_action(crate::actions::UiAction::SelectOfflineCassette)
             }
             KeyCode::Char('q') => UiAction::Quit,
             KeyCode::Char('?') | KeyCode::Char('h') => {
-                self.help = true;
+                self.open_context_help();
                 UiAction::None
             }
             KeyCode::Char('1') => {
@@ -1532,7 +2409,8 @@ impl WorkspaceState {
                 UiAction::None
             }
             KeyCode::Enter if self.screen == Screen::RunControl => {
-                if self.run_control_formal(crate::formal_state::FormalEvent::StartRun)
+                if self.action_is_legal(crate::actions::UiAction::StartRun)
+                    && self.run_control_formal(crate::formal_state::FormalEvent::StartRun)
                     && self.install_launch_state().is_ok()
                     && self
                         .launch_state_mut()
@@ -1617,33 +2495,8 @@ impl WorkspaceState {
                 self.toggle_all_measures();
                 UiAction::None
             }
-            KeyCode::Char('/') if self.screen == Screen::Measures => UiAction::None,
-            KeyCode::Char(c) if self.screen == Screen::Measures && !c.is_control() => {
-                let mut candidate = self.search.clone();
-                candidate.push(c);
-                if candidate.chars().count() <= MAX_QUERY_BYTES {
-                    self.search = candidate;
-                    if let Some(selection) = self.selection.as_mut() {
-                        let _ = selection.set_query(self.search.clone());
-                    }
-                    if let Some(selection) = self.benchmark_selection.as_mut() {
-                        let _ = selection.set_query(self.search.clone());
-                    }
-                    self.sync_measure_projection();
-                }
-                self.measure_cursor = 0;
-                UiAction::None
-            }
-            KeyCode::Backspace if self.screen == Screen::Measures => {
-                self.search.pop();
-                if let Some(selection) = self.selection.as_mut() {
-                    let _ = selection.set_query(self.search.clone());
-                }
-                if let Some(selection) = self.benchmark_selection.as_mut() {
-                    let _ = selection.set_query(self.search.clone());
-                }
-                self.sync_measure_projection();
-                self.measure_cursor = 0;
+            KeyCode::Char('/') if self.screen == Screen::Measures => {
+                self.measure_search_focused = true;
                 UiAction::None
             }
             _ => UiAction::None,
@@ -2183,17 +3036,32 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
     let area = frame.area();
     if state.screen == Screen::Wizard {
         wizard::render_with_pane(frame, &state.wizard, policy, state.wizard_formal.pane());
+        let footer_area = Rect {
+            x: area.x,
+            y: area.y.saturating_add(area.height.saturating_sub(3)),
+            width: area.width,
+            height: 3.min(area.height),
+        };
+        contextual_footer(frame, footer_area, state, policy);
         if state.help {
-            wizard_help_overlay(frame, area, policy, wizard::element_id(state.wizard.step()));
+            help_overlay(frame, area, state, policy);
         }
         return;
     }
     if state.screen == Screen::DevelopmentHandoff {
-        render_development_handoff(frame, area, state, policy);
+        let regions = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(3)])
+            .split(area);
+        render_development_handoff(frame, regions[0], state, policy);
+        contextual_footer(frame, regions[1], state, policy);
+        if state.help {
+            help_overlay(frame, area, state, policy);
+        }
         return;
     }
     if area.width < 38 || area.height < 8 {
-        render_compact(frame, area, policy);
+        render_compact(frame, area, state, policy);
         return;
     }
     let chunks = Layout::default()
@@ -2201,7 +3069,7 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
         .constraints([
             Constraint::Length(3),
             Constraint::Min(4),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ])
         .split(area);
     let titles = ["1 Home", "2 Measures", "3 Configure", "s Run", "4 Reports"];
@@ -2236,9 +3104,9 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
         Screen::Reports => reports(frame, chunks[1], state, policy),
         Screen::Help => landing(frame, chunks[1], state, policy),
     }
-    footer(frame, chunks[2], state, policy);
+    contextual_footer(frame, chunks[2], state, policy);
     if state.help {
-        help_overlay(frame, area, policy);
+        help_overlay(frame, area, state, policy);
     }
 }
 
@@ -2692,76 +3560,190 @@ fn reports(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: Re
     );
 }
 
-fn footer(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
-    let help = if state.help {
-        "Esc close help"
-    } else {
-        "? help"
-    };
-    let context = match state.screen {
-        Screen::Landing => "w setup   2 measures   3 configure   4 reports",
-        Screen::DevelopmentHandoff => "Enter start   x cancel   r retry   Esc back",
-        Screen::Wizard => "Enter next   Esc back   q cancel",
-        Screen::Measures => "Up/Down move   Space item   g group   type search",
-        Screen::Configuration => "Up/Down move   Enter edit   Ctrl-S save",
-        Screen::RunControl => "Enter start   Ctrl-C cancel   x reconnect",
-        Screen::Reports => "Up/Down move   Enter open/compare",
-        Screen::Help => "Esc close help",
-    };
+fn contextual_footer(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &WorkspaceState,
+    policy: RenderPolicy,
+) {
+    let element = document_help_entry(state.contextual_help_element());
+    let actions = state.contextual_help_actions();
+    let mut footer_actions = actions
+        .iter()
+        .filter(|action| action.id != "open_help")
+        .take(4)
+        .copied()
+        .collect::<Vec<_>>();
+    if let Some(help) = actions.iter().find(|action| action.id == "open_help") {
+        footer_actions.push(*help);
+    }
+    let action_text = footer_actions
+        .into_iter()
+        .map(|action| format!("{} {}", action.key, action.label))
+        .collect::<Vec<_>>()
+        .join("  |  ");
+    let description = state.contextual_unavailable_reason().map_or_else(
+        || {
+            element.map_or_else(
+                || "Context help is unavailable for this model element.".to_owned(),
+                |help| format!("{}: {}", help.label, help.summary),
+            )
+        },
+        |reason| format!("Unavailable: {reason}"),
+    );
     frame.render_widget(
-        Paragraph::new(format!(
-            "{}    {}    Tab/Left/Right navigate    q quit",
-            help, context
-        ))
-        .alignment(Alignment::Center)
-        .style(muted(policy)),
+        Paragraph::new(vec![Line::from(description), Line::from(action_text)])
+            .alignment(Alignment::Left)
+            .style(muted(policy))
+            .block(Block::default().borders(Borders::TOP).title(" Context ")),
         area,
     );
 }
-fn help_overlay(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
-    let popup = centered(area, 70, 65);
+
+fn help_overlay(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
+    if area.width < 60 || area.height < 16 {
+        let help = document_help_entry(state.contextual_help_element());
+        let actions = state.contextual_help_actions();
+        let selected = actions.get(state.contextual_help_selected());
+        let width = usize::from(area.width.max(1));
+        let context = help.map_or_else(
+            || "Context: unavailable".to_owned(),
+            |entry| format!("Context: {}", entry.label),
+        );
+        let action = selected.map_or_else(
+            || "Action: none currently available".to_owned(),
+            |action| format!("> {} {}", action.key, action.label),
+        );
+        let detail = selected.map_or_else(
+            || "Detail: leave help and complete the required setup.".to_owned(),
+            |action| format!("About: {}", action.usage),
+        );
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(fit_display_width(&context, width)),
+                Line::from(fit_display_width(&action, width)),
+                Line::from(fit_display_width(&detail, width)),
+                Line::from(fit_display_width("Up/Down browse | Esc/F1 close", width)),
+            ])
+            .style(accent(policy))
+            .alignment(Alignment::Left),
+            area,
+        );
+        return;
+    }
+    let popup = centered(area, 84, 80);
     frame.render_widget(Clear, popup);
+    let actions = state.contextual_help_actions();
+    let selected = state.contextual_help_selected();
+    let element = document_help_entry(state.contextual_help_element());
+    let mut rows: Vec<(Option<usize>, Line<'static>)> = Vec::new();
+    for category in [
+        HelpCategory::Navigation,
+        HelpCategory::Selection,
+        HelpCategory::Editing,
+        HelpCategory::Lifecycle,
+        HelpCategory::Help,
+    ] {
+        let category_actions = actions
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| action.category == category)
+            .collect::<Vec<_>>();
+        if category_actions.is_empty() {
+            continue;
+        }
+        rows.push((
+            None,
+            Line::from(Span::styled(category.label(), accent(policy))),
+        ));
+        for (index, action) in category_actions {
+            rows.push((
+                Some(index),
+                Line::from(format!(
+                    "{} {:<16} {} - {}",
+                    if index == selected { ">" } else { " " },
+                    action.key,
+                    action.label,
+                    action.summary
+                )),
+            ));
+        }
+    }
+    let selected_row = rows
+        .iter()
+        .position(|(index, _)| *index == Some(selected))
+        .unwrap_or(0);
+    let room = usize::from(popup.height.saturating_sub(8)).max(1);
+    let start = selected_row
+        .saturating_sub(room / 2)
+        .min(rows.len().saturating_sub(room));
+    let mut lines = vec![
+        Line::from(Span::styled("Context-sensitive shortcuts", accent(policy))),
+        Line::from(
+            element.map_or("Help unavailable for this model element.", |entry| {
+                entry.summary
+            }),
+        ),
+    ];
+    if let Some(reason) = state.contextual_unavailable_reason() {
+        lines.push(Line::from(format!("Unavailable: {reason}")));
+    }
+    lines.extend(
+        rows.into_iter()
+            .skip(start)
+            .take(room)
+            .map(|(_, line)| line),
+    );
+    if let Some(action) = actions.get(selected) {
+        lines.push(Line::from(format!(
+            "About {}: {}",
+            action.label, action.usage
+        )));
+    }
+    lines.push(Line::from("Up/Down or j/k browse | Esc/?/h/F1 close"));
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled("Keyboard help", accent(policy))),
-            Line::from("1-4 / s  switch workspace"),
-            Line::from("Tab / arrows  navigate"),
-            Line::from("Up/Down  move selection"),
-            Line::from("Space  toggle measure"),
-            Line::from("g  toggle the current measure group"),
-            Line::from("Type / Backspace  search measures"),
-            Line::from("Enter  open, edit, or compare the focused item"),
-            Line::from("q / Ctrl-C  quit"),
-            Line::from("Esc  close this window"),
-        ])
-        .block(panel(" Help ", policy))
-        .wrap(Wrap { trim: true }),
+        Paragraph::new(lines)
+            .block(panel(" Help ", policy))
+            .wrap(Wrap { trim: true }),
         popup,
     );
 }
 
-fn wizard_help_overlay(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy, element: &str) {
-    let popup = centered(area, 70, 65);
-    frame.render_widget(Clear, popup);
-    let context = document_help_text(element)
-        .unwrap_or("Edit the active wizard value and use Enter to continue.");
+fn fit_display_width(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if Line::from(value).width() <= width {
+        return value.to_owned();
+    }
+    let marker = if width >= 3 { "..." } else { "" };
+    let content_width = width.saturating_sub(marker.len());
+    let mut fitted = String::new();
+    for character in value.chars() {
+        let mut candidate = fitted.clone();
+        candidate.push(character);
+        if Line::from(candidate.as_str()).width() > content_width {
+            break;
+        }
+        fitted.push(character);
+    }
+    fitted.push_str(marker);
+    fitted
+}
+
+fn render_compact(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
+    if state.help {
+        help_overlay(frame, area, state, policy);
+        return;
+    }
+    let help = document_help_entry(state.contextual_help_element());
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled("Wizard help", accent(policy))),
-            Line::from(context),
-            Line::from("Type to append | Backspace to correct"),
-            Line::from("Enter next or complete | Esc back | q cancel"),
-            Line::from("? / h / Esc close this window"),
+            Line::from("ASB | ? help | q quit"),
+            Line::from(help.map_or("Context help unavailable.", |entry| entry.summary)),
         ])
-        .block(panel(" Contextual help ", policy))
-        .wrap(Wrap { trim: true }),
-        popup,
-    );
-}
-fn render_compact(frame: &mut Frame<'_>, area: Rect, policy: RenderPolicy) {
-    frame.render_widget(
-        Paragraph::new("ASB | 1 Home 2 Measures 3 Config s Run 4 Reports\n? help | q quit")
-            .style(accent(policy)),
+        .wrap(Wrap { trim: true })
+        .style(accent(policy)),
         area,
     );
 }
@@ -2845,6 +3827,58 @@ mod tests {
             alternate_screen: true,
         }
     }
+
+    fn negotiated_snapshot(runs: Vec<RunSummary>) -> LiveSnapshot {
+        LiveSnapshot {
+            connection: Connection::Negotiated,
+            runner_instance_id: Some("runner-context".into()),
+            latest_revision: Some(Revision(3)),
+            capabilities: Some(crate::control_codec::Capabilities {
+                validate_settings: true,
+                run_control: true,
+                repeat: true,
+                analysis: true,
+                events: true,
+            }),
+            measurement_catalog: None,
+            benchmark_catalog: None,
+            agent_catalog: None,
+            agent_lifecycle: None,
+            provider_catalog: None,
+            dynamic_provider_catalog: None,
+            configuration: Some(crate::control_codec::ConfigurationSnapshot {
+                runner_instance_id: "runner-context".into(),
+                generation: Revision(3),
+                configured: true,
+                agent_ids: vec!["agent-1".into()],
+                provider_id: Some("openrouter".into()),
+                model_id: Some("model-1".into()),
+                auth_method: Some(ProviderAuthMethod::CredentialReference),
+                credential_reference_sha256: Some("a".repeat(64)),
+            }),
+            auth_status: None,
+            auth_unavailable: false,
+            auth_development_only: false,
+            auth_unavailable_reason: None,
+            recording_campaign: None,
+            recording_estimate: None,
+            recording_campaign_lifecycle: None,
+            fanout: None,
+            runs,
+            analysis: None,
+        }
+    }
+
+    fn completed_run(id: &str, revision: u64) -> RunSummary {
+        RunSummary {
+            run_id: RunId(id.into()),
+            attempt_id: AttemptId(format!("attempt-{revision}")),
+            state: PublicRunState::Completed,
+            created_revision: Revision(revision),
+            revision: Revision(revision),
+            plan_sha256: "a".repeat(64),
+        }
+    }
     #[test]
     fn navigation_and_selection_are_keyboard_first() {
         let mut s = WorkspaceState::default();
@@ -2855,8 +3889,10 @@ mod tests {
         assert!(!s.measures[1].selected);
         s.handle_key(key(KeyCode::Char('g')));
         assert!(s.measures[0].selected && s.measures[1].selected);
+        s.handle_key(key(KeyCode::Char('/')));
         s.handle_key(key(KeyCode::Char('c')));
         assert_eq!(s.search, "c");
+        s.handle_key(key(KeyCode::Enter));
         s.handle_key(key(KeyCode::Char('?')));
         assert!(s.help);
         s.handle_key(key(KeyCode::Esc));
@@ -2876,9 +3912,11 @@ mod tests {
         state.handle_key(key(KeyCode::Char('g')));
         assert!(state.measures[0].selected && state.measures[1].selected);
         // Search narrows the nested projection without dropping hidden state.
+        state.handle_key(key(KeyCode::Char('/')));
         for character in "latency".chars() {
             state.handle_key(key(KeyCode::Char(character)));
         }
+        state.handle_key(key(KeyCode::Enter));
         assert_eq!(state.visible_indices().len(), 1);
         assert!(state.measures[2].selected);
         // Pool selection is a handled production action even when only one
@@ -2912,9 +3950,11 @@ mod tests {
             screen: Screen::Measures,
             ..WorkspaceState::default()
         };
+        state.handle_key(key(KeyCode::Char('/')));
         for character in "latency".chars() {
             state.handle_key(key(KeyCode::Char(character)));
         }
+        state.handle_key(key(KeyCode::Enter));
         assert_eq!(state.search, "latency");
         assert_eq!(state.visible_indices().len(), 1);
         state.handle_key(key(KeyCode::Char('A')));
@@ -3695,7 +4735,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("Wizard help"));
+        assert!(text.contains("Context-sensitive shortcuts"));
         assert!(text.contains("Choose which supported agent"));
         state.handle_key(key(KeyCode::Esc));
         assert!(!state.help);
@@ -3771,7 +4811,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(text.contains("Welcome to ASB"));
-        assert!(text.contains("? help"));
+        assert!(text.contains("? / h Help"));
         s.screen = Screen::Measures;
         terminal.draw(|f| render(f, &s, policy())).unwrap();
         let measures_text = terminal
@@ -3781,8 +4821,8 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>();
-        assert!(measures_text.contains("Space item"));
-        assert!(measures_text.contains("g group"));
+        assert!(measures_text.contains("Choose whether this benchmark measure will run"));
+        assert!(measures_text.contains("Up / Down Move measure cursor"));
     }
 
     #[test]
@@ -4057,6 +5097,7 @@ mod tests {
         state.handle_key(key(KeyCode::Char('/')));
         state.handle_key(key(KeyCode::Char('e')));
         state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Enter));
         state.handle_key(key(KeyCode::Char(' ')));
         state.handle_key(key(KeyCode::Char('g')));
         state.handle_key(key(KeyCode::Char('1')));
@@ -4065,41 +5106,20 @@ mod tests {
         state.handle_key(key(KeyCode::Tab));
         state.handle_key(key(KeyCode::BackTab));
         state.screen = Screen::Configuration;
-        assert_eq!(
-            state.handle_key(key(KeyCode::Char('f'))),
-            UiAction::Control(crate::actions::UiAction::RefreshProviderCatalog)
-        );
+        assert_eq!(state.handle_key(key(KeyCode::Char('f'))), UiAction::None);
         state.screen = Screen::Reports;
-        for (key_code, action) in [
-            ('e', crate::actions::UiAction::EstimateRecording),
-            ('P', crate::actions::UiAction::PlanRecording),
-            ('C', crate::actions::UiAction::CompareLiveOffline),
-            ('G', crate::actions::UiAction::ProgressRecording),
-            ('X', crate::actions::UiAction::CancelRecording),
-            ('Y', crate::actions::UiAction::ReconcileRecording),
-            ('o', crate::actions::UiAction::ActivateOfflineDefault),
-        ] {
+        assert_eq!(state.handle_key(key(KeyCode::Char('C'))), UiAction::None);
+        state.screen = Screen::RunControl;
+        for key_code in ['e', 'P', 'C', 'G', 'X', 'Y', 'o', 'J', ']'] {
             assert_eq!(
                 state.handle_key(key(KeyCode::Char(key_code))),
-                UiAction::Control(action)
+                UiAction::None
             );
         }
-        state.screen = Screen::RunControl;
-        assert_eq!(
-            state.handle_key(key(KeyCode::Char('J'))),
-            UiAction::Control(crate::actions::UiAction::ReplaySelected)
-        );
-        assert_eq!(
-            state.handle_key(key(KeyCode::Char(']'))),
-            UiAction::Control(crate::actions::UiAction::SelectOfflineCassette)
-        );
-        assert_eq!(
-            state.handle_key(key(KeyCode::Char('A'))),
-            UiAction::Control(crate::actions::UiAction::AdmitFanout)
-        );
+        assert_eq!(state.handle_key(key(KeyCode::Char('A'))), UiAction::None);
         assert_eq!(
             state.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)),
-            UiAction::Control(crate::actions::UiAction::CancelFanout)
+            UiAction::None
         );
         state.screen = Screen::Reports;
         assert_eq!(state.handle_key(key(KeyCode::Char('q'))), UiAction::Quit);
@@ -4166,11 +5186,21 @@ mod tests {
             crate::control_codec::RunId("run-a".into()),
             crate::control_codec::RunId("run-b".into()),
         ];
+        state.apply_live_snapshot(negotiated_snapshot(vec![
+            completed_run("run-a", 1),
+            completed_run("run-b", 2),
+        ]));
+        state.report_selection = vec![RunId("run-a".into()), RunId("run-b".into())];
         assert!(matches!(
             state.handle_key(key(KeyCode::Char(' '))),
             UiAction::None
         ));
-        assert_eq!(state.report_selection.len(), 2);
+        assert_eq!(state.report_selection, [RunId("run-b".into())]);
+        state.report_cursor = 1;
+        state.handle_key(key(KeyCode::Char(' ')));
+        assert!(state.report_selection.is_empty());
+        state.report_cursor = 0;
+        state.handle_key(key(KeyCode::Char(' ')));
         state.report_cursor = 1;
         state.handle_key(key(KeyCode::Char(' ')));
         assert_eq!(state.report_selection.len(), 2);
@@ -4390,5 +5420,441 @@ mod tests {
         );
         assert_eq!(state.screen, Screen::DevelopmentHandoff);
         assert!(state.launch_state().is_none());
+    }
+
+    fn rendered_workspace(state: &WorkspaceState, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render(frame, state, policy()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn contextual_actions_are_documented_unique_and_legal_for_each_route() {
+        let mut state = WorkspaceState::default();
+        for screen in [
+            Screen::Landing,
+            Screen::DevelopmentHandoff,
+            Screen::Wizard,
+            Screen::Measures,
+            Screen::Configuration,
+            Screen::RunControl,
+            Screen::Reports,
+            Screen::Help,
+        ] {
+            state.screen = screen;
+            let actions = state.contextual_help_actions();
+            let mut keys = std::collections::BTreeSet::new();
+            for action in &actions {
+                assert!(
+                    keys.insert(action.key),
+                    "duplicate contextual key {}",
+                    action.key
+                );
+                assert!(action.summary.split_whitespace().count() >= 4);
+                assert!(action.usage.split_whitespace().count() >= 4);
+                assert!(!action.summary.chars().any(char::is_control));
+                assert!(!action.usage.chars().any(char::is_control));
+            }
+        }
+
+        state.screen = Screen::RunControl;
+        let run_ids = state
+            .contextual_help_actions()
+            .iter()
+            .map(|action| action.id)
+            .collect::<Vec<_>>();
+        assert!(!run_ids.contains(&"start_run"));
+        assert!(
+            state
+                .contextual_unavailable_reason()
+                .unwrap()
+                .contains("preflight")
+        );
+
+        state.screen = Screen::Reports;
+        let report_ids = state
+            .contextual_help_actions()
+            .iter()
+            .map(|action| action.id)
+            .collect::<Vec<_>>();
+        assert!(!report_ids.contains(&"compare_live_offline"));
+        assert!(
+            state
+                .contextual_unavailable_reason()
+                .unwrap()
+                .contains("No runs")
+        );
+
+        state.screen = Screen::Measures;
+        let measure_actions = state.contextual_help_actions();
+        assert!(
+            measure_actions
+                .iter()
+                .any(|action| action.id == "toggle_group")
+        );
+        let model: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+        let modeled = model["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|binding| binding["action"].as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for action in measure_actions {
+            assert!(
+                modeled.contains(action.id),
+                "context action {} lacks a formal binding",
+                action.id
+            );
+        }
+        let before = state
+            .measures
+            .iter()
+            .map(|measure| measure.selected)
+            .collect::<Vec<_>>();
+        assert_eq!(state.handle_key(key(KeyCode::Char('g'))), UiAction::None);
+        let after = state
+            .measures
+            .iter()
+            .map(|measure| measure.selected)
+            .collect::<Vec<_>>();
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn contextual_overlay_navigation_preserves_wizard_draft_step_and_pane() {
+        let mut state = WorkspaceState::for_startup(false);
+        state.handle_key(key(KeyCode::Char('c')));
+        state.handle_key(key(KeyCode::Char('o')));
+        let values = state.wizard.values().to_owned();
+        let step = state.wizard.step();
+        let pane = state.wizard_formal.pane();
+        state.handle_key(key(KeyCode::Char('?')));
+        assert!(state.help);
+        assert!(
+            state
+                .context_help_formal
+                .as_ref()
+                .is_some_and(|formal| formal.is_open() && formal.selection() == 0)
+        );
+        state.handle_key(key(KeyCode::Down));
+        assert_eq!(state.contextual_help_selected(), 1);
+        assert_eq!(
+            state
+                .context_help_formal
+                .as_ref()
+                .map(|formal| formal.selection()),
+            Some(1)
+        );
+        state.handle_key(key(KeyCode::Char('h')));
+        assert!(!state.help);
+        assert!(state.context_help_formal.is_none());
+        assert_eq!(state.wizard.values(), values);
+        assert_eq!(state.wizard.step(), step);
+        assert_eq!(state.wizard_formal.pane(), pane);
+    }
+
+    #[test]
+    fn contextual_footer_tracks_focus_and_overlay_reflows_on_narrow_terminals() {
+        let mut state = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        let measures = rendered_workspace(&state, 120, 24);
+        assert!(measures.contains("Choose whether this benchmark measure will run"));
+        assert!(measures.contains("Space Toggle measure"));
+
+        state.screen = Screen::Configuration;
+        let configuration = rendered_workspace(&state, 120, 24);
+        assert!(configuration.contains("Edit the setting used by the next benchmark"));
+        assert!(configuration.contains("Enter Edit configuration value"));
+
+        state.open_context_help();
+        for (width, height) in [(120, 30), (60, 14), (32, 8), (30, 7)] {
+            let text = rendered_workspace(&state, width, height);
+            assert!(
+                text.contains("Context-sensitive")
+                    || (text.contains("Context:")
+                        && text.contains(">")
+                        && text.contains("About:")
+                        && text.contains("Esc/F1 close"))
+            );
+            assert!(!text.contains("/home/"));
+            assert!(!text.contains("api_key"));
+        }
+    }
+
+    #[test]
+    fn recording_shortcuts_are_rejected_outside_run_control() {
+        let mut state = WorkspaceState {
+            screen: Screen::Reports,
+            ..WorkspaceState::default()
+        };
+        for key_code in ['e', 'P', 'G', 'X', 'Y', 'o'] {
+            assert_eq!(
+                state.handle_key(key(KeyCode::Char(key_code))),
+                UiAction::None
+            );
+        }
+        state.screen = Screen::RunControl;
+        assert_eq!(state.handle_key(key(KeyCode::Char('P'))), UiAction::None);
+        state.apply_live_snapshot(negotiated_snapshot(Vec::new()));
+        assert!(matches!(
+            state.handle_key(key(KeyCode::Char('P'))),
+            UiAction::Control(crate::actions::UiAction::PlanRecording)
+        ));
+    }
+
+    #[test]
+    fn text_focus_accepts_colliding_shortcuts_and_help_preserves_drafts() {
+        let collision_text = "q?h1234swf";
+        let mut configuration = WorkspaceState {
+            screen: Screen::Configuration,
+            ..WorkspaceState::default()
+        };
+        configuration.handle_key(key(KeyCode::Enter));
+        let prefix = configuration.configuration_edit_buffer.clone();
+        for character in collision_text.chars() {
+            assert_eq!(
+                configuration.handle_key(key(KeyCode::Char(character))),
+                UiAction::None
+            );
+        }
+        assert_eq!(configuration.screen, Screen::Configuration);
+        assert!(!configuration.help);
+        assert_eq!(
+            configuration.configuration_edit_buffer,
+            format!("{prefix}{collision_text}")
+        );
+        let draft = configuration.configuration_edit_buffer.clone();
+        assert!(configuration.configuration_editing);
+        configuration.handle_key(key(KeyCode::F(1)));
+        assert!(configuration.help);
+        configuration.handle_key(key(KeyCode::Down));
+        configuration.handle_key(key(KeyCode::F(1)));
+        assert_eq!(configuration.configuration_edit_buffer, draft);
+        assert!(configuration.configuration_editing);
+        assert_eq!(configuration.screen, Screen::Configuration);
+
+        let mut measures = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        measures.handle_key(key(KeyCode::Char('/')));
+        assert_eq!(measures.contextual_help_element(), "measures.search");
+        for character in collision_text.chars() {
+            assert_eq!(
+                measures.handle_key(key(KeyCode::Char(character))),
+                UiAction::None
+            );
+        }
+        assert_eq!(measures.search, collision_text);
+        assert_eq!(measures.screen, Screen::Measures);
+        assert!(!measures.help);
+        assert!(measures.measure_search_focused);
+        measures.handle_key(key(KeyCode::F(1)));
+        assert!(measures.help);
+        measures.handle_key(key(KeyCode::Down));
+        measures.handle_key(key(KeyCode::Esc));
+        assert_eq!(measures.search, collision_text);
+        assert!(measures.measure_search_focused);
+        assert_eq!(measures.screen, Screen::Measures);
+    }
+
+    #[test]
+    fn contextual_action_legality_is_fail_closed_for_wizard_and_configuration() {
+        let ids = |state: &WorkspaceState| {
+            state
+                .contextual_help_actions()
+                .into_iter()
+                .map(|action| action.id)
+                .collect::<Vec<_>>()
+        };
+
+        let mut wizard = WorkspaceState::default();
+        wizard.open_wizard();
+        for value in ["agent", "provider", "model", "all defaults"] {
+            wizard
+                .wizard_formal
+                .apply(crate::wizard::FormalEvent::SetValue(value.into()))
+                .unwrap();
+            wizard
+                .wizard_formal
+                .apply(crate::wizard::FormalEvent::Next)
+                .unwrap();
+        }
+        wizard.wizard = wizard.wizard_formal.wizard().clone();
+        assert_eq!(wizard.wizard.step(), crate::wizard::Step::Authentication);
+        let before_enrollment = ids(&wizard);
+        assert!(before_enrollment.contains(&"wizard_development_enroll"));
+        assert!(!before_enrollment.contains(&"wizard_development_test"));
+        assert!(!before_enrollment.contains(&"wizard_development_rotate"));
+        wizard.handle_key(key(KeyCode::Char('E')));
+        let after_enrollment = ids(&wizard);
+        assert!(after_enrollment.contains(&"wizard_development_test"));
+        assert!(after_enrollment.contains(&"wizard_development_rotate"));
+        wizard.handle_key(key(KeyCode::Char('N')));
+        assert!(!ids(&wizard).contains(&"wizard_development_enroll"));
+
+        let mut catalog = WorkspaceState::default();
+        catalog.ensure_development_catalog();
+        catalog.open_wizard();
+        assert!(catalog.wizard.catalog().is_some());
+        assert!(!ids(&catalog).contains(&"wizard_catalog_backspace"));
+        catalog.handle_key(key(KeyCode::Char('a')));
+        assert!(ids(&catalog).contains(&"wizard_catalog_backspace"));
+
+        let mut configuration = WorkspaceState {
+            screen: Screen::Configuration,
+            ..WorkspaceState::default()
+        };
+        let unavailable = ids(&configuration);
+        assert!(!unavailable.contains(&"save_configuration"));
+        assert!(!unavailable.contains(&"open_preflight"));
+        assert!(!unavailable.contains(&"apply_preflight"));
+        let directory = private_temp_dir();
+        let path = directory.join("config.json");
+        configuration = WorkspaceState::with_configuration_store(&path).unwrap();
+        configuration.screen = Screen::Configuration;
+        assert!(ids(&configuration).contains(&"save_configuration"));
+        assert!(!ids(&configuration).contains(&"apply_preflight"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn refresh_route_change_closes_context_help_without_losing_wizard_draft() {
+        let mut state = WorkspaceState::default();
+        state.open_context_help();
+        assert!(state.help);
+        let draft = state.wizard.values();
+        let mut snapshot = negotiated_snapshot(Vec::new());
+        snapshot.configuration.as_mut().unwrap().configured = false;
+        state.apply_live_snapshot(snapshot);
+        assert_eq!(state.screen, Screen::Wizard);
+        assert!(!state.help);
+        assert!(state.context_help_formal.is_none());
+        assert_eq!(state.wizard.values(), draft);
+        state.handle_key(key(KeyCode::Char('?')));
+        assert!(state.help);
+        state.handle_key(key(KeyCode::Esc));
+        assert!(!state.help);
+    }
+
+    #[test]
+    fn contextual_control_actions_follow_capabilities_lifecycle_and_selection() {
+        let mut state = WorkspaceState {
+            screen: Screen::RunControl,
+            ..WorkspaceState::default()
+        };
+        state.apply_live_snapshot(negotiated_snapshot(Vec::new()));
+        let ids = |state: &WorkspaceState| {
+            state
+                .contextual_help_actions()
+                .into_iter()
+                .map(|action| action.id)
+                .collect::<Vec<_>>()
+        };
+        assert!(ids(&state).contains(&"plan_recording"));
+        assert!(!ids(&state).contains(&"progress_recording"));
+
+        state
+            .live
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .as_mut()
+            .unwrap()
+            .validate_settings = false;
+        assert!(!ids(&state).contains(&"plan_recording"));
+        assert_eq!(state.handle_key(key(KeyCode::Char('P'))), UiAction::None);
+        state
+            .live
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .as_mut()
+            .unwrap()
+            .validate_settings = true;
+
+        let lifecycle =
+            |phase: &str, covered: u16| crate::control_codec::RecordingCampaignLifecycle {
+                runner_instance_id: "runner-context".into(),
+                generation: Revision(4),
+                campaign_id: "campaign-1".into(),
+                provider_id: "openrouter".into(),
+                model_id: "model-1".into(),
+                agent_ids: vec!["agent-1".into()],
+                workload_ids: vec!["quality".into()],
+                tuple_count: 2,
+                covered_tuple_count: covered,
+                state: phase.into(),
+                offline_ready: phase == "complete",
+                unavailable_reason: None,
+            };
+        state.live.as_mut().unwrap().recording_campaign_lifecycle = Some(lifecycle("planned", 0));
+        assert!(ids(&state).contains(&"confirm_recording_capture"));
+        assert!(ids(&state).contains(&"cancel_recording"));
+        assert!(!ids(&state).contains(&"estimate_recording"));
+
+        state.live.as_mut().unwrap().recording_campaign_lifecycle = Some(lifecycle("recording", 1));
+        assert!(ids(&state).contains(&"progress_recording"));
+        assert!(!ids(&state).contains(&"seal_recording"));
+
+        state.live.as_mut().unwrap().recording_campaign_lifecycle = Some(lifecycle("complete", 2));
+        assert!(ids(&state).contains(&"activate_offline_default"));
+        assert!(ids(&state).contains(&"seal_recording"));
+        assert!(!ids(&state).contains(&"replay_selected"));
+        state.recording_catalog_entries = 2;
+        assert!(ids(&state).contains(&"select_offline_cassette"));
+        assert!(!ids(&state).contains(&"replay_selected"));
+        state.recording_cassette_selected = true;
+        assert!(ids(&state).contains(&"replay_selected"));
+        assert!(ids(&state).contains(&"remove_recording_cassette"));
+
+        state.screen = Screen::Reports;
+        state.live.as_mut().unwrap().runs =
+            vec![completed_run("run-a", 1), completed_run("run-b", 2)];
+        state.report_selection = vec![RunId("run-a".into()), RunId("run-b".into())];
+        assert!(ids(&state).contains(&"retry_run"));
+        assert!(ids(&state).contains(&"compare_live_offline"));
+        state
+            .live
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .as_mut()
+            .unwrap()
+            .analysis = false;
+        assert!(!ids(&state).contains(&"compare_live_offline"));
+        assert_eq!(state.handle_key(key(KeyCode::Char('v'))), UiAction::None);
+    }
+
+    #[test]
+    fn route_cycle_keeps_every_contextual_screen_reachable() {
+        assert_eq!(next_screen(Screen::Landing), Screen::Measures);
+        assert_eq!(next_screen(Screen::DevelopmentHandoff), Screen::Landing);
+        assert_eq!(next_screen(Screen::Wizard), Screen::Measures);
+        assert_eq!(next_screen(Screen::Measures), Screen::Configuration);
+        assert_eq!(next_screen(Screen::Configuration), Screen::RunControl);
+        assert_eq!(next_screen(Screen::RunControl), Screen::Reports);
+        assert_eq!(next_screen(Screen::Reports), Screen::Landing);
+        assert_eq!(next_screen(Screen::Help), Screen::Landing);
+
+        assert_eq!(previous_screen(Screen::Landing), Screen::Reports);
+        assert_eq!(previous_screen(Screen::DevelopmentHandoff), Screen::Landing);
+        assert_eq!(previous_screen(Screen::Wizard), Screen::Landing);
+        assert_eq!(previous_screen(Screen::Measures), Screen::Landing);
+        assert_eq!(previous_screen(Screen::Configuration), Screen::Measures);
+        assert_eq!(previous_screen(Screen::RunControl), Screen::Configuration);
+        assert_eq!(previous_screen(Screen::Reports), Screen::RunControl);
+        assert_eq!(previous_screen(Screen::Help), Screen::Configuration);
     }
 }
