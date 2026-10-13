@@ -2011,7 +2011,7 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
             && text.contains("Progress")
             && text.contains("Choice details")
             && text.contains("Selection summary")
-            && text.contains("Keyboard help")
+            && text.contains("Context")
         {
             true
         } else {

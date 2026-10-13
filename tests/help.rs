@@ -4,7 +4,7 @@
 use asb_tui::{
     Capabilities,
     actions::{ActionRegistry, KeyChord},
-    help::HelpModel,
+    help::{HelpCategory, HelpModel, context_action, document_help_entry},
     shell::Route,
 };
 
@@ -103,4 +103,20 @@ fn contextual_help_explains_each_backend_capability_gate() {
                 entry.action == asb_tui::actions::UiAction::CompareRuns && entry.disabled.is_some()
             })
     );
+}
+
+#[test]
+fn document_entries_keep_footer_summary_and_overlay_usage_distinct() {
+    let entry = document_help_entry("configuration.entry").expect("documented element");
+    assert_eq!(entry.id, "configuration.entry");
+    assert!(entry.summary.starts_with("Edit the setting"));
+    assert!(entry.usage.starts_with("Press Enter"));
+    assert_ne!(entry.summary, entry.usage);
+
+    let action = context_action("save_configuration", "Ctrl-S", HelpCategory::Lifecycle)
+        .expect("formal-only actions are documented");
+    assert_eq!(action.key, "Ctrl-S");
+    assert_eq!(action.category.label(), "Lifecycle");
+    assert!(action.usage.contains("preflight"));
+    assert!(context_action("not_registered", "x", HelpCategory::Help).is_none());
 }

@@ -266,6 +266,38 @@ class UiStateModelTests(unittest.TestCase):
         errors = MODULE.validate_module_inventory(self.inventory, self.inventory_paths(), owners)
         self.assertIn("module inventory: UI modules and UI_OWNERS differ", errors)
 
+    def test_context_help_is_modeled_on_every_route_with_focus_safe_effects(self):
+        self.assertTrue(
+            {"context_help_open", "context_help_selection", "context_help_return_focus"}
+            <= set(self.model["state_fields"])
+        )
+        context_elements = {
+            "context_help.footer",
+            "context_help.overlay",
+            "context_help.entry",
+        }
+        for route in self.model["routes"]:
+            self.assertTrue(context_elements <= set(route["elements"]), route["id"])
+            transitions = {
+                item["event"]: item
+                for item in self.model["transitions"]
+                if item["from"] == route["id"] and item["to"] == route["id"]
+            }
+            self.assertEqual(
+                transitions["open_context_help"]["effects"],
+                ["context_help_opened", "focus_saved", "draft_preserved"],
+            )
+            self.assertEqual(
+                transitions["move_context_help"]["effects"],
+                ["context_help_selection_changed", "focus_preserved", "draft_preserved"],
+            )
+            self.assertEqual(
+                transitions["close_context_help"]["effects"],
+                ["context_help_closed", "focus_restored", "draft_preserved"],
+            )
+        bindings = {item["action"] for item in self.model["bindings"]}
+        self.assertTrue({"move_context_help", "close_context_help"} <= bindings)
+
 
 if __name__ == "__main__":
     unittest.main()

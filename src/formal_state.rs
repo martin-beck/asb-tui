@@ -33,6 +33,9 @@ pub const RENDERED_ELEMENT_BINDINGS: &[&str] = &[
     "benchmarks.row",
     "measures.selection_summary",
     "wizard.shell_footer",
+    "context_help.footer",
+    "context_help.overlay",
+    "context_help.entry",
 ];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -452,6 +455,17 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["selection_changed", "explicit_all_reconciled"].as_slice()
         } else if transition.event == "open_help" {
             ["return_route_saved", "route_changed", "focus_reset"].as_slice()
+        } else if transition.event == "open_context_help" {
+            ["context_help_opened", "focus_saved", "draft_preserved"].as_slice()
+        } else if transition.event == "move_context_help" {
+            [
+                "context_help_selection_changed",
+                "focus_preserved",
+                "draft_preserved",
+            ]
+            .as_slice()
+        } else if transition.event == "close_context_help" {
+            ["context_help_closed", "focus_restored", "draft_preserved"].as_slice()
         } else if transition.event == "cancel_wizard" {
             [
                 "route_changed",

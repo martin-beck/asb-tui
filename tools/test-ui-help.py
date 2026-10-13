@@ -22,12 +22,12 @@ class UiHelpValidationTests(unittest.TestCase):
         self.document = json.loads((ROOT / "docs" / "ui-help.json").read_text(encoding="utf-8"))
 
     def test_repository_catalog_is_valid_and_covers_registered_actions(self) -> None:
-        self.assertEqual(VALIDATOR.validate_document(self.document, VALIDATOR._action_ids()), [])
+        self.assertEqual(VALIDATOR.validate_document(self.document, VALIDATOR._documented_action_ids()), [])
 
     def test_missing_action_is_reported_deterministically(self) -> None:
         self.document["elements"] = [entry for entry in self.document["elements"] if entry["id"] != "action.quit"]
         errors = VALIDATOR.validate_document(
-            self.document, VALIDATOR._action_ids()
+            self.document, VALIDATOR._documented_action_ids()
         )
         self.assertEqual(errors, ["action.quit: registered action has no help entry"])
 
@@ -62,7 +62,7 @@ class UiHelpValidationTests(unittest.TestCase):
             }
         )
         self.document["unexpected"] = True
-        errors = VALIDATOR.validate_document(self.document, VALIDATOR._action_ids())
+        errors = VALIDATOR.validate_document(self.document, VALIDATOR._documented_action_ids())
         self.assertIn("action.not_registered: help entry does not match a registered action", errors)
         self.assertIn("catalog: unknown top-level fields: unexpected", errors)
 
@@ -111,6 +111,16 @@ class UiHelpValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cannot locate UiAction::ALL registry"):
                 VALIDATOR._action_ids()
         VALIDATOR.ACTION_SOURCE = original
+
+    def test_missing_formal_only_action_is_reported(self) -> None:
+        action_id = "action.wizard_cycle_pane"
+        self.document["elements"] = [
+            entry for entry in self.document["elements"] if entry["id"] != action_id
+        ]
+        errors = VALIDATOR.validate_document(
+            self.document, VALIDATOR._documented_action_ids()
+        )
+        self.assertIn(f"{action_id}: registered action has no help entry", errors)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 const MAX_QUERY_BYTES: usize = 128;
 const MAX_VISIBLE_ACTIONS: usize = 32;
-const MAX_DOCUMENT_HELP_ENTRIES: usize = 128;
+const MAX_DOCUMENT_HELP_ENTRIES: usize = 192;
 const MAX_DOCUMENT_HELP_ID_BYTES: usize = 128;
 const MAX_DOCUMENT_HELP_TEXT_BYTES: usize = 512;
 
@@ -31,6 +31,8 @@ struct DocumentHelpEntry {
 struct DocumentHelpText {
     summary: String,
     usage: String,
+    #[serde(skip)]
+    combined: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,8 +61,7 @@ fn document_help() -> &'static Result<Box<[DocumentHelpEntry]>, ()> {
             .elements
             .into_iter()
             .map(|mut entry| {
-                let text = format!("{} {}", entry.help.summary, entry.help.usage);
-                entry.help.summary = text;
+                entry.help.combined = format!("{} {}", entry.help.summary, entry.help.usage);
                 entry
             })
             .collect::<Vec<_>>();
@@ -71,9 +72,9 @@ fn document_help() -> &'static Result<Box<[DocumentHelpEntry]>, ()> {
                 || entry.kind.is_empty()
                 || entry.label.is_empty()
                 || entry.help.summary.split_whitespace().count() < 4
-                || entry.help.summary.len() > MAX_DOCUMENT_HELP_TEXT_BYTES
+                || entry.help.combined.len() > MAX_DOCUMENT_HELP_TEXT_BYTES
                 || entry.id.chars().any(char::is_control)
-                || entry.help.summary.chars().any(char::is_control)
+                || entry.help.combined.chars().any(char::is_control)
         }) {
             return Err(());
         }
@@ -93,7 +94,89 @@ pub fn document_help_text(element_id: &str) -> Option<&'static str> {
         .as_ref()
         .ok()?
         .iter()
-        .find_map(|entry| (entry.id == element_id).then_some(entry.help.summary.as_str()))
+        .find_map(|entry| (entry.id == element_id).then_some(entry.help.combined.as_str()))
+}
+
+/// One validated document-backed help record.
+///
+/// All fields borrow the embedded catalog. Display labels are never used as
+/// lookup keys; callers resolve help exclusively through stable model IDs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ElementHelp {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub summary: &'static str,
+    pub usage: &'static str,
+}
+
+/// Resolve concise and expanded help for a stable UI identifier.
+#[must_use]
+pub fn document_help_entry(element_id: &str) -> Option<ElementHelp> {
+    let entry = document_help()
+        .as_ref()
+        .ok()?
+        .iter()
+        .find(|entry| entry.id == element_id)?;
+    Some(ElementHelp {
+        id: entry.id.as_str(),
+        label: entry.label.as_str(),
+        summary: entry.help.summary.as_str(),
+        usage: entry.help.usage.as_str(),
+    })
+}
+
+/// Stable groups used by the context-sensitive key window.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum HelpCategory {
+    Navigation,
+    Selection,
+    Editing,
+    Lifecycle,
+    Help,
+}
+
+impl HelpCategory {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Navigation => "Navigation",
+            Self::Selection => "Selection",
+            Self::Editing => "Editing",
+            Self::Lifecycle => "Lifecycle",
+            Self::Help => "Help",
+        }
+    }
+}
+
+/// A currently legal action whose prose comes from the authored help catalog.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContextAction {
+    pub id: &'static str,
+    pub key: &'static str,
+    pub category: HelpCategory,
+    pub label: &'static str,
+    pub summary: &'static str,
+    pub usage: &'static str,
+}
+
+/// Resolve a legal action through its stable action ID. Missing catalog data
+/// fails closed as None; CI proves every action supplied by the UI resolves.
+#[must_use]
+pub fn context_action(
+    id: &'static str,
+    key: &'static str,
+    category: HelpCategory,
+) -> Option<ContextAction> {
+    let document_id = format!("action.{id}");
+    let help = document_help_entry(&document_id)?;
+    Some(ContextAction {
+        id,
+        key,
+        category,
+        label: help.label,
+        summary: help.summary,
+        usage: help.usage,
+    })
 }
 
 /// Bounded help state. Rendering and terminal input remain outside this module.
