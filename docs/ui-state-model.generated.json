@@ -178,6 +178,11 @@
       "key": "?"
     },
     {
+      "action": "wizard_help_alias",
+      "element": "wizard.agent",
+      "key": "h"
+    },
+    {
       "action": "wizard_catalog_query",
       "element": "wizard.agent",
       "key": "Character"
@@ -201,6 +206,11 @@
       "action": "wizard_bounded_choice_move",
       "element": "wizard.controls",
       "key": "Up/Down"
+    },
+    {
+      "action": "wizard_bounded_choice_move_vi",
+      "element": "wizard.controls",
+      "key": "j/k"
     },
     {
       "action": "wizard_catalog_select",

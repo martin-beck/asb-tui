@@ -281,11 +281,12 @@ fn stepper_resizes_truthfully_from_full_journey_to_compact_and_tiny() {
 
     let compact = rendered_text(&wizard, policy(false), 80, 24);
     assert!(compact.contains("Step 1/13: [>] Agent"));
-    assert!(compact.contains("unavailable stages are marked [-]"));
+    assert!(compact.contains("[-] ASB catalog/plan/completed runs"));
 
     let tiny = rendered_text(&wizard, policy(false), 24, 6);
     assert!(tiny.contains("ASB setup wizard"));
     assert!(tiny.contains("location: 1/13 Agent"));
+    assert!(tiny.contains("unavailable: workloads"));
 
     let reasons = rendered_text(&wizard, policy(false), 120, 24);
     assert!(reasons.contains("Workloads: requires an authoritative ASB catalog"));

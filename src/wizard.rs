@@ -928,7 +928,7 @@ fn validate_model() -> Result<(), WizardError> {
 #[must_use]
 pub fn plain_text(wizard: &Wizard) -> String {
     format!(
-        "ASB setup wizard\nlocation: {}\nstep: {}\nfield: {}\ncontrols: Enter next | Esc back | q cancel\n",
+        "ASB setup wizard\nlocation: {}\nunavailable: workloads/measures need ASB catalog; run needs ASB plan; results/compare need runs\nstep: {}\nfield: {}\ncontrols: Enter next | Esc back | q cancel\n",
         render_text(&wizard_progress(wizard.step), StepperLayout::Tiny),
         step_title(wizard.step),
         element_id(wizard.step)

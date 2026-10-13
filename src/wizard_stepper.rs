@@ -231,7 +231,7 @@ pub fn render_text(stages: &[StepPresentation], layout: StepperLayout) -> String
         StepperLayout::Compact => {
             let item = &stages[current];
             format!(
-                "Step {}/{}: {} {} · unavailable stages are marked [-]",
+                "Step {}/{}: {} {} · [-] ASB catalog/plan/completed runs",
                 current + 1,
                 stages.len(),
                 item.state.marker(),
