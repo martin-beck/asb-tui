@@ -31,7 +31,9 @@ def installed_receipt() -> dict:
         "provenance": {"tui_commit": TUI_HEAD, "asb_commit": ASB_HEAD},
         "routes": {
             "status": {"verified": True},
+            "tamper_negative": {"code": "dev_channel_manifest_invalid"},
             "provider_selection": "provider_lifecycle_1656 passed",
+            "unavailable_provider": "provider_lifecycle_1656 passed",
             "fanout_capture_replay": "coverage_setup_recording and development_journey passed",
             "end_to_end_test": "passed",
             "comparison": "end_to_end_qualification passed",
@@ -47,6 +49,14 @@ def content_receipt() -> dict:
         "stages": {
             "asb_content_addressed_qualification": {"passed": True, "receipt_sha256": "c" * 64},
             "tui_journey": {"passed": True},
+            "negative_diagnostics": {
+                "stale_identity": {"rejected": True, "cases": {
+                    "stale_experiment": {"rejected": True, "exit_code": 3},
+                    "executable_mismatch": {"rejected": True, "exit_code": 3},
+                    "workload_mismatch": {"rejected": True, "exit_code": 3},
+                }},
+                "incomplete_cassette": {"rejected": True, "reason": "recording-coverage-incomplete"},
+            },
         },
     }
 
@@ -67,6 +77,17 @@ class PairedFreshUserQualificationTests(unittest.TestCase):
         content["network"] = "used"
         with self.assertRaisesRegex(ValueError, "offline"):
             runner.validate_asb_content(content, TUI_HEAD, ASB_HEAD)
+
+    def test_rejects_missing_negative_or_tamper_diagnostics(self):
+        runner = load_runner()
+        content = content_receipt()
+        del content["stages"]["negative_diagnostics"]
+        with self.assertRaisesRegex(ValueError, "negative diagnostics"):
+            runner.validate_asb_content(content, TUI_HEAD, ASB_HEAD)
+        installed = installed_receipt()
+        installed["routes"]["tamper_negative"] = {"code": "unexpected"}
+        with self.assertRaisesRegex(ValueError, "tamper"):
+            runner.validate_installed_tui(installed, TUI_HEAD, ASB_HEAD)
 
 
 if __name__ == "__main__":

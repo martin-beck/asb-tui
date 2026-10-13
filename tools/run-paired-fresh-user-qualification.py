@@ -71,6 +71,7 @@ def validate_installed_tui(value: dict[str, Any], tui_head: str, asb_head: str) 
         raise ValueError("installed TUI receipt did not verify the materialized development channel")
     expected = {
         "provider_selection": "provider_lifecycle_1656 passed",
+        "unavailable_provider": "provider_lifecycle_1656 passed",
         "fanout_capture_replay": "coverage_setup_recording and development_journey passed",
         "end_to_end_test": "passed",
         "comparison": "end_to_end_qualification passed",
@@ -78,6 +79,10 @@ def validate_installed_tui(value: dict[str, Any], tui_head: str, asb_head: str) 
     }
     if {name: routes.get(name) for name in expected} != expected:
         raise ValueError("installed TUI receipt is missing a complete wizard-to-analysis route")
+    if routes.get("tamper_negative", {}).get("code") not in {
+        "dev_channel_manifest_invalid", "dev_channel_manifest_digest_mismatch"
+    }:
+        raise ValueError("installed TUI receipt did not retain a typed manifest-tamper rejection")
     if selection.get("replay") != "offline" or not selection.get("agent"):
         raise ValueError("installed TUI receipt has no bounded selected agent/offline replay")
 
@@ -99,6 +104,17 @@ def validate_asb_content(value: dict[str, Any], tui_head: str, asb_head: str) ->
         raise ValueError("ASB plan/run/capture/replay qualification did not pass")
     if stages.get("tui_journey", {}).get("passed") is not True:
         raise ValueError("TUI closed development journey did not pass")
+    negatives = stages.get("negative_diagnostics")
+    expected_identity = {
+        name: {"rejected": True, "exit_code": 3}
+        for name in ("stale_experiment", "executable_mismatch", "workload_mismatch")
+    }
+    if not isinstance(negatives, dict) or negatives.get("stale_identity") != {
+        "rejected": True, "cases": expected_identity
+    } or negatives.get("incomplete_cassette") != {
+        "rejected": True, "reason": "recording-coverage-incomplete"
+    }:
+        raise ValueError("ASB content qualification is missing typed negative diagnostics")
 
 
 def main() -> int:
@@ -172,9 +188,10 @@ def main() -> int:
                 "receipt_sha256": content_receipt_sha256,
             },
             "negative_diagnostics": {
-                "installed_tamper": installed["routes"]["tamper_negative"].get("code"),
-                "stale_identity": "ASB content-addressed qualification retained typed identity negatives",
-                "incomplete_cassette": "ASB content-addressed qualification retained incomplete-coverage negative",
+                "installed_tamper": {"rejected": True, "code": installed["routes"]["tamper_negative"]["code"]},
+                "unavailable_provider": {"rejected": True, "evidence": installed["routes"]["unavailable_provider"]},
+                "stale_identity": content["stages"]["negative_diagnostics"]["stale_identity"],
+                "incomplete_cassette": content["stages"]["negative_diagnostics"]["incomplete_cassette"],
                 "network": "denied",
             },
         },
