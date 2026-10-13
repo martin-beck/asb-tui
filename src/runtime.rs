@@ -1427,6 +1427,7 @@ mod tests {
             offline_ready,
         ));
         let mut snapshot = projection.snapshot();
+        snapshot.latest_revision = Some(crate::control_codec::Revision(2));
         snapshot.capabilities = Some(crate::control_codec::Capabilities {
             validate_settings: true,
             run_control: true,

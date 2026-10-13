@@ -368,12 +368,9 @@ impl WorkspaceState {
         let Some(selection) = self.benchmark_selection.as_ref() else {
             return Err("workload selection is unavailable".to_owned());
         };
-        if self
-            .benchmark_control_revision
-            .is_some_and(|revision| revision != selection.catalog().generation())
-        {
-            return Err("workload selection is stale; review the refreshed catalog".to_owned());
-        }
+        let handoff = self
+            .current_benchmark_campaign_handoff()
+            .map_err(|error| format!("workload selection is no longer valid: {error:?}"))?;
         if selection.explicit_all() {
             return Ok(crate::recording_campaign::WorkloadScope::All);
         }
@@ -381,9 +378,6 @@ impl WorkspaceState {
         if selected.is_empty() {
             return Err("workload selection is empty; choose measures or explicit all".to_owned());
         }
-        let handoff = selection
-            .campaign_handoff(selection.catalog().generation())
-            .map_err(|error| format!("workload selection is no longer valid: {error:?}"))?;
         Ok(crate::recording_campaign::WorkloadScope::Selected(
             handoff.benchmark_ids,
         ))
@@ -1086,7 +1080,10 @@ impl WorkspaceState {
         &self,
     ) -> Result<crate::selection::CampaignSelection, crate::selection::SelectionError> {
         let expected = self
-            .benchmark_control_revision
+            .live
+            .as_ref()
+            .and_then(|snapshot| snapshot.latest_revision)
+            .or(self.benchmark_control_revision)
             .or_else(|| {
                 self.benchmark_selection
                     .as_ref()
