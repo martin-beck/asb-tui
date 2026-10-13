@@ -3916,7 +3916,7 @@ fn compact_state_lines(state: &WorkspaceState) -> Vec<String> {
                 wizard::Step::Review => 8,
             };
             let mut lines = vec![
-                "ASB | Setup wizard".into(),
+                "ASB setup wizard".into(),
                 format!("Step: {step}"),
                 format!("location: {position}/13 {step}"),
                 "unavailable: workloads".into(),
