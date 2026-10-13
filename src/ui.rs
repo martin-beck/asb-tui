@@ -2778,14 +2778,18 @@ fn wizard_catalog_from_snapshot(snapshot: &LiveSnapshot) -> Option<WizardCatalog
     let agent_options = agents
         .iter()
         .map(|entry| {
-            WizardOption::new(
-                entry.agent_id.clone(),
-                entry.agent_id.clone(),
-                matches!(
-                    entry.availability,
-                    crate::agent_catalog::AgentAvailability::Available
-                ),
-            )
+            let available = matches!(
+                entry.availability,
+                crate::agent_catalog::AgentAvailability::Available
+            );
+            let option =
+                WizardOption::new(entry.agent_id.clone(), entry.agent_id.clone(), available)?;
+            match &entry.availability {
+                crate::agent_catalog::AgentAvailability::Available => Ok(option),
+                crate::agent_catalog::AgentAvailability::Unavailable(reason) => {
+                    option.with_unavailable_reason(agent_unavailable_reason(*reason))
+                }
+            }
         })
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
@@ -2835,6 +2839,28 @@ fn wizard_catalog_from_snapshot(snapshot: &LiveSnapshot) -> Option<WizardCatalog
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
     WizardCatalog::new(agent_options, provider_options, model_options).ok()
+}
+
+fn agent_unavailable_reason(reason: crate::agent_catalog::AgentUnavailableReason) -> &'static str {
+    use crate::agent_catalog::AgentUnavailableReason;
+    match reason {
+        AgentUnavailableReason::IncompatibleTarget => {
+            "This agent does not support the current system."
+        }
+        AgentUnavailableReason::IncompleteProvenance => {
+            "Installation metadata is incomplete; install or refresh this agent in ASB."
+        }
+        AgentUnavailableReason::UnverifiedArtifact => {
+            "The installed agent artifact has not been verified."
+        }
+        AgentUnavailableReason::MissingCapability => {
+            "A required agent capability is unavailable on this system."
+        }
+        AgentUnavailableReason::StaleCatalog => {
+            "The agent catalog is stale; refresh it before selecting this agent."
+        }
+        AgentUnavailableReason::PolicyDenied => "This agent is disabled by the current policy.",
+    }
 }
 
 fn selection_from_catalog(

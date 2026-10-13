@@ -943,7 +943,7 @@ pub fn plain_text(wizard: &Wizard) -> String {
         "ASB setup wizard\nlocation: {}\nunavailable: workloads/measures need ASB catalog; run needs ASB plan; results/compare need runs\nstep: {}\nfield: {}\ncontrols: Enter next | Esc back | q cancel\n",
         render_text(&wizard_progress(wizard.step), StepperLayout::Tiny),
         step_title(wizard.step),
-        element_id(wizard.step)
+        step_title(wizard.step)
     )
 }
 
@@ -1018,7 +1018,6 @@ pub fn render_with_pane(
                 auth.status, auth.method, auth.generation
             )));
         }
-        lines.push(Line::from(format!("Element: {}", element_id(wizard.step))));
         let selected_labels = selected
             .and_then(|index| wizard.bounded_choice_labels().get(index).copied())
             .into_iter()
@@ -1055,22 +1054,51 @@ pub fn render_with_pane(
             } else {
                 "Choose one compatible option".into()
             }),
-            Line::from(format!("Element: {}", element_id(wizard.step))),
         ];
-        for (index, option) in catalog.visible_options().into_iter().take(8).enumerate() {
-            let cursor = catalog.cursor() == index;
+        let options = catalog.visible_options();
+        // The formal cursor ranges over every filtered option. Render a
+        // bounded scrolling window rather than a fixed prefix so focus can
+        // never move below the visible list.
+        const CATALOG_VIEWPORT_ROWS: usize = 8;
+        let first_visible = catalog
+            .cursor()
+            .saturating_sub(CATALOG_VIEWPORT_ROWS.saturating_sub(1));
+        let last_visible = first_visible
+            .saturating_add(CATALOG_VIEWPORT_ROWS)
+            .min(options.len());
+        if options.len() > CATALOG_VIEWPORT_ROWS {
+            lines.push(Line::from(format!(
+                "Choices {}-{} of {}",
+                first_visible + 1,
+                last_visible,
+                options.len()
+            )));
+        }
+        for (index, option) in options[first_visible..last_visible].iter().enumerate() {
+            let cursor = catalog.cursor() == first_visible + index;
             let selected = catalog
                 .selected_ids(catalog.kind())
                 .contains(&option.id.as_str());
             let row = if option.available {
                 SelectionRow::enabled(&option.label, selected, cursor)
             } else {
-                SelectionRow::disabled(&option.label, cursor, "not available for this setup")
+                SelectionRow::disabled(
+                    &option.label,
+                    cursor,
+                    option
+                        .unavailable_reason()
+                        .unwrap_or("Unavailable; refresh the setup catalog."),
+                )
             };
             lines.push(Line::from(Span::styled(
                 row_text(&row),
                 choice_style(&row, policy),
             )));
+        }
+        if !options.is_empty() && options.iter().all(|option| !option.available) {
+            lines.push(Line::from(
+                "No selectable choices. Refresh or install an eligible agent, then try again.",
+            ));
         }
         if wizard.step == Step::Agent && !wizard.adapter_options().is_empty() {
             lines.push(Line::from("Coding-agent adapters (selection-driven):"));
@@ -1136,7 +1164,6 @@ pub fn render_with_pane(
                 Line::from("")
             },
             Line::from(format!("Value: {}", wizard.current_value())),
-            Line::from(format!("Element: {}", element_id(wizard.step))),
         ];
         details.extend(unavailable_reason_lines(wizard.step));
         let selected = (!wizard.current_value().is_empty())
@@ -1320,7 +1347,6 @@ fn review_presentation(
             .iter()
             .map(|(label, value)| Line::from(format!("{label}: {value}"))),
     );
-    details.push(Line::from(format!("Element: {}", element_id(Step::Review))));
 
     let mut summary = vec![Line::from("Review all seven setup choices")];
     summary.extend(
