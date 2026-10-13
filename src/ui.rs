@@ -938,6 +938,15 @@ impl WorkspaceState {
         }
     }
 
+    fn wizard_back_or_cancel(&mut self) {
+        if self.wizard_formal.apply(FormalEvent::Back).is_ok() {
+            self.wizard = self.wizard_formal.wizard().clone();
+        } else if self.wizard_formal.apply(FormalEvent::Cancel).is_ok() {
+            self.wizard = self.wizard_formal.wizard().clone();
+            self.screen = Screen::Landing;
+        }
+    }
+
     fn ensure_development_catalog(&mut self) {
         if self.wizard.catalog().is_none()
             && let Ok(catalog) = crate::wizard_catalog::WizardCatalog::development()
@@ -1269,11 +1278,7 @@ impl WorkspaceState {
                     UiAction::None
                 }
                 KeyCode::Esc | KeyCode::Left => {
-                    if self.wizard_formal.apply(FormalEvent::Back).is_err() {
-                        self.screen = Screen::Landing;
-                    } else {
-                        self.wizard = self.wizard_formal.wizard().clone();
-                    }
+                    self.wizard_back_or_cancel();
                     UiAction::None
                 }
                 KeyCode::Char('q') => {
@@ -1317,11 +1322,7 @@ impl WorkspaceState {
                 }
                 KeyCode::Backspace => {
                     if self.wizard.has_bounded_choices() {
-                        if self.wizard_formal.apply(FormalEvent::Back).is_err() {
-                            self.screen = Screen::Landing;
-                        } else {
-                            self.wizard = self.wizard_formal.wizard().clone();
-                        }
+                        self.wizard_back_or_cancel();
                         return UiAction::None;
                     }
                     if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) {
@@ -1330,11 +1331,7 @@ impl WorkspaceState {
                             .catalog()
                             .map_or_else(String::new, |catalog| catalog.query().to_owned());
                         if query.is_empty() {
-                            if self.wizard_formal.apply(FormalEvent::Back).is_err() {
-                                self.screen = Screen::Landing;
-                            } else {
-                                self.wizard = self.wizard_formal.wizard().clone();
-                            }
+                            self.wizard_back_or_cancel();
                             return UiAction::None;
                         }
                         query.pop();
@@ -1349,11 +1346,7 @@ impl WorkspaceState {
                     }
                     let mut value = self.wizard.current_value().to_owned();
                     if value.is_empty() {
-                        if self.wizard_formal.apply(FormalEvent::Back).is_err() {
-                            self.screen = Screen::Landing;
-                        } else {
-                            self.wizard = self.wizard_formal.wizard().clone();
-                        }
+                        self.wizard_back_or_cancel();
                         return UiAction::None;
                     }
                     value.pop();

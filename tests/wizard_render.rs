@@ -285,6 +285,11 @@ fn stepper_resizes_truthfully_from_full_journey_to_compact_and_tiny() {
 
     let tiny = rendered_text(&wizard, policy(false), 24, 6);
     assert!(tiny.contains("ASB setup wizard"));
+    assert!(tiny.contains("location: 1/13 Agent"));
+
+    let reasons = rendered_text(&wizard, policy(false), 120, 24);
+    assert!(reasons.contains("Workloads: requires an authoritative ASB catalog"));
+    assert!(reasons.contains("Run: requires an authoritative ASB plan and launch"));
 }
 
 #[test]
@@ -313,6 +318,8 @@ fn modeled_pane_cycle_and_conventional_navigation_preserve_draft() {
     assert_eq!(state.screen, Screen::Wizard);
     state.handle_key(key(KeyCode::Backspace));
     assert_eq!(state.screen, Screen::Landing);
+    state.open_wizard();
+    assert_eq!(state.screen, Screen::Wizard);
 
     let mut pane_state = WorkspaceState::for_startup(false);
     let before = rendered_workspace_text(&pane_state, policy(false), 140, 24);

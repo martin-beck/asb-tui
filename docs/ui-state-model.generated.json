@@ -193,6 +193,11 @@
       "key": "Up/Down"
     },
     {
+      "action": "wizard_catalog_move_vi",
+      "element": "wizard.agent",
+      "key": "j/k"
+    },
+    {
       "action": "wizard_bounded_choice_move",
       "element": "wizard.controls",
       "key": "Up/Down"
@@ -251,6 +256,16 @@
       "action": "wizard_back",
       "element": "navigation",
       "key": "Esc"
+    },
+    {
+      "action": "wizard_back_left",
+      "element": "navigation",
+      "key": "Left"
+    },
+    {
+      "action": "wizard_back_empty",
+      "element": "navigation",
+      "key": "Backspace when the current editable value or search is empty"
     },
     {
       "action": "cancel_wizard",
@@ -768,7 +783,7 @@
       "route": "wizard",
       "role": "status",
       "help_id": "wizard.step_region",
-      "focusable": false,
+      "focusable": true,
       "hoverable": true,
       "parent": "wizard.shell_header"
     },
@@ -786,7 +801,7 @@
       "route": "wizard",
       "role": "status",
       "help_id": "wizard.choice_details",
-      "focusable": false,
+      "focusable": true,
       "hoverable": true,
       "parent": "wizard.selection_list"
     },
@@ -795,7 +810,7 @@
       "route": "wizard",
       "role": "status",
       "help_id": "wizard.selection_summary",
-      "focusable": false,
+      "focusable": true,
       "hoverable": true,
       "parent": "wizard.selection_list"
     },
@@ -921,7 +936,7 @@
       "route": "wizard",
       "role": "navigation",
       "help_id": "wizard.controls",
-      "focusable": false,
+      "focusable": true,
       "hoverable": true,
       "parent": null
     },

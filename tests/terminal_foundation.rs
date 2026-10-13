@@ -11,8 +11,13 @@ use asb_tui::{
     renderer,
     runtime::{RuntimeError, TerminalSession},
     terminal::{CapabilityTier, RenderPolicy},
+    ui::{Screen, WorkspaceState},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    Terminal,
+    backend::{CrosstermBackend, TestBackend},
+};
 use std::{
     collections::BTreeSet,
     fs::{self, OpenOptions},
@@ -188,6 +193,42 @@ fn pseudo_terminal_error_unwind_restores_terminal_and_termios() {
         "error",
     );
     assert!(output.status.success(), "nested error probe failed");
+    assert_terminal_boundaries(&output.stdout);
+    assert_termios_restored(&output.stdout);
+}
+
+#[test]
+fn pseudo_terminal_stepper_keeps_location_reasons_and_navigation_across_resize() {
+    if std::env::var(CHILD_MODE).as_deref() == Ok("stepper") {
+        let policy = interactive_policy();
+        let _session = TerminalSession::enter(policy).unwrap();
+        let mut state = WorkspaceState::for_startup(false);
+        for (width, height, expected) in [(80, 24, "Step 1/13"), (24, 6, "location: 1/13 Agent")] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| asb_tui::ui::render(frame, &state, policy))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(text.contains(expected));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(state.screen, Screen::Landing);
+        state.open_wizard();
+        assert_eq!(state.screen, Screen::Wizard);
+        return;
+    }
+    let output = under_pty(
+        "pseudo_terminal_stepper_keeps_location_reasons_and_navigation_across_resize",
+        "stepper",
+    );
+    assert!(output.status.success(), "nested stepper PTY probe failed");
     assert_terminal_boundaries(&output.stdout);
     assert_termios_restored(&output.stdout);
 }

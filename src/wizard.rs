@@ -928,7 +928,8 @@ fn validate_model() -> Result<(), WizardError> {
 #[must_use]
 pub fn plain_text(wizard: &Wizard) -> String {
     format!(
-        "ASB setup wizard\nstep: {}\nfield: {}\ncontrols: Enter next | Esc back | q cancel\n",
+        "ASB setup wizard\nlocation: {}\nstep: {}\nfield: {}\ncontrols: Enter next | Esc back | q cancel\n",
+        render_text(&wizard_progress(wizard.step), StepperLayout::Tiny),
         step_title(wizard.step),
         element_id(wizard.step)
     )
@@ -1007,14 +1008,15 @@ pub fn render_with_pane(
             .and_then(|index| wizard.bounded_choice_labels().get(index).copied())
             .into_iter()
             .collect::<Vec<_>>();
-        let summary = summary_text(
+        let mut summary = summary_text(
             step_title(wizard.step),
             &selected_labels,
             SelectionMode::Single,
         )
         .into_iter()
         .map(Line::from)
-        .collect();
+        .collect::<Vec<_>>();
+        summary.extend(unavailable_reason_lines(wizard.step));
         let compact = compact_action_hint(SelectionMode::Single);
         (lines, summary, compact)
     } else if let Some(catalog) = wizard.catalog() {
@@ -1098,11 +1100,12 @@ pub fn render_with_pane(
             .into_iter()
             .map(Line::from)
             .collect::<Vec<_>>();
+        summary.extend(unavailable_reason_lines(wizard.step));
         summary.push(Line::from(action_hint(selection_mode)));
         let compact = compact_action_hint(selection_mode);
         (lines, summary, compact)
     } else {
-        let details = vec![
+        let mut details = vec![
             Line::from(Span::styled(
                 format!("Step: {}", step_title(wizard.step)),
                 shell_style(SemanticRole::Focus, policy),
@@ -1120,14 +1123,16 @@ pub fn render_with_pane(
             Line::from(format!("Value: {}", wizard.current_value())),
             Line::from(format!("Element: {}", element_id(wizard.step))),
         ];
+        details.extend(unavailable_reason_lines(wizard.step));
         let selected = (!wizard.current_value().is_empty())
             .then_some(wizard.current_value())
             .into_iter()
             .collect::<Vec<_>>();
-        let summary = summary_text(step_title(wizard.step), &selected, SelectionMode::Single)
+        let mut summary = summary_text(step_title(wizard.step), &selected, SelectionMode::Single)
             .into_iter()
             .map(Line::from)
-            .collect();
+            .collect::<Vec<_>>();
+        summary.extend(unavailable_reason_lines(wizard.step));
         let compact = compact_action_hint(SelectionMode::Single);
         (details, summary, compact)
     };
@@ -1310,6 +1315,17 @@ fn stepper_role(stage: &StepPresentation) -> SemanticRole {
         StepState::Future => SemanticRole::Muted,
         StepState::Unavailable => SemanticRole::Disabled,
     }
+}
+
+fn unavailable_reason_lines(step: Step) -> Vec<Line<'static>> {
+    wizard_progress(step)
+        .into_iter()
+        .filter_map(|stage| {
+            stage
+                .unavailable_reason
+                .map(|reason| Line::from(format!("[-] {}: {reason}", stage.stage.label())))
+        })
+        .collect()
 }
 
 fn shell_style(role: SemanticRole, policy: RenderPolicy) -> Style {
