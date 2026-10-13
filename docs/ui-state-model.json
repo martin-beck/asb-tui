@@ -64,7 +64,7 @@
     {"action":"focus_search","element":"help.search","key":"/"},
     {"action":"focus_measure_search","element":"measures.search","key":"/"},
     {"action":"toggle_measure","element":"measures.row","key":"Space"},
-    {"action":"toggle_all_measures","element":"measures.group_toggle","key":"A"},
+    {"action":"toggle_all_measures","element":"measures.group_toggle","key":"a"},
     {"action":"toggle_group","element":"measures.group_toggle","key":"g"},
     {"action":"focus_benchmark_search","element":"benchmarks.search","key":"/"},
     {"action":"select_benchmark_pool","element":"benchmarks.pool","key":"P"},

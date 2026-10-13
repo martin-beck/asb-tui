@@ -735,6 +735,39 @@ pub fn run_interactive_with_readiness<P: ReadinessProvider>(
     run_interactive_loop(state, policy, workspace, None, None, false)
 }
 
+/// Materialize the dispatcher only from the currently validated UI
+/// selection. Missing, empty, or no-longer-valid inputs are ordinary
+/// fail-closed operator states; callers must keep the terminal session alive
+/// and surface the bounded diagnostic instead of terminating the frontend.
+fn prepare_recording_dispatch_state(
+    workspace: &ui::WorkspaceState,
+    active_adapter_id: Option<&str>,
+) -> Result<crate::recording_dispatch::RecordingDispatchState, RuntimeError> {
+    let configuration = workspace
+        .live
+        .as_ref()
+        .and_then(|live| live.configuration.as_ref())
+        .ok_or_else(|| RuntimeError(io::Error::other("recording configuration unavailable")))?;
+    let workload_scope = workspace
+        .recording_workload_scope()
+        .map_err(io::Error::other)
+        .map_err(RuntimeError)?;
+    let mut recording = crate::recording_dispatch::RecordingDispatchState::new(
+        configuration.provider_id.clone().unwrap_or_default(),
+        configuration.model_id.clone().unwrap_or_default(),
+        configuration.agent_ids.clone(),
+        workload_scope,
+    )
+    .map_err(|_| RuntimeError(io::Error::other("recording selection unavailable")))?;
+    if let Some(adapter_id) = active_adapter_id {
+        recording
+            .bind_adapter_id(adapter_id)
+            .map_err(io::Error::other)
+            .map_err(RuntimeError)?;
+    }
+    Ok(recording)
+}
+
 fn run_interactive_loop(
     state: &mut AppState,
     policy: RenderPolicy,
@@ -993,32 +1026,16 @@ fn run_interactive_loop(
                                 | crate::actions::UiAction::ReplaySelected
                                 | crate::actions::UiAction::SelectOfflineCassette
                         );
-                        if recording_action
-                            && recording_state.is_none()
-                            && let Some(configuration) = workspace
-                                .live
-                                .as_ref()
-                                .and_then(|live| live.configuration.as_ref())
-                        {
-                            let workload_scope = workspace
-                                .recording_workload_scope()
-                                .map_err(io::Error::other)
-                                .map_err(RuntimeError)?;
-                            recording_state =
-                                crate::recording_dispatch::RecordingDispatchState::new(
-                                    configuration.provider_id.clone().unwrap_or_default(),
-                                    configuration.model_id.clone().unwrap_or_default(),
-                                    configuration.agent_ids.clone(),
-                                    workload_scope,
-                                )
-                                .ok();
-                            if let (Some(adapter_id), Some(recording)) =
-                                (active_adapter_id.as_deref(), recording_state.as_mut())
-                            {
-                                recording
-                                    .bind_adapter_id(adapter_id)
-                                    .map_err(io::Error::other)
-                                    .map_err(RuntimeError)?;
+                        if recording_action && recording_state.is_none() {
+                            match prepare_recording_dispatch_state(
+                                &workspace,
+                                active_adapter_id.as_deref(),
+                            ) {
+                                Ok(recording) => recording_state = Some(recording),
+                                Err(error) => {
+                                    workspace.set_run_error(format!("{error:?}"));
+                                    continue;
+                                }
                             }
                         }
                         if recording_action && let Some(recording) = recording_state.as_mut() {
@@ -1210,6 +1227,14 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyEventState};
     use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn recording_dispatch_preparation_rejects_unavailable_inputs_without_io() {
+        let workspace = ui::WorkspaceState::default();
+        let error = prepare_recording_dispatch_state(&workspace, None)
+            .expect_err("missing live configuration must fail closed");
+        assert_eq!(error.0.to_string(), "recording configuration unavailable");
+    }
 
     #[test]
     fn development_routes_have_distinct_catalog_and_handoff_requirements() {

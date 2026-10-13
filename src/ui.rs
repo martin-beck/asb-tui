@@ -1654,7 +1654,7 @@ impl WorkspaceState {
                 }
                 if !self.measure_search_focused && !self.visible_indices().is_empty() {
                     add("toggle_measure", "Space", Selection);
-                    add("toggle_all_measures", "A", Selection);
+                    add("toggle_all_measures", "a", Selection);
                     add("toggle_group", "g", Selection);
                     add("toggle_benchmark", "b", Selection);
                     add("select_benchmark_pool", "P", Selection);
@@ -2503,7 +2503,7 @@ impl WorkspaceState {
                 self.toggle_visible_group();
                 UiAction::None
             }
-            KeyCode::Char('A') if self.screen == Screen::Measures => {
+            KeyCode::Char('a') if self.screen == Screen::Measures => {
                 self.toggle_all_measures();
                 UiAction::None
             }
@@ -3245,7 +3245,7 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
                 if list_area.width < 64 {
                     " Measures - Space toggles "
                 } else {
-                    " Pool > Group > Benchmark > Measure - Space item, A select/clear visible, b benchmark, g group, P pool "
+                    " Pool > Group > Benchmark > Measure - Space item, a select/clear visible, b benchmark, g group, P pool "
                 },
                 policy,
             ))
@@ -3272,7 +3272,7 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
                 .chain([
                     Line::from(""),
                     Line::from("Up/Down navigate  Space toggle"),
-                    Line::from("A select/clear visible  b benchmark"),
+                    Line::from("a select/clear visible  b benchmark"),
                     Line::from("g group  P pool  Type to search"),
                 ])
                 .collect::<Vec<_>>(),
@@ -4203,7 +4203,7 @@ mod tests {
         assert!(rendered.contains("Pool > Group > Benchmark > Measure"));
         assert!(rendered.contains("Selection summary"));
         assert!(rendered.contains("[x]"));
-        assert!(rendered.contains("A select/clear visible"));
+        assert!(rendered.contains("a select/clear visible"));
     }
 
     #[test]
@@ -4219,11 +4219,11 @@ mod tests {
         state.handle_key(key(KeyCode::Enter));
         assert_eq!(state.search, "latency");
         assert_eq!(state.visible_indices().len(), 1);
-        state.handle_key(key(KeyCode::Char('A')));
+        state.handle_key(key(KeyCode::Char('a')));
         assert_eq!(state.search, "latency");
         assert!(!state.measures[2].selected);
         assert!(state.measures[0].selected && state.measures[1].selected);
-        state.handle_key(key(KeyCode::Char('A')));
+        state.handle_key(key(KeyCode::Char('a')));
         assert!(state.measures[2].selected);
     }
 
@@ -4254,7 +4254,7 @@ mod tests {
                 .all(|index| state.measures[index].selected)
         );
 
-        state.handle_key(key(KeyCode::Char('A')));
+        state.handle_key(key(KeyCode::Char('a')));
 
         assert!(
             !state
@@ -4320,7 +4320,7 @@ mod tests {
             )
             .unwrap();
 
-        runtime.handle_key(key(KeyCode::Char('A')));
+        runtime.handle_key(key(KeyCode::Char('a')));
         assert_eq!(
             runtime
                 .benchmark_selection
@@ -4358,12 +4358,12 @@ mod tests {
             scope,
             crate::recording_campaign::WorkloadScope::Selected(vec!["efficiency".into()])
         );
-        state.handle_key(key(KeyCode::Char('A')));
+        state.handle_key(key(KeyCode::Char('a')));
         assert_eq!(
             state.recording_workload_scope().unwrap(),
             crate::recording_campaign::WorkloadScope::All
         );
-        state.handle_key(key(KeyCode::Char('A')));
+        state.handle_key(key(KeyCode::Char('a')));
         assert!(state.recording_workload_scope().is_err());
     }
 
@@ -6215,6 +6215,100 @@ mod tests {
             .analysis = false;
         assert!(!ids(&state).contains(&"compare_live_offline"));
         assert_eq!(state.handle_key(key(KeyCode::Char('v'))), UiAction::None);
+    }
+
+    #[test]
+    fn inherited_pty_keys_select_scope_then_emit_offline_default_only_when_ready() {
+        let lifecycle = |state: &str, covered: u16, offline_ready: bool| {
+            crate::control_codec::RecordingCampaignLifecycle {
+                runner_instance_id: "runner-context".into(),
+                generation: Revision(4),
+                campaign_id: "campaign-1".into(),
+                provider_id: "openrouter".into(),
+                model_id: "model-1".into(),
+                agent_ids: vec!["agent-1".into()],
+                workload_ids: vec!["quality".into()],
+                tuple_count: 2,
+                covered_tuple_count: covered,
+                state: state.into(),
+                offline_ready,
+                unavailable_reason: None,
+            }
+        };
+        let mut snapshot = negotiated_snapshot(Vec::new());
+        snapshot.recording_campaign_lifecycle = Some(lifecycle("planned", 0, false));
+        let mut workspace = WorkspaceState::default();
+        workspace.apply_live_snapshot(snapshot);
+
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('2'))),
+            UiAction::None
+        );
+        workspace.toggle_all_measures();
+        workspace.toggle_all_measures();
+        assert!(workspace.recording_workload_scope().is_err());
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('a'))),
+            UiAction::None
+        );
+        assert_eq!(
+            workspace.recording_workload_scope().unwrap(),
+            crate::recording_campaign::WorkloadScope::All
+        );
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('s'))),
+            UiAction::None
+        );
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('o'))),
+            UiAction::None,
+            "premature offline dispatch must fail closed"
+        );
+
+        workspace
+            .live
+            .as_mut()
+            .unwrap()
+            .recording_campaign_lifecycle = Some(lifecycle("complete", 2, true));
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('o'))),
+            UiAction::Control(crate::actions::UiAction::ActivateOfflineDefault)
+        );
+    }
+
+    #[test]
+    fn offline_default_rejects_malformed_unavailable_and_stale_selection_states() {
+        let mut workspace = WorkspaceState::default();
+        let mut malformed = negotiated_snapshot(Vec::new());
+        malformed.recording_campaign_lifecycle =
+            Some(crate::control_codec::RecordingCampaignLifecycle {
+                runner_instance_id: "runner-context".into(),
+                generation: Revision(4),
+                campaign_id: "campaign-1".into(),
+                provider_id: "openrouter".into(),
+                model_id: "model-1".into(),
+                agent_ids: vec!["agent-1".into()],
+                workload_ids: vec!["quality".into()],
+                tuple_count: 2,
+                covered_tuple_count: 2,
+                state: "unknown".into(),
+                offline_ready: true,
+                unavailable_reason: None,
+            });
+        workspace.apply_live_snapshot(malformed);
+        workspace.screen = Screen::RunControl;
+        assert_eq!(
+            workspace.handle_key(key(KeyCode::Char('o'))),
+            UiAction::None
+        );
+
+        workspace.benchmark_control_revision = Some(Revision(3));
+        assert_eq!(
+            workspace.benchmark_campaign_handoff(Revision(99)),
+            Err(crate::selection::SelectionError::StaleCatalog)
+        );
+        workspace.benchmark_selection = None;
+        assert!(workspace.recording_workload_scope().is_err());
     }
 
     #[test]

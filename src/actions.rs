@@ -433,7 +433,7 @@ fn descriptor(
             None,
         ),
         UiAction::ToggleAllMeasures => (
-            KeyChord::Char('A'),
+            KeyChord::Char('a'),
             "Toggle all",
             "Select or deselect every visible measure",
             ActionContext::Route(Route::MeasurementSelection),
