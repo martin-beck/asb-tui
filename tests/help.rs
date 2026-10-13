@@ -118,5 +118,9 @@ fn document_entries_keep_footer_summary_and_overlay_usage_distinct() {
     assert_eq!(action.key, "Ctrl-S");
     assert_eq!(action.category.label(), "Lifecycle");
     assert!(action.usage.contains("preflight"));
+    assert_eq!(HelpCategory::Navigation.label(), "Navigation");
+    assert_eq!(HelpCategory::Selection.label(), "Selection");
+    assert_eq!(HelpCategory::Editing.label(), "Editing");
+    assert_eq!(HelpCategory::Help.label(), "Help");
     assert!(context_action("not_registered", "x", HelpCategory::Help).is_none());
 }
