@@ -8,7 +8,7 @@
 |                                    ||                    |
 |                                    ||Up/Down navigate    |
 |                                    ||Space toggle        |
-|                                    ||A select/clear      |
+|                                    ||a select/clear      |
 |                                    ||visible  b benchmark|
 +------------------------------------++--------------------+
  Context ---------------------------------------------------
