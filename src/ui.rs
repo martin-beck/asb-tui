@@ -1260,8 +1260,8 @@ impl WorkspaceState {
             Action::FocusSearch => self.screen == Screen::Help,
             Action::ToggleAllMeasures
             | Action::ToggleMeasure
+            | Action::ToggleGroup
             | Action::SelectBenchmarkPool
-            | Action::ToggleBenchmarkGroup
             | Action::ToggleBenchmark => {
                 self.screen == Screen::Measures
                     && !self.measure_search_focused
@@ -5492,6 +5492,41 @@ mod tests {
                 .unwrap()
                 .contains("No runs")
         );
+
+        state.screen = Screen::Measures;
+        let measure_actions = state.contextual_help_actions();
+        assert!(
+            measure_actions
+                .iter()
+                .any(|action| action.id == "toggle_group")
+        );
+        let model: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/ui-state-model.json")).unwrap();
+        let modeled = model["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|binding| binding["action"].as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for action in measure_actions {
+            assert!(
+                modeled.contains(action.id),
+                "context action {} lacks a formal binding",
+                action.id
+            );
+        }
+        let before = state
+            .measures
+            .iter()
+            .map(|measure| measure.selected)
+            .collect::<Vec<_>>();
+        assert_eq!(state.handle_key(key(KeyCode::Char('g'))), UiAction::None);
+        let after = state
+            .measures
+            .iter()
+            .map(|measure| measure.selected)
+            .collect::<Vec<_>>();
+        assert_ne!(before, after);
     }
 
     #[test]

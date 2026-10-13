@@ -331,11 +331,6 @@
       "key": "P"
     },
     {
-      "action": "toggle_benchmark_group",
-      "element": "benchmarks.group_toggle",
-      "key": "g"
-    },
-    {
       "action": "toggle_benchmark",
       "element": "benchmarks.row",
       "key": "b"

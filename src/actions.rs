@@ -28,9 +28,9 @@ pub enum UiAction {
     FocusSearch,
     ToggleAllMeasures,
     ToggleMeasure,
+    ToggleGroup,
     FocusBenchmarkSearch,
     SelectBenchmarkPool,
-    ToggleBenchmarkGroup,
     ToggleBenchmark,
     StartRun,
     CancelRun,
@@ -84,9 +84,9 @@ impl UiAction {
         Self::FocusSearch,
         Self::ToggleAllMeasures,
         Self::ToggleMeasure,
+        Self::ToggleGroup,
         Self::FocusBenchmarkSearch,
         Self::SelectBenchmarkPool,
-        Self::ToggleBenchmarkGroup,
         Self::ToggleBenchmark,
         Self::StartRun,
         Self::CancelRun,
@@ -141,9 +141,9 @@ impl UiAction {
             Self::FocusSearch => "focus_search",
             Self::ToggleAllMeasures => "toggle_all_measures",
             Self::ToggleMeasure => "toggle_measure",
+            Self::ToggleGroup => "toggle_group",
             Self::FocusBenchmarkSearch => "focus_benchmark_search",
             Self::SelectBenchmarkPool => "select_benchmark_pool",
-            Self::ToggleBenchmarkGroup => "toggle_benchmark_group",
             Self::ToggleBenchmark => "toggle_benchmark",
             Self::StartRun => "start_run",
             Self::CancelRun => "cancel_run",
@@ -313,9 +313,9 @@ const fn action_context_route(action: UiAction) -> Route {
         UiAction::FocusSearch => Route::Help,
         UiAction::ToggleAllMeasures
         | UiAction::ToggleMeasure
+        | UiAction::ToggleGroup
         | UiAction::FocusBenchmarkSearch
         | UiAction::SelectBenchmarkPool
-        | UiAction::ToggleBenchmarkGroup
         | UiAction::ToggleBenchmark => Route::MeasurementSelection,
         UiAction::StartRun
         | UiAction::CancelRun
@@ -446,6 +446,13 @@ fn descriptor(
             ActionContext::Route(Route::MeasurementSelection),
             None,
         ),
+        UiAction::ToggleGroup => (
+            KeyChord::Char('g'),
+            "Toggle focused group",
+            "Select or clear available measures in the focused group",
+            ActionContext::Route(Route::MeasurementSelection),
+            None,
+        ),
         UiAction::FocusBenchmarkSearch => (
             KeyChord::Char('/'),
             "Search catalog",
@@ -457,13 +464,6 @@ fn descriptor(
             KeyChord::Char('P'),
             "Select pool",
             "Choose the benchmark pool for this campaign",
-            ActionContext::Route(Route::MeasurementSelection),
-            None,
-        ),
-        UiAction::ToggleBenchmarkGroup => (
-            KeyChord::Char('g'),
-            "Toggle group",
-            "Select or clear visible benchmarks in the focused group",
             ActionContext::Route(Route::MeasurementSelection),
             None,
         ),
@@ -776,7 +776,7 @@ fn action_backend_status(
             | UiAction::RetryDevelopment
             | UiAction::FocusBenchmarkSearch
             | UiAction::SelectBenchmarkPool
-            | UiAction::ToggleBenchmarkGroup
+            | UiAction::ToggleGroup
             | UiAction::ToggleBenchmark => None,
             _ => Some(ActionDisabledReason::NotNegotiated),
         };
@@ -812,9 +812,9 @@ fn action_backend_status(
         }
         UiAction::ToggleAllMeasures
         | UiAction::ToggleMeasure
+        | UiAction::ToggleGroup
         | UiAction::FocusBenchmarkSearch
         | UiAction::SelectBenchmarkPool
-        | UiAction::ToggleBenchmarkGroup
         | UiAction::ToggleBenchmark
             if !caps.planning =>
         {

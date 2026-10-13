@@ -67,7 +67,6 @@
     {"action":"toggle_group","element":"measures.group_toggle","key":"g"},
     {"action":"focus_benchmark_search","element":"benchmarks.search","key":"/"},
     {"action":"select_benchmark_pool","element":"benchmarks.pool","key":"P"},
-    {"action":"toggle_benchmark_group","element":"benchmarks.group_toggle","key":"g"},
     {"action":"toggle_benchmark","element":"benchmarks.row","key":"b"}
     ,{"action":"focus_configuration","element":"configuration.entry","key":"Enter"}
     ,{"action":"save_configuration","element":"configuration.entry","key":"Ctrl-S"}
