@@ -19,6 +19,8 @@ python3 tools/test-ui-state-model.py
 python3 tools/validate-ui-state-model.py
 python3 tools/test-ui-source-parity.py
 python3 tools/check-ui-source-parity.py
+python3 tools/test-ui-visual-regression.py
+python3 tools/check-ui-visual-parity.py
 ```
 
 The generated JSON is checked byte-for-byte in pull-request and trusted-main CI. The gate fails
@@ -27,6 +29,13 @@ focus/hover metadata, broken parent links, and routes without an escape path. On
 the validator also compares the exact base and head revisions and reports UI files changed without
 the corresponding model and focused-test update. Model fixtures are deterministic and offline;
 never add provider output, credentials, private paths, or captured prompts.
+
+The visual parity gate binds every formal route to declared meaningful states,
+wide/ordinary/narrow/minimum dimensions, color/monochrome/ASCII policies, the
+typed action registry, UI ownership, contextual help, and reviewed text-grid
+goldens under tests/goldens/visual. Update a golden only after inspecting the
+complete bounded grid for hierarchy, focus, selection, step location,
+footer/help reachability, privacy, and small-terminal legibility.
 
 Adding, renaming, or deleting a UI module also requires updating
 `docs/ui-module-inventory.json`. Every source module must be either an owned UI module or an

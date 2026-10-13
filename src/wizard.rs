@@ -30,10 +30,22 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
+    symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use serde::Deserialize;
+
+const ASCII_BORDER: border::Set<'static> = border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
 
 const MODEL: &str = include_str!("../docs/ui-state-model.json");
 const OPENROUTER_CREDENTIAL_REFERENCE: &str = "OPENROUTER_API_KEY";
@@ -971,6 +983,7 @@ pub fn render_with_pane(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_set(semantic_border_set(policy))
                 .title(" Wizard shell "),
         ),
         regions[0],
@@ -1155,6 +1168,7 @@ pub fn render_with_pane(
             Paragraph::new(details).wrap(Wrap { trim: true }).block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_set(semantic_border_set(policy))
                     .title(if pane == WizardPane::Choices {
                         " Choice details * "
                     } else {
@@ -1210,6 +1224,7 @@ pub fn render_with_pane(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_set(semantic_border_set(policy))
                 .title(if pane == WizardPane::Summary {
                     " Selection summary * "
                 } else {
@@ -1233,6 +1248,7 @@ pub fn render_with_pane(
         .block(
             Block::default()
                 .borders(Borders::TOP)
+                .border_set(semantic_border_set(policy))
                 .title(if pane == WizardPane::Controls { " Keyboard help * " } else { " Keyboard help " }),
         ),
         regions[3],
@@ -1277,7 +1293,7 @@ fn wizard_step_region(
                 .flat_map(|(index, stage)| {
                     let mut spans = Vec::new();
                     if index > 0 {
-                        spans.push(Span::raw(" ─ "));
+                        spans.push(Span::raw(if policy.unicode { " ─ " } else { " - " }));
                     }
                     spans.push(Span::styled(
                         format!("{} {}", stage.state.marker(), stage.stage.label()),
@@ -1288,7 +1304,7 @@ fn wizard_step_region(
                 .collect::<Vec<_>>(),
         ),
         StepperLayout::Compact | StepperLayout::Tiny => Line::from(Span::styled(
-            render_text(&stages, layout),
+            ascii_fallback(render_text(&stages, layout), policy),
             shell_style(
                 if pane == WizardPane::Progress {
                     SemanticRole::Focus
@@ -1299,13 +1315,39 @@ fn wizard_step_region(
             ),
         )),
     };
-    Paragraph::new(content).block(Block::default().borders(Borders::TOP).title(
-        if pane == WizardPane::Progress {
-            " Progress * "
-        } else {
-            " Progress "
-        },
-    ))
+    Paragraph::new(content).block(
+        Block::default()
+            .borders(Borders::TOP)
+            .border_set(semantic_border_set(policy))
+            .title(if pane == WizardPane::Progress {
+                " Progress * "
+            } else {
+                " Progress "
+            }),
+    )
+}
+
+fn semantic_border_set(policy: RenderPolicy) -> border::Set<'static> {
+    if policy.unicode {
+        border::PLAIN
+    } else {
+        ASCII_BORDER
+    }
+}
+
+fn ascii_fallback(value: String, policy: RenderPolicy) -> String {
+    if policy.unicode {
+        value
+    } else {
+        value.replace(
+            [
+                char::from_u32(0x2500).expect("valid scalar"),
+                char::from_u32(0x00b7).expect("valid scalar"),
+                char::from_u32(0x2014).expect("valid scalar"),
+            ],
+            "-",
+        )
+    }
 }
 
 fn stepper_role(stage: &StepPresentation) -> SemanticRole {

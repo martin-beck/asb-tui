@@ -1,0 +1,4 @@
+Context: Configuration value
+> Type Type configuration value
+About: Type a bounded value, ...
+Up/Down browse | Esc/F1 close

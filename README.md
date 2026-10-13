@@ -64,6 +64,11 @@ duplicate, malformed, wrong-version, and wrong-type inputs. It also proves the s
 runs with an empty environment and contains no ASB workspace/path dependency. Ratatui
 `TestBackend` snapshots bind compact, standard, wide, and tiny layouts; pseudo-terminal tests bind
 actual draw, quit, panic, plain fallback, and restoration behavior.
+The visual regression manifest and reviewed text grids additionally bind every
+formal route to wide, ordinary, narrow, and minimum dimensions, color,
+monochrome, and ASCII semantics, resize continuity, contextual help, and a
+keyboard-only PTY journey. tools/check-ui-visual-parity.py fails when those
+fixtures drift from UI ownership, the formal model, help, or typed actions.
 The application-state boundary accepts typed event injection and deterministic projection only;
 the live ASB client, negotiation, polling, and responsiveness contract are intentionally owned by
 the separate integration work, not this renderer foundation.
