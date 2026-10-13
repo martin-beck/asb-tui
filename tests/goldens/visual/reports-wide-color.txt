@@ -33,4 +33,4 @@
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
  Context ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Unavailable: Runner capabilities are unavailable; reconnect before retrying or comparing runs.
-? / h Help  |  Up / Down Move report cursor  |  Space Select report run  |  1 Home  |  2 Measures
+? / h Help  |  Up / Down Move report cursor  |  Space Select report run  |  1 Home  |  2 Measures  |  3 Configuration  |  s Run

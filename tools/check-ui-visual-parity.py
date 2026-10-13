@@ -89,6 +89,41 @@ def validate(root=ROOT):
         if screens != expected_screens:
             errors.append(f"Screen registry drift: {sorted(screens ^ expected_screens)}")
 
+    visual_source_path = root / "tests/visual_regression.rs"
+    if not visual_source_path.is_file():
+        errors.append("Rust visual golden registry is missing")
+    else:
+        visual_source = visual_source_path.read_text(encoding="utf-8")
+        registry_match = re.search(
+            r"const CASES: &\[GoldenCase\] = &\[(.*?)\n\];",
+            visual_source,
+            re.S,
+        )
+        if not registry_match:
+            errors.append("Rust visual golden registry is malformed")
+        else:
+            rust_goldens = re.findall(
+                r'GoldenCase\s*\{\s*id:\s*"([^"]+)",\s*'
+                r'route:\s*"([^"]+)",\s*scenario:\s*"([^"]+)",\s*'
+                r'dimension:\s*"([^"]+)",\s*capability:\s*"([^"]+)",\s*'
+                r'file:\s*"([^"]+)"',
+                registry_match.group(1),
+                re.S,
+            )
+            manifest_goldens = [
+                (
+                    item["id"],
+                    item["route"],
+                    item["state"],
+                    item["dimension"],
+                    item["capability"],
+                    item["file"],
+                )
+                for item in manifest["goldens"]
+            ]
+            if rust_goldens != manifest_goldens:
+                errors.append("manifest and Rust visual golden registry drifted")
+
     action_source = (root / "src/actions.rs").read_text(encoding="utf-8")
     action_match = re.search(r"pub const fn id\(self\).*?\n    \}", action_source, re.S)
     if not action_match:

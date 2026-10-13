@@ -34,6 +34,10 @@ def fixture_root():
         shutil.copy2(ROOT / "docs" / name, root / "docs" / name)
     shutil.copy2(ROOT / "src/ui.rs", root / "src/ui.rs")
     shutil.copy2(ROOT / "src/actions.rs", root / "src/actions.rs")
+    shutil.copy2(
+        ROOT / "tests/visual_regression.rs",
+        root / "tests/visual_regression.rs",
+    )
     (root / "tools").mkdir()
     shutil.copy2(
         ROOT / "tools/validate-ui-state-model.py",
@@ -85,6 +89,20 @@ class VisualParityTests(unittest.TestCase):
         errors = MODULE.validate(root)
         self.assertTrue(any("private material" in error for error in errors))
         self.assertTrue(any("control bytes" in error for error in errors))
+
+    def test_manifest_and_rust_golden_registry_drift_fails_closed(self):
+        temporary, root = fixture_root()
+        self.addCleanup(temporary.cleanup)
+        path = root / "tests/visual_regression.rs"
+        source = path.read_text()
+        source = source.replace(
+            'route: "landing",',
+            'route: "reports",',
+            1,
+        )
+        path.write_text(source)
+        errors = MODULE.validate(root)
+        self.assertIn("manifest and Rust visual golden registry drifted", errors)
 
 
 if __name__ == "__main__":

@@ -50,25 +50,105 @@ fn lock_unpoisoned(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn matching_asb_tui_processes(binary: &Path) -> BTreeSet<u32> {
-    let expected = fs::canonicalize(binary).expect("ASB TUI executable must be canonicalizable");
-    fs::read_dir("/proc")
-        .expect("procfs must be readable for the live terminal cleanup proof")
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
-        .filter(|pid| fs::read_link(format!("/proc/{pid}/exe")).ok().as_ref() == Some(&expected))
-        .collect()
+fn process_executable_matches(process: u32, binary: &Path) -> bool {
+    let Ok(expected) = fs::metadata(binary) else {
+        return false;
+    };
+    let Ok(observed) = fs::metadata(format!("/proc/{process}/exe")) else {
+        return false;
+    };
+    expected.dev() == observed.dev() && expected.ino() == observed.ino()
 }
 
-fn wait_for_no_new_asb_tui_processes(binary: &Path, baseline: &BTreeSet<u32>) -> bool {
+fn wait_for_process_generation(path: &Path, binary: &Path) -> Option<ProcessGeneration> {
     for _ in 0..100 {
-        let current = matching_asb_tui_processes(binary);
-        if current.is_subset(baseline) {
+        if let Ok(value) = fs::read_to_string(path)
+            && let Ok(pid) = value.parse::<u32>()
+            && process_executable_matches(pid, binary)
+            && let Some(start_time) = process_start_time(pid)
+        {
+            return Some(ProcessGeneration { pid, start_time });
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+fn process_group(process: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{process}/stat")).ok()?;
+    let fields = stat.get(stat.rfind(") ")?.checked_add(2)?..)?;
+    fields.split_ascii_whitespace().nth(2)?.parse::<u32>().ok()
+}
+
+fn wait_for_exact_process_in_group(
+    binary: &Path,
+    process_group_id: u32,
+) -> Option<ProcessGeneration> {
+    for _ in 0..100 {
+        let matches = fs::read_dir("/proc")
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+            .filter(|pid| {
+                process_group(*pid) == Some(process_group_id)
+                    && process_executable_matches(*pid, binary)
+            })
+            .filter_map(|pid| {
+                process_start_time(pid).map(|start_time| ProcessGeneration { pid, start_time })
+            })
+            .collect::<Vec<_>>();
+        if let [process] = matches.as_slice() {
+            return Some(process.clone());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+fn wait_for_process_generation_gone(process: &ProcessGeneration) -> bool {
+    for _ in 0..300 {
+        if !process_generation_matches(process) {
             return true;
         }
         thread::sleep(Duration::from_millis(10));
     }
     false
+}
+
+fn terminate_exact_process(process: &ProcessGeneration) -> bool {
+    if !process_generation_matches(process) {
+        return true;
+    }
+    let raw_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, process.pid, 0) } as libc::c_int;
+    if raw_fd < 0 {
+        return false;
+    }
+    let pidfd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+    if !process_generation_matches(process) {
+        return true;
+    }
+    let signal = |value: libc::c_int| unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            value,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        ) == 0
+    };
+    if !signal(libc::SIGTERM) {
+        return false;
+    }
+    for _ in 0..100 {
+        if !process_generation_matches(process) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    if !signal(libc::SIGKILL) {
+        return false;
+    }
+    wait_for_process_generation_gone(process)
 }
 
 fn under_pty(test: &str, mode: &str) -> std::process::Output {
@@ -1151,8 +1231,19 @@ impl MultiplexerSession {
                 group_clean && server_clean
             }
             Self::Screen { session } => {
-                let _ = bounded_command("/usr/bin/screen", &["-S", session, "-X", "quit"]);
-                true
+                if !bounded_command("/usr/bin/screen", &["-S", session, "-Q", "select", "."]) {
+                    return true;
+                }
+                if !bounded_command("/usr/bin/screen", &["-S", session, "-X", "quit"]) {
+                    return false;
+                }
+                for _ in 0..100 {
+                    if !bounded_command("/usr/bin/screen", &["-S", session, "-Q", "select", "."]) {
+                        return true;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                false
             }
         }
     }
@@ -1976,7 +2067,6 @@ fn live_tmux_fixture_lock_is_exclusive() {
 fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     let _fixture_lock = serialize_live_tmux_fixture();
     let binary_path = Path::new(env!("CARGO_BIN_EXE_asb-tui"));
-    let baseline_processes = matching_asb_tui_processes(binary_path);
     let binary = binary_path.to_string_lossy();
     let directory = PrivateDirectory::create();
     let nonce = SystemTime::now()
@@ -2001,6 +2091,14 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
         &["-x", "80", "-y", "24", &tmux_command],
     )
     .unwrap_or_else(|failure| panic!("{failure}"));
+    let tmux_process = match &tmux_guard {
+        MultiplexerSession::Tmux {
+            pane_process: Some(observed),
+            ..
+        } => wait_for_exact_process_in_group(binary_path, observed.foreground_group)
+            .expect("tmux fixture did not retain exact ASB TUI child authority"),
+        _ => panic!("tmux fixture did not retain exact child process authority"),
+    };
     set_tmux_remain_on_exit(&tmux_socket, &tmux_session, &tmux_guard)
         .unwrap_or_else(|failure| panic!("{failure}"));
     let tmux_result = catch_unwind(AssertUnwindSafe(|| {
@@ -2169,7 +2267,7 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     }));
     let tmux_stopped = tmux_guard.stop();
     let tmux_gone = tmux_guard.is_gone();
-    let tmux_child_gone = wait_for_no_new_asb_tui_processes(binary_path, &baseline_processes);
+    let tmux_child_gone = wait_for_process_generation_gone(&tmux_process);
     if let Err(payload) = tmux_result {
         assert!(
             tmux_stopped,
@@ -2189,13 +2287,10 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     assert!(tmux_gone, "tmux session leaked after cleanup");
     assert!(tmux_child_gone, "ASB TUI child leaked after tmux cleanup");
 
-    let screen_marker = directory.path().join("screen-restored");
     let screen_capture = directory.path().join("screen.capture");
+    let screen_child = directory.path().join("screen-child");
     let screen_session = format!("asb-tui-test-{}-{nonce}", std::process::id());
-    let screen_command = format!(
-        "before=$(stty -g) || exit 90; {binary}; status=$?; after=$(stty -g) || exit 91; test \"$before\" = \"$after\" || exit 92; printf restored >{}; exit $status",
-        screen_marker.display()
-    );
+    let screen_command = format!("printf %s $$ >{}; exec {binary}", screen_child.display());
     assert!(bounded_command(
         "/usr/bin/screen",
         &["-dmS", &screen_session, "sh", "-c", &screen_command],
@@ -2203,43 +2298,96 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     let screen_guard = MultiplexerSession::Screen {
         session: screen_session.clone(),
     };
-    assert!(
-        wait_for_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
-            let capture = screen_capture.to_string_lossy();
-            if !bounded_command(
-                "/usr/bin/screen",
-                &["-S", &screen_session, "-p", "0", "-X", "hardcopy", &capture],
-            ) {
-                return None;
-            }
-            fs::File::open(&screen_capture).ok().and_then(|file| {
-                let mut output = Vec::new();
-                file.take((MAX_MULTIPLEXER_OUTPUT + 1) as u64)
-                    .read_to_end(&mut output)
-                    .ok()?;
-                (output.len() <= MAX_MULTIPLEXER_OUTPUT).then_some(output)
+    let screen_result = catch_unwind(AssertUnwindSafe(|| {
+        assert!(
+            wait_for_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
+                let capture = screen_capture.to_string_lossy();
+                if !bounded_command(
+                    "/usr/bin/screen",
+                    &["-S", &screen_session, "-p", "0", "-X", "hardcopy", &capture],
+                ) {
+                    return None;
+                }
+                fs::File::open(&screen_capture).ok().and_then(|file| {
+                    let mut output = Vec::new();
+                    file.take((MAX_MULTIPLEXER_OUTPUT + 1) as u64)
+                        .read_to_end(&mut output)
+                        .ok()?;
+                    (output.len() <= MAX_MULTIPLEXER_OUTPUT).then_some(output)
+                })
             })
-        })
-        .is_ok(),
-        "GNU screen UI did not reach its first rendered frame"
+            .is_ok(),
+            "GNU screen UI did not reach its first rendered frame"
+        );
+        let screen_process = wait_for_process_generation(&screen_child, binary_path)
+            .expect("GNU screen fixture did not publish exact child process authority");
+        assert!(bounded_command(
+            "/usr/bin/screen",
+            &["-S", &screen_session, "-p", "0", "-X", "stuff", "q"],
+        ));
+        screen_process
+    }));
+    let screen_process = screen_result
+        .as_ref()
+        .ok()
+        .cloned()
+        .or_else(|| wait_for_process_generation(&screen_child, binary_path));
+    let screen_stopped = screen_guard.stop();
+    let screen_gone = screen_guard.is_gone();
+    let screen_child_gone = screen_process.as_ref().is_some_and(terminate_exact_process);
+    if let Err(payload) = screen_result {
+        assert!(screen_stopped, "screen cleanup failed after test failure");
+        assert!(screen_gone, "GNU screen session leaked after test failure");
+        assert!(
+            screen_child_gone,
+            "ASB TUI child leaked after failed GNU screen journey"
+        );
+        resume_unwind(payload);
+    }
+    assert!(screen_stopped, "screen cleanup failed");
+    assert!(screen_gone, "GNU screen session leaked after cleanup");
+    assert!(
+        screen_child_gone,
+        "ASB TUI child leaked after screen cleanup"
     );
+}
+
+#[test]
+fn screen_cleanup_reaps_exact_child_after_injected_test_panic() {
+    let _fixture_lock = serialize_live_tmux_fixture();
+    let binary_path = Path::new(env!("CARGO_BIN_EXE_asb-tui"));
+    let binary = binary_path.to_string_lossy();
+    let directory = PrivateDirectory::create();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let session = format!("asb-tui-panic-{}-{nonce}", std::process::id());
+    let child_path = directory.path().join("screen-panic-child");
+    let command = format!("printf %s $$ >{}; exec {binary}", child_path.display());
     assert!(bounded_command(
         "/usr/bin/screen",
-        &["-S", &screen_session, "-p", "0", "-X", "stuff", "q"],
+        &["-dmS", &session, "sh", "-c", &command],
     ));
-    let screen_restored = wait_for_marker(&screen_marker);
+    let guard = MultiplexerSession::Screen {
+        session: session.clone(),
+    };
+    let child = wait_for_process_generation(&child_path, binary_path)
+        .expect("panic fixture did not publish exact ASB TUI child authority");
+
+    let injected = catch_unwind(AssertUnwindSafe(|| {
+        assert!(process_generation_matches(&child));
+        panic!("intentional GNU screen cleanup probe");
+    }));
+    assert!(injected.is_err(), "cleanup probe did not inject a panic");
+    assert!(guard.stop(), "screen cleanup failed after injected panic");
     assert!(
-        screen_restored,
-        "GNU screen session did not restore termios"
+        guard.is_gone(),
+        "GNU screen session survived injected panic"
     );
-    assert!(screen_guard.stop(), "screen cleanup failed");
     assert!(
-        screen_guard.is_gone(),
-        "GNU screen session leaked after cleanup"
-    );
-    assert!(
-        wait_for_no_new_asb_tui_processes(binary_path, &baseline_processes),
-        "ASB TUI child leaked after terminal journey"
+        terminate_exact_process(&child),
+        "exact ASB TUI child survived injected panic cleanup"
     );
 }
 

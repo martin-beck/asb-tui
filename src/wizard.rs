@@ -30,10 +30,22 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
+    symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use serde::Deserialize;
+
+const ASCII_BORDER: border::Set<'static> = border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
 
 const MODEL: &str = include_str!("../docs/ui-state-model.json");
 const OPENROUTER_CREDENTIAL_REFERENCE: &str = "OPENROUTER_API_KEY";
@@ -970,7 +982,8 @@ pub fn render_with_pane(
         ]))
         .block(
             Block::default()
-                .borders(semantic_borders(policy, Borders::ALL))
+                .borders(Borders::ALL)
+                .border_set(semantic_border_set(policy))
                 .title(" Wizard shell "),
         ),
         regions[0],
@@ -1154,7 +1167,8 @@ pub fn render_with_pane(
         frame.render_widget(
             Paragraph::new(details).wrap(Wrap { trim: true }).block(
                 Block::default()
-                    .borders(semantic_borders(policy, Borders::ALL))
+                    .borders(Borders::ALL)
+                    .border_set(semantic_border_set(policy))
                     .title(if pane == WizardPane::Choices {
                         " Choice details * "
                     } else {
@@ -1209,7 +1223,8 @@ pub fn render_with_pane(
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
-                .borders(semantic_borders(policy, Borders::ALL))
+                .borders(Borders::ALL)
+                .border_set(semantic_border_set(policy))
                 .title(if pane == WizardPane::Summary {
                     " Selection summary * "
                 } else {
@@ -1232,7 +1247,8 @@ pub fn render_with_pane(
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
-                .borders(semantic_borders(policy, Borders::TOP))
+                .borders(Borders::TOP)
+                .border_set(semantic_border_set(policy))
                 .title(if pane == WizardPane::Controls { " Keyboard help * " } else { " Keyboard help " }),
         ),
         regions[3],
@@ -1301,7 +1317,8 @@ fn wizard_step_region(
     };
     Paragraph::new(content).block(
         Block::default()
-            .borders(semantic_borders(policy, Borders::TOP))
+            .borders(Borders::TOP)
+            .border_set(semantic_border_set(policy))
             .title(if pane == WizardPane::Progress {
                 " Progress * "
             } else {
@@ -1310,11 +1327,11 @@ fn wizard_step_region(
     )
 }
 
-fn semantic_borders(policy: RenderPolicy, borders: Borders) -> Borders {
+fn semantic_border_set(policy: RenderPolicy) -> border::Set<'static> {
     if policy.unicode {
-        borders
+        border::PLAIN
     } else {
-        Borders::NONE
+        ASCII_BORDER
     }
 }
 

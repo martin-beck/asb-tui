@@ -12,14 +12,14 @@
     {"id":"ascii_plain","tier":"plain","unicode":false}
   ],
   "routes": [
-    {"id":"landing","states":["ready","warning","empty"]},
-    {"id":"wizard","states":["all_steps","choice_unavailable","draft","help"]},
+    {"id":"landing","states":["ready","warning","empty","development_handoff"]},
+    {"id":"wizard","states":["step_agent","step_provider","step_model","step_configuration","step_credentials","step_workloads","step_measures","step_recording","step_replay","step_review","step_execution","step_results","step_comparison","choice_unavailable","draft","help"]},
     {"id":"measurement_selection","states":["selected","filtered","empty","unavailable","help"]},
     {"id":"configuration","states":["clean","draft","warning","preflight","help"]},
     {"id":"run_control","states":["ready","running","failed","cancelled","help"]},
     {"id":"recent_runs","states":["empty","completed","failed","selected"]},
     {"id":"reports","states":["empty","results","comparison","warning","help"]},
-    {"id":"help","states":["search","grouped_actions","unavailable_action"]}
+    {"id":"help","states":["selected_action","grouped_actions","unavailable_action"]}
   ],
   "goldens": [
     {"id":"landing-wide-color","route":"landing","state":"ready","dimension":"wide","capability":"color_unicode","file":"tests/goldens/visual/landing-wide-color.txt","markers":["Welcome to ASB","Landing:","? / h Help"]},

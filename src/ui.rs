@@ -27,10 +27,22 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
 use std::path::PathBuf;
+
+const ASCII_BORDER: border::Set<'static> = border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -3090,7 +3102,8 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
             .block(
                 Block::default()
                     .title(" ASB - Agent Systems Benchmark ")
-                    .borders(semantic_borders(policy, Borders::ALL)),
+                    .borders(Borders::ALL)
+                    .border_set(semantic_border_set(policy)),
             )
             .highlight_style(accent(policy)),
         chunks[0],
@@ -3218,6 +3231,7 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
         .map(|(visible_index, i)| {
             let row = &state.measures[*i];
             let label = format!("{} / {} / {}", row.group, row.benchmark, row.name);
+            let label = fit_display_width(&label, usize::from(list_area.width.saturating_sub(8)));
             let selection =
                 SelectionRow::enabled(&label, row.selected, state.measure_cursor == visible_index);
             ListItem::new(Span::styled(row_text(&selection), Style::default()))
@@ -3228,7 +3242,11 @@ fn measures(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: R
     frame.render_stateful_widget(
         List::new(items)
             .block(panel(
-                " Pool > Group > Benchmark > Measure - Space item, A select/clear visible, b benchmark, g group, P pool ",
+                if list_area.width < 64 {
+                    " Measures - Space toggles "
+                } else {
+                    " Pool > Group > Benchmark > Measure - Space item, A select/clear visible, b benchmark, g group, P pool "
+                },
                 policy,
             ))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
@@ -3284,10 +3302,14 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
                     .value(setting.id)
                     .unwrap_or_default()
             };
-            ListItem::new(format!(
-                "{} = {} [{}]",
-                setting.label, value, setting.category
-            ))
+            let full = format!("{} = {} [{}]", setting.label, value, setting.category);
+            let compact = format!("{} = {}", setting.label, value);
+            let available = usize::from(columns[0].width.saturating_sub(2));
+            ListItem::new(if Line::from(full.as_str()).width() <= available {
+                full
+            } else {
+                compact
+            })
         })
         .collect();
     let mut ls = ListState::default();
@@ -3308,20 +3330,25 @@ fn configuration(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, poli
         ConfigurationSaveState::Invalid => "Invalid value: correct it before applying",
     };
     let footer = Rect {
-        x: columns[0].x,
+        x: columns[0].x.saturating_add(1),
         y: columns[0]
             .y
             .saturating_add(columns[0].height.saturating_sub(2)),
-        width: columns[0].width,
-        height: 2.min(columns[0].height),
+        width: columns[0].width.saturating_sub(2),
+        height: 1.min(columns[0].height),
     };
     let detail = state
         .preflight_error
         .as_deref()
         .or(state.configuration_edit_error.as_deref())
         .unwrap_or("");
+    frame.render_widget(Clear, footer);
     frame.render_widget(
-        Paragraph::new(format!("{status}  {detail}")).style(muted(policy)),
+        Paragraph::new(fit_display_width(
+            &format!("{status}  {detail}"),
+            usize::from(footer.width),
+        ))
+        .style(muted(policy)),
         footer,
     );
     let authoritative = state.live.as_ref().map_or_else(
@@ -3567,22 +3594,36 @@ fn contextual_footer(
     state: &WorkspaceState,
     policy: RenderPolicy,
 ) {
+    frame.render_widget(Clear, area);
     let element = document_help_entry(state.contextual_help_element());
     let actions = state.contextual_help_actions();
-    let action_limit = if area.width < 80 { 2 } else { 5 };
-    let mut footer_actions = actions
+    let candidates = actions
         .iter()
         .find(|action| action.id == "open_help")
         .copied()
         .into_iter()
+        .chain(
+            actions
+                .iter()
+                .filter(|action| action.id != "open_help")
+                .copied(),
+        )
         .collect::<Vec<_>>();
-    footer_actions.extend(
-        actions
+    let available = usize::from(area.width);
+    let mut footer_actions = Vec::new();
+    for action in candidates {
+        let mut trial = footer_actions.clone();
+        trial.push(action);
+        let text = trial
             .iter()
-            .filter(|action| action.id != "open_help")
-            .take(action_limit - footer_actions.len())
-            .copied(),
-    );
+            .map(|item| format!("{} {}", item.key, item.label))
+            .collect::<Vec<_>>()
+            .join("  |  ");
+        if Line::from(text.as_str()).width() > available {
+            break;
+        }
+        footer_actions = trial;
+    }
     let action_text = footer_actions
         .into_iter()
         .map(|action| format!("{} {}", action.key, action.label))
@@ -3598,14 +3639,18 @@ fn contextual_footer(
         |reason| format!("Unavailable: {reason}"),
     );
     frame.render_widget(
-        Paragraph::new(vec![Line::from(description), Line::from(action_text)])
-            .alignment(Alignment::Left)
-            .style(muted(policy))
-            .block(
-                Block::default()
-                    .borders(semantic_borders(policy, Borders::TOP))
-                    .title(" Context "),
-            ),
+        Paragraph::new(vec![
+            Line::from(fit_display_width(&description, available)),
+            Line::from(fit_display_width(&action_text, available)),
+        ])
+        .alignment(Alignment::Left)
+        .style(muted(policy))
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_set(semantic_border_set(policy))
+                .title(" Context "),
+        ),
         area,
     );
 }
@@ -3770,13 +3815,14 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 fn panel(title: &'static str, policy: RenderPolicy) -> Block<'static> {
     Block::default()
         .title(title)
-        .borders(semantic_borders(policy, Borders::ALL))
+        .borders(Borders::ALL)
+        .border_set(semantic_border_set(policy))
 }
-fn semantic_borders(policy: RenderPolicy, borders: Borders) -> Borders {
+fn semantic_border_set(policy: RenderPolicy) -> border::Set<'static> {
     if policy.unicode {
-        borders
+        border::PLAIN
     } else {
-        Borders::NONE
+        ASCII_BORDER
     }
 }
 fn accent(policy: RenderPolicy) -> Style {
@@ -5989,5 +6035,443 @@ mod tests {
         assert_eq!(previous_screen(Screen::RunControl), Screen::Configuration);
         assert_eq!(previous_screen(Screen::Reports), Screen::RunControl);
         assert_eq!(previous_screen(Screen::Help), Screen::Configuration);
+    }
+
+    fn visual_run(run_id: &str, state: PublicRunState, revision: u64) -> RunSummary {
+        RunSummary {
+            run_id: RunId(run_id.into()),
+            attempt_id: AttemptId(format!("attempt-{revision}")),
+            state,
+            created_revision: Revision(revision),
+            revision: Revision(revision),
+            plan_sha256: format!("{revision:x}").repeat(64),
+        }
+    }
+
+    fn visual_wizard_at(local_step: usize) -> WorkspaceState {
+        let mut state = WorkspaceState::for_startup(false);
+        let values = [
+            "codex",
+            "openrouter",
+            "model-free",
+            "all defaults",
+            "credential_reference:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "live",
+            "strict offline replay",
+        ];
+        for value in values.iter().take(local_step) {
+            state.wizard.set_value(*value).unwrap();
+            state.wizard.advance().unwrap();
+        }
+        state
+    }
+
+    fn visual_launch(state: PublicRunState) -> WorkspaceState {
+        let mut workspace = WorkspaceState::default();
+        workspace.screen = Screen::RunControl;
+        let binding = crate::configuration_materialization::LaunchBinding {
+            materialization_digest_sha256: "a".repeat(64),
+            provider_catalog_generation: Revision(1),
+            provider_catalog_digest: "b".repeat(64),
+            benchmark_catalog_generation: Revision(1),
+            benchmark_catalog_digest: "c".repeat(64),
+            agent_ids: vec!["agent-visual".into()],
+            provider_id: "openrouter".into(),
+            model_id: "model-free".into(),
+            pool_id: "pool-visual".into(),
+            group_ids: vec!["group-visual".into()],
+            benchmark_ids: vec!["benchmark-visual".into()],
+            measure_ids: vec!["latency".into()],
+            development_only: true,
+            execution_mode: crate::configuration_materialization::ExecutionMode::Live,
+        };
+        let mut launch = crate::launch_statistics::LaunchState::new(binding);
+        launch.begin_launch().unwrap();
+        launch
+            .apply_event(crate::launch_statistics::LiveRunEvent {
+                revision: Revision(2),
+                run_id: RunId("run-visual".into()),
+                attempt_id: AttemptId("attempt-visual".into()),
+                generation: Revision(1),
+                state,
+                completed_measures: if matches!(state, PublicRunState::Running) {
+                    0
+                } else {
+                    1
+                },
+                total_measures: 1,
+                failed_measures: u16::from(matches!(state, PublicRunState::Failed)),
+                throughput_per_second: Some(3),
+                latency_millis: Some(12),
+                provenance: crate::launch_statistics::StatisticsProvenance::Live,
+                unavailable_reason: None,
+            })
+            .unwrap();
+        workspace.launch_state = Some(launch);
+        workspace
+    }
+
+    fn visual_scenario(route: &str, scenario: &str) -> WorkspaceState {
+        let mut state = match (route, scenario) {
+            ("landing", "ready") => {
+                let mut state = WorkspaceState::default();
+                state.apply_live_snapshot(negotiated_snapshot(Vec::new()));
+                state
+            }
+            ("landing", "warning") => {
+                let mut state = WorkspaceState::default();
+                let mut snapshot = negotiated_snapshot(Vec::new());
+                snapshot.connection = Connection::Disconnected;
+                snapshot.runner_instance_id = None;
+                state.apply_live_snapshot(snapshot);
+                state
+            }
+            ("landing", "empty") => WorkspaceState::default(),
+            ("landing", "development_handoff") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::DevelopmentHandoff;
+                state
+            }
+            ("wizard", "step_agent") => visual_wizard_at(0),
+            ("wizard", "step_provider") => visual_wizard_at(1),
+            ("wizard", "step_model") => visual_wizard_at(2),
+            ("wizard", "step_configuration") => visual_wizard_at(3),
+            ("wizard", "step_credentials") => visual_wizard_at(4),
+            ("wizard", "step_recording") => visual_wizard_at(5),
+            ("wizard", "step_replay") => visual_wizard_at(6),
+            ("wizard", "step_review")
+            | ("wizard", "step_workloads")
+            | ("wizard", "step_measures")
+            | ("wizard", "step_execution")
+            | ("wizard", "step_results")
+            | ("wizard", "step_comparison") => visual_wizard_at(7),
+            ("wizard", "choice_unavailable") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Wizard;
+                state
+            }
+            ("wizard", "draft") => {
+                let mut state = visual_wizard_at(0);
+                state.wizard.set_value("codex").unwrap();
+                state
+            }
+            ("wizard", "help") => {
+                let mut state = visual_wizard_at(0);
+                state.handle_key(key(KeyCode::F(1)));
+                state
+            }
+            ("measurement_selection", "selected") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Measures;
+                state
+            }
+            ("measurement_selection", "filtered") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Measures;
+                state.search = "latency".into();
+                state
+            }
+            ("measurement_selection", "empty") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Measures;
+                state.search = "no-match".into();
+                state
+            }
+            ("measurement_selection", "unavailable") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Measures;
+                state.measures.clear();
+                state.selection = None;
+                state.benchmark_selection = None;
+                state
+            }
+            ("measurement_selection", "help") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Measures;
+                state.handle_key(key(KeyCode::F(1)));
+                state
+            }
+            ("configuration", "clean") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Configuration;
+                state.configuration_save_state = ConfigurationSaveState::Clean;
+                state
+            }
+            ("configuration", "draft") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Configuration;
+                state.configuration_save_state = ConfigurationSaveState::Dirty;
+                state
+            }
+            ("configuration", "warning") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Configuration;
+                state.configuration_save_state = ConfigurationSaveState::Invalid;
+                state.configuration_edit_error = Some("value rejected".into());
+                state
+            }
+            ("configuration", "preflight") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Configuration;
+                state.apply_live_snapshot(negotiated_snapshot(Vec::new()));
+                state.preflight = Some(crate::configuration_materialization::PreflightSummary {
+                    digest_sha256: "d".repeat(64),
+                    provider_id: "openrouter".into(),
+                    model_id: "model-free".into(),
+                    agent_count: 1,
+                    pool_id: "pool-visual".into(),
+                    measure_count: 3,
+                    development_only: true,
+                    execution_mode: crate::configuration_materialization::ExecutionMode::LocalMock,
+                });
+                state
+            }
+            ("configuration", "help") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Configuration;
+                state.handle_key(key(KeyCode::F(1)));
+                state
+            }
+            ("run_control", "ready") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::RunControl;
+                state
+            }
+            ("run_control", "running") => visual_launch(PublicRunState::Running),
+            ("run_control", "failed") => visual_launch(PublicRunState::Failed),
+            ("run_control", "cancelled") => visual_launch(PublicRunState::Cancelled),
+            ("run_control", "help") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::RunControl;
+                state.handle_key(key(KeyCode::F(1)));
+                state
+            }
+            ("recent_runs", "empty") | ("reports", "empty") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Reports;
+                state
+            }
+            ("recent_runs", "completed") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Reports;
+                state.apply_live_snapshot(negotiated_snapshot(vec![visual_run(
+                    "run-completed",
+                    PublicRunState::Completed,
+                    1,
+                )]));
+                state
+            }
+            ("recent_runs", "failed") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Reports;
+                state.apply_live_snapshot(negotiated_snapshot(vec![visual_run(
+                    "run-failed",
+                    PublicRunState::Failed,
+                    1,
+                )]));
+                state
+            }
+            ("recent_runs", "selected") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Reports;
+                state.apply_live_snapshot(negotiated_snapshot(vec![visual_run(
+                    "run-selected",
+                    PublicRunState::Completed,
+                    1,
+                )]));
+                state.report_selection = vec![RunId("run-selected".into())];
+                state
+            }
+            ("reports", "results") | ("reports", "comparison") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Reports;
+                let mut snapshot = negotiated_snapshot(vec![
+                    visual_run("run-a", PublicRunState::Completed, 1),
+                    visual_run("run-b", PublicRunState::Failed, 2),
+                ]);
+                if scenario == "comparison" {
+                    snapshot.analysis = Some(crate::control_codec::AnalysisSummary {
+                        run_count: 2,
+                        analysis_sha256: "e".repeat(64),
+                    });
+                    state.report_selection = vec![RunId("run-a".into()), RunId("run-b".into())];
+                }
+                state.apply_live_snapshot(snapshot);
+                state
+            }
+            ("reports", "warning") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Reports;
+                let mut snapshot = negotiated_snapshot(Vec::new());
+                snapshot.connection = Connection::Disconnected;
+                state.apply_live_snapshot(snapshot);
+                state
+            }
+            ("reports", "help") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Reports;
+                state.handle_key(key(KeyCode::F(1)));
+                state
+            }
+            ("help", "selected_action") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Help;
+                state.open_context_help();
+                state.move_context_help(1);
+                state
+            }
+            ("help", "grouped_actions") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::Help;
+                state.help = true;
+                state
+            }
+            ("help", "unavailable_action") => {
+                let mut state = WorkspaceState::default();
+                state.screen = Screen::RunControl;
+                state.help = true;
+                state
+            }
+            _ => panic!(
+                "visual manifest scenario has no executable state factory: {route}/{scenario}"
+            ),
+        };
+        assert!(state.apply_resize(140, 36));
+        state
+    }
+
+    fn visual_policy(tier: CapabilityTier, unicode: bool) -> RenderPolicy {
+        RenderPolicy {
+            tier,
+            unicode,
+            mouse: false,
+            focus: false,
+            bracketed_paste: false,
+            synchronized_output: false,
+            alternate_screen: true,
+        }
+    }
+
+    fn visual_render(
+        state: &WorkspaceState,
+        width: u16,
+        height: u16,
+        policy: RenderPolicy,
+    ) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, state, policy)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    fn visual_scenario_marker(route: &str, scenario: &str) -> &'static str {
+        match (route, scenario) {
+            ("landing", "ready") => "authenticated runner",
+            ("landing", "warning") => "Connection: disconnected",
+            ("landing", "empty") => "waiting for ASB control plane",
+            ("landing", "development_handoff") => "Development channel handoff",
+            ("wizard", "step_agent") => "Step: Agent",
+            ("wizard", "step_provider") => "Step: Provider",
+            ("wizard", "step_model") => "Step: Model",
+            ("wizard", "step_configuration") => "Step: Configuration",
+            ("wizard", "step_credentials") => "Step: Authentication",
+            ("wizard", "step_recording") => "Step: Recording",
+            ("wizard", "step_replay") => "Step: Offline replay",
+            ("wizard", "step_review") => "Step: Review",
+            ("wizard", "step_workloads") => "[-] Workloads:",
+            ("wizard", "step_measures") => "[-] Measures:",
+            ("wizard", "step_execution") => "[-] Run:",
+            ("wizard", "step_results") => "[-] Results:",
+            ("wizard", "step_comparison") => "[-] Compare:",
+            ("wizard", "choice_unavailable") => "requires an authoritative ASB catalog",
+            ("wizard", "draft") => "Value: codex",
+            ("wizard", "help") => "Context-sensitive shortcuts",
+            ("measurement_selection", "selected") => "Correctness",
+            ("measurement_selection", "filtered") => "latency",
+            ("measurement_selection", "empty") => "no-match",
+            ("measurement_selection", "unavailable") => "Measures: none selected",
+            ("measurement_selection", "help") => "Context-sensitive shortcuts",
+            ("configuration", "clean") => "No local changes",
+            ("configuration", "draft") => "Unsaved local changes",
+            ("configuration", "warning") => "Invalid value:",
+            ("configuration", "preflight") => "Preflight",
+            ("configuration", "help") => "Context-sensitive shortcuts",
+            ("run_control", "ready") => "No reviewed configuration is ready",
+            ("run_control", "running") => "Running",
+            ("run_control", "failed") => "Failed",
+            ("run_control", "cancelled") => "Cancelled",
+            ("run_control", "help") => "Context-sensitive shortcuts",
+            ("recent_runs", "empty") | ("reports", "empty") => "No authoritative history",
+            ("recent_runs", "completed") => "run-completed",
+            ("recent_runs", "failed") => "run-failed",
+            ("recent_runs", "selected") => "run-selected",
+            ("reports", "results") => "run-a",
+            ("reports", "comparison") => "Analysis: 2 runs",
+            ("reports", "warning") => "Unavailable:",
+            ("reports", "help") => "Context-sensitive shortcuts",
+            ("help", "selected_action") => "> ",
+            ("help", "grouped_actions") => "Navigation",
+            ("help", "unavailable_action") => "No reviewed configuration is ready",
+            _ => panic!("visual scenario marker missing: {route}/{scenario}"),
+        }
+    }
+
+    #[test]
+    fn visual_manifest_executes_every_route_state_dimension_and_capability() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/ui-visual-regression.json")).unwrap();
+        let dimensions = manifest["dimensions"].as_array().unwrap();
+        let capabilities = manifest["capabilities"].as_array().unwrap();
+        let routes = manifest["routes"].as_array().unwrap();
+        let mut rendered = 0;
+        for route in routes {
+            let route_id = route["id"].as_str().unwrap();
+            for scenario in route["states"].as_array().unwrap() {
+                let scenario_id = scenario.as_str().unwrap();
+                let state = visual_scenario(route_id, scenario_id);
+                for dimension in dimensions {
+                    let width = u16::try_from(dimension["columns"].as_u64().unwrap()).unwrap();
+                    let height = u16::try_from(dimension["lines"].as_u64().unwrap()).unwrap();
+                    for capability in capabilities {
+                        let tier = match capability["tier"].as_str().unwrap() {
+                            "true_color" => CapabilityTier::TrueColor,
+                            "plain" => CapabilityTier::Plain,
+                            other => panic!("unknown visual capability tier: {other}"),
+                        };
+                        let policy = visual_policy(tier, capability["unicode"].as_bool().unwrap());
+                        let text = visual_render(&state, width, height, policy);
+                        assert!(!text.trim().is_empty(), "{route_id}/{scenario_id}");
+                        assert!(!text.contains("/home/") && !text.contains("Bearer "));
+                        if !policy.unicode {
+                            assert!(text.is_ascii(), "{route_id}/{scenario_id}");
+                        }
+                        if dimension["id"].as_str() == Some("wide")
+                            && capability["id"].as_str() == Some("color_unicode")
+                        {
+                            let marker = visual_scenario_marker(route_id, scenario_id);
+                            assert!(
+                                text.contains(marker),
+                                "{route_id}/{scenario_id} omitted {marker:?}"
+                            );
+                        }
+                        rendered += 1;
+                    }
+                }
+            }
+        }
+        let declared_states: usize = routes
+            .iter()
+            .map(|route| route["states"].as_array().unwrap().len())
+            .sum();
+        assert_eq!(
+            rendered,
+            declared_states * dimensions.len() * capabilities.len()
+        );
+        assert_eq!(declared_states, 47);
     }
 }

@@ -10,14 +10,36 @@ use asb_tui::{
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend, style::Color};
+use serde::Deserialize;
 
 #[derive(Clone, Copy)]
 struct GoldenCase {
     id: &'static str,
+    route: &'static str,
+    scenario: &'static str,
+    dimension: &'static str,
+    capability: &'static str,
+    file: &'static str,
     width: u16,
     height: u16,
     policy: RenderPolicy,
     state: fn() -> WorkspaceState,
+}
+
+#[derive(Deserialize)]
+struct VisualManifest {
+    goldens: Vec<ManifestGolden>,
+}
+
+#[derive(Deserialize, Debug, Eq, PartialEq)]
+struct ManifestGolden {
+    id: String,
+    route: String,
+    state: String,
+    dimension: String,
+    capability: String,
+    file: String,
+    markers: Vec<String>,
 }
 
 type StateFactory = fn() -> WorkspaceState;
@@ -142,6 +164,11 @@ fn narrow_overlay() -> WorkspaceState {
 const CASES: &[GoldenCase] = &[
     GoldenCase {
         id: "landing-wide-color",
+        route: "landing",
+        scenario: "ready",
+        dimension: "wide",
+        capability: "color_unicode",
+        file: "tests/goldens/visual/landing-wide-color.txt",
         width: 140,
         height: 36,
         policy: policy(CapabilityTier::TrueColor, true),
@@ -149,6 +176,11 @@ const CASES: &[GoldenCase] = &[
     },
     GoldenCase {
         id: "wizard-ordinary-mono",
+        route: "wizard",
+        scenario: "draft",
+        dimension: "ordinary",
+        capability: "mono_unicode",
+        file: "tests/goldens/visual/wizard-ordinary-mono.txt",
         width: 100,
         height: 24,
         policy: policy(CapabilityTier::Plain, true),
@@ -156,6 +188,11 @@ const CASES: &[GoldenCase] = &[
     },
     GoldenCase {
         id: "measures-narrow-ascii",
+        route: "measurement_selection",
+        scenario: "filtered",
+        dimension: "narrow",
+        capability: "ascii_plain",
+        file: "tests/goldens/visual/measures-narrow-ascii.txt",
         width: 60,
         height: 16,
         policy: policy(CapabilityTier::Plain, false),
@@ -163,6 +200,11 @@ const CASES: &[GoldenCase] = &[
     },
     GoldenCase {
         id: "configuration-ordinary-color",
+        route: "configuration",
+        scenario: "draft",
+        dimension: "ordinary",
+        capability: "color_unicode",
+        file: "tests/goldens/visual/configuration-ordinary-color.txt",
         width: 100,
         height: 24,
         policy: policy(CapabilityTier::TrueColor, true),
@@ -170,6 +212,11 @@ const CASES: &[GoldenCase] = &[
     },
     GoldenCase {
         id: "run-minimum-ascii",
+        route: "run_control",
+        scenario: "ready",
+        dimension: "minimum",
+        capability: "ascii_plain",
+        file: "tests/goldens/visual/run-minimum-ascii.txt",
         width: 32,
         height: 8,
         policy: policy(CapabilityTier::Plain, false),
@@ -177,6 +224,11 @@ const CASES: &[GoldenCase] = &[
     },
     GoldenCase {
         id: "reports-wide-color",
+        route: "reports",
+        scenario: "results",
+        dimension: "wide",
+        capability: "color_unicode",
+        file: "tests/goldens/visual/reports-wide-color.txt",
         width: 140,
         height: 36,
         policy: policy(CapabilityTier::TrueColor, true),
@@ -184,6 +236,11 @@ const CASES: &[GoldenCase] = &[
     },
     GoldenCase {
         id: "help-ordinary-mono",
+        route: "help",
+        scenario: "grouped_actions",
+        dimension: "ordinary",
+        capability: "mono_unicode",
+        file: "tests/goldens/visual/help-ordinary-mono.txt",
         width: 100,
         height: 24,
         policy: policy(CapabilityTier::Plain, true),
@@ -191,6 +248,11 @@ const CASES: &[GoldenCase] = &[
     },
     GoldenCase {
         id: "overlay-minimum-ascii",
+        route: "configuration",
+        scenario: "help",
+        dimension: "minimum",
+        capability: "ascii_plain",
+        file: "tests/goldens/visual/overlay-minimum-ascii.txt",
         width: 32,
         height: 8,
         policy: policy(CapabilityTier::Plain, false),
@@ -223,8 +285,42 @@ fn render(case: GoldenCase) -> (String, Vec<Color>) {
 
 #[test]
 fn reviewed_text_grid_goldens_are_exact_bounded_and_private() {
+    let manifest: VisualManifest =
+        serde_json::from_str(include_str!("../docs/ui-visual-regression.json")).unwrap();
+    let registry = CASES
+        .iter()
+        .map(|case| {
+            (
+                case.id,
+                case.route,
+                case.scenario,
+                case.dimension,
+                case.capability,
+                case.file,
+            )
+        })
+        .collect::<Vec<_>>();
+    let declared = manifest
+        .goldens
+        .iter()
+        .map(|golden| {
+            (
+                golden.id.as_str(),
+                golden.route.as_str(),
+                golden.state.as_str(),
+                golden.dimension.as_str(),
+                golden.capability.as_str(),
+                golden.file.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        registry, declared,
+        "manifest and Rust golden registry drifted"
+    );
     let print = std::env::var_os("ASB_TUI_PRINT_VISUAL_GOLDENS").is_some();
-    for case in CASES {
+    let update = std::env::var_os("ASB_TUI_UPDATE_VISUAL_GOLDENS").is_some();
+    for (case, declared) in CASES.iter().zip(manifest.goldens.iter()) {
         let (actual, _) = render(*case);
         if print {
             println!(
@@ -233,11 +329,11 @@ fn reviewed_text_grid_goldens_are_exact_bounded_and_private() {
             );
             continue;
         }
-        let path = format!(
-            "{}/tests/goldens/visual/{}.txt",
-            env!("CARGO_MANIFEST_DIR"),
-            case.id
-        );
+        let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), case.file);
+        if update {
+            std::fs::write(&path, &actual).unwrap();
+            continue;
+        }
         let expected = std::fs::read_to_string(path).unwrap();
         assert_eq!(actual, expected, "visual golden {} drifted", case.id);
         assert!(actual.len() <= 32_768);
@@ -250,6 +346,22 @@ fn reviewed_text_grid_goldens_are_exact_bounded_and_private() {
                 case.id
             );
         }
+        for marker in &declared.markers {
+            assert!(
+                actual.contains(marker),
+                "visual golden {} misses semantic marker {marker:?}",
+                case.id
+            );
+        }
+        assert!(
+            !actual.contains("Efficiency benchmarConsistency")
+                && !actual.contains("benchmark.nue")
+                && !actual
+                    .lines()
+                    .any(|line| line.trim_end().ends_with("Backspace Co")),
+            "visual golden {} contains merged or silently clipped text",
+            case.id
+        );
     }
 }
 
@@ -262,6 +374,11 @@ fn color_monochrome_and_ascii_keep_semantic_selection_and_focus() {
     ] {
         let case = GoldenCase {
             id: "capability",
+            route: "measurement_selection",
+            scenario: "selected",
+            dimension: "ordinary",
+            capability: "matrix",
+            file: "",
             width: 100,
             height: 24,
             policy: capability,
@@ -303,6 +420,11 @@ fn route_dimension_capability_matrix_renders_without_losing_escape_or_help() {
             ] {
                 let case = GoldenCase {
                     id: "matrix",
+                    route,
+                    scenario: "matrix",
+                    dimension: "matrix",
+                    capability: "matrix",
+                    file: "",
                     width,
                     height,
                     policy: capability,
@@ -339,6 +461,11 @@ fn bounded_resize_property_covers_threshold_edges_without_overflow() {
                 ] {
                     let case = GoldenCase {
                         id: "bounded-property",
+                        route: "property",
+                        scenario: "property",
+                        dimension: "property",
+                        capability: "property",
+                        file: "",
                         width,
                         height,
                         policy: capability,
