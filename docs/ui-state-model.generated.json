@@ -314,7 +314,7 @@
     {
       "action": "toggle_all_measures",
       "element": "measures.group_toggle",
-      "key": "A"
+      "key": "a"
     },
     {
       "action": "toggle_group",
