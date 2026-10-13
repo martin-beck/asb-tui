@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
+import tempfile
 from unittest import TestCase, main
 from unittest.mock import patch
 
@@ -41,6 +43,36 @@ class EnvironmentTests(TestCase):
         self.assertEqual(environment["QUALIFICATION_SAFE_VALUE"], "retained")
         self.assertEqual(environment["ASB_TUI_NETWORK_POLICY"], "deny")
         self.assertEqual(environment["NO_PROXY"], "*")
+
+    def test_upstream_receipt_must_be_exact_private_and_complete(self):
+        runner = load_runner()
+        receipt = {
+            "schema_version": 1,
+            "status": "qualified",
+            "network": "denied",
+            "credentials": "none",
+            "source_revision": "a" * 40,
+            "paired_heads": {"asb": "a" * 40, "asb_tui": "b" * 40},
+            "runner_sha256": "c" * 64,
+            "fixture_sha256": "d" * 64,
+            "provider_profile_sha256": "e" * 64,
+            "selection": {"agents": ["codex"], "workloads": ["original.bug-fix"]},
+            "plan_run_journey": {"comparison": {"comparable": True}},
+            "campaign": {"comparison": {"comparable": True}},
+            "negative_identity": {"rejected": True},
+            "negative_incomplete_coverage": {"rejected": True},
+            "receipt_sha256": "c" * 64,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "receipt.json"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            self.assertEqual(
+                runner.load_upstream_receipt(path, "a" * 40, "b" * 40), receipt
+            )
+            receipt["network"] = "used"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "credential-free and offline"):
+                runner.load_upstream_receipt(path, "a" * 40, "b" * 40)
 
 
 if __name__ == "__main__":
