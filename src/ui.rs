@@ -368,6 +368,9 @@ impl WorkspaceState {
         let Some(selection) = self.benchmark_selection.as_ref() else {
             return Err("workload selection is unavailable".to_owned());
         };
+        let handoff = self
+            .current_benchmark_campaign_handoff()
+            .map_err(|error| format!("workload selection is no longer valid: {error:?}"))?;
         if selection.explicit_all() {
             return Ok(crate::recording_campaign::WorkloadScope::All);
         }
@@ -375,12 +378,22 @@ impl WorkspaceState {
         if selected.is_empty() {
             return Err("workload selection is empty; choose measures or explicit all".to_owned());
         }
-        let handoff = selection
-            .campaign_handoff(selection.catalog().generation())
-            .map_err(|error| format!("workload selection is no longer valid: {error:?}"))?;
         Ok(crate::recording_campaign::WorkloadScope::Selected(
             handoff.benchmark_ids,
         ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_benchmark_control_revision(
+        &mut self,
+        revision: crate::control_codec::Revision,
+    ) {
+        self.benchmark_control_revision = Some(revision);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_remove_benchmark_selection(&mut self) {
+        self.benchmark_selection = None;
     }
 
     /// Keep run-control key handling coupled to the executable state model.
@@ -1067,7 +1080,10 @@ impl WorkspaceState {
         &self,
     ) -> Result<crate::selection::CampaignSelection, crate::selection::SelectionError> {
         let expected = self
-            .benchmark_control_revision
+            .live
+            .as_ref()
+            .and_then(|snapshot| snapshot.latest_revision)
+            .or(self.benchmark_control_revision)
             .or_else(|| {
                 self.benchmark_selection
                     .as_ref()
@@ -2383,7 +2399,14 @@ impl WorkspaceState {
                 self.legal_control_action(crate::actions::UiAction::ReconcileRecording)
             }
             KeyCode::Char('o') if self.screen == Screen::RunControl => {
-                self.legal_control_action(crate::actions::UiAction::ActivateOfflineDefault)
+                let action =
+                    self.legal_control_action(crate::actions::UiAction::ActivateOfflineDefault);
+                if action == UiAction::None {
+                    self.set_run_error(
+                        "offline default is unavailable until recording is complete and ready",
+                    );
+                }
+                action
             }
             KeyCode::Char('J') if self.screen == Screen::RunControl => {
                 self.legal_control_action(crate::actions::UiAction::ReplaySelected)

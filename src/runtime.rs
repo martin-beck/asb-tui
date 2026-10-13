@@ -286,18 +286,6 @@ pub fn dispatch_control_action(
         idempotency_key,
     )
     .map_err(|_| RuntimeError(io::Error::other("control action failed")))?;
-    if action == crate::actions::UiAction::ActivateOfflineDefault {
-        let snapshot = projection.snapshot();
-        let campaign = snapshot
-            .recording_campaign_lifecycle
-            .as_ref()
-            .ok_or_else(|| RuntimeError(io::Error::other("recording campaign unavailable")))?;
-        recording.authenticated_catalog = Some(fetch_authenticated_cassette_catalog(
-            session,
-            campaign.campaign_id.clone(),
-            campaign.generation,
-        )?);
-    }
     Ok(outcome)
 }
 
@@ -768,6 +756,47 @@ fn prepare_recording_dispatch_state(
     Ok(recording)
 }
 
+/// Process one recording action without allowing selection or transport
+/// failures to escape the terminal loop.  The caller supplies the authoritative
+/// backend dispatcher; this keeps the one-action/one-dispatch boundary directly
+/// testable while preserving the authenticated session as the production owner.
+fn process_recording_control_action(
+    workspace: &mut ui::WorkspaceState,
+    recording_state: &mut Option<crate::recording_dispatch::RecordingDispatchState>,
+    active_adapter_id: Option<&str>,
+    dispatch: impl FnOnce(
+        &mut crate::recording_dispatch::RecordingDispatchState,
+    )
+        -> Result<crate::recording_dispatch::RecordingDispatchOutcome, RuntimeError>,
+) -> bool {
+    if recording_state.is_none() {
+        match prepare_recording_dispatch_state(workspace, active_adapter_id) {
+            Ok(recording) => *recording_state = Some(recording),
+            Err(error) => {
+                workspace.set_run_error(format!("{error:?}"));
+                return false;
+            }
+        }
+    }
+    let Some(recording) = recording_state.as_mut() else {
+        workspace.set_run_error("recording dispatch state unavailable");
+        return false;
+    };
+    let (selected_run, comparison_runs) = workspace.operator_run_selection();
+    recording.selected_run_id = selected_run;
+    recording.comparison_run_ids = comparison_runs;
+    match dispatch(recording) {
+        Ok(_) => {
+            workspace.clear_run_error();
+            true
+        }
+        Err(error) => {
+            workspace.set_run_error(format!("{error:?}"));
+            false
+        }
+    }
+}
+
 fn run_interactive_loop(
     state: &mut AppState,
     policy: RenderPolicy,
@@ -1026,40 +1055,23 @@ fn run_interactive_loop(
                                 | crate::actions::UiAction::ReplaySelected
                                 | crate::actions::UiAction::SelectOfflineCassette
                         );
-                        if recording_action && recording_state.is_none() {
-                            match prepare_recording_dispatch_state(
-                                &workspace,
+                        if recording_action
+                            && process_recording_control_action(
+                                &mut workspace,
+                                &mut recording_state,
                                 active_adapter_id.as_deref(),
-                            ) {
-                                Ok(recording) => recording_state = Some(recording),
-                                Err(error) => {
-                                    workspace.set_run_error(format!("{error:?}"));
-                                    continue;
-                                }
-                            }
-                        }
-                        if recording_action && let Some(recording) = recording_state.as_mut() {
-                            let (selected_run, comparison_runs) =
-                                workspace.operator_run_selection();
-                            recording.selected_run_id = selected_run;
-                            recording.comparison_run_ids = comparison_runs;
-                            if let Err(error) = dispatch_control_action(
-                                control_action,
-                                recording,
-                                control,
-                                projection,
-                                format!("asb-tui-{}", control_action.id()),
-                            ) {
-                                // A missing live key or an unavailable
-                                // provider is an actionable run failure, not
-                                // a frontend crash. Keep the session alive so
-                                // the operator can return to setup, repair
-                                // credentials, or choose offline replay.
-                                workspace.set_run_error(format!("{error:?}"));
-                            } else {
-                                workspace.clear_run_error();
-                                workspace.apply_live_snapshot(projection.snapshot());
-                            }
+                                |recording| {
+                                    dispatch_control_action(
+                                        control_action,
+                                        recording,
+                                        control,
+                                        projection,
+                                        format!("asb-tui-{}", control_action.id()),
+                                    )
+                                },
+                            )
+                        {
+                            workspace.apply_live_snapshot(projection.snapshot());
                         }
                     }
                     if let (Some(control), Some(projection), Some(values)) = (
@@ -1227,6 +1239,306 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyEventState};
     use std::{cell::RefCell, rc::Rc};
+
+    #[derive(Default)]
+    struct CountingOfflineBackend {
+        calls: Vec<&'static str>,
+    }
+
+    impl crate::recording_dispatch::RecordingBackend for CountingOfflineBackend {
+        fn repeat_run(
+            &mut self,
+            _: &mut ControlProjection,
+            _: crate::control_codec::RunId,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn compare_live_offline(
+            &mut self,
+            _: &mut ControlProjection,
+            _: Vec<crate::control_codec::RunId>,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn refresh_provider_catalog(
+            &mut self,
+            _: &mut ControlProjection,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn estimate_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+            _: Vec<String>,
+            _: Vec<String>,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn plan_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+            _: Vec<String>,
+            _: Vec<String>,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn execute_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn progress_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn cancel_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn reconcile_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn set_recording_campaign_offline_default(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            self.calls.push("offline");
+            Ok(())
+        }
+        fn recording_cassette_catalog(
+            &mut self,
+            campaign: String,
+            generation: crate::control_codec::Revision,
+        ) -> Result<
+            crate::control_codec::RecordingCassetteCatalog,
+            crate::control_transport::TransportError,
+        > {
+            self.calls.push("catalog");
+            Ok(crate::control_codec::RecordingCassetteCatalog {
+                runner_instance_id: "runner-context".into(),
+                generation,
+                campaign_id: campaign,
+                entries: vec![crate::control_codec::RecordingCassetteEntry {
+                    cassette_id: "cassette-1".into(),
+                    cassette_sha256: "a".repeat(64),
+                    provider_profile_sha256: "b".repeat(64),
+                    agent_id: "agent-1".into(),
+                    workload_id: "quality".into(),
+                    scorer_revision: "scorer-1".into(),
+                }],
+            })
+        }
+        fn dispatch_replay(
+            &mut self,
+            _: crate::control_codec::RecordingReplayDispatchParams,
+        ) -> Result<
+            crate::control_codec::RecordingReplayDispatch,
+            crate::control_transport::TransportError,
+        > {
+            unreachable!()
+        }
+        fn seal_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn reopen_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn remove_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+        fn retry_recording_campaign(
+            &mut self,
+            _: &mut ControlProjection,
+            _: String,
+            _: String,
+        ) -> Result<(), crate::control_transport::TransportError> {
+            unreachable!()
+        }
+    }
+
+    fn recording_lifecycle(
+        phase: &str,
+        covered: u16,
+        offline_ready: bool,
+    ) -> crate::control_codec::RecordingCampaignLifecycle {
+        crate::control_codec::RecordingCampaignLifecycle {
+            runner_instance_id: "runner-context".into(),
+            generation: crate::control_codec::Revision(2),
+            campaign_id: "campaign-1".into(),
+            provider_id: "openrouter".into(),
+            model_id: "model-1".into(),
+            agent_ids: vec!["agent-1".into()],
+            workload_ids: vec!["quality".into()],
+            tuple_count: 2,
+            covered_tuple_count: covered,
+            state: phase.into(),
+            offline_ready,
+            unavailable_reason: None,
+        }
+    }
+
+    fn recording_workspace(
+        phase: &str,
+        covered: u16,
+        offline_ready: bool,
+    ) -> (ui::WorkspaceState, ControlProjection) {
+        let projection = ControlProjection::test_recording_lifecycle(recording_lifecycle(
+            phase,
+            covered,
+            offline_ready,
+        ));
+        let mut snapshot = projection.snapshot();
+        snapshot.latest_revision = Some(crate::control_codec::Revision(2));
+        snapshot.capabilities = Some(crate::control_codec::Capabilities {
+            validate_settings: true,
+            run_control: true,
+            repeat: true,
+            analysis: true,
+            events: true,
+        });
+        snapshot.configuration = Some(crate::control_codec::ConfigurationSnapshot {
+            runner_instance_id: "runner-context".into(),
+            generation: crate::control_codec::Revision(2),
+            configured: true,
+            agent_ids: vec!["agent-1".into()],
+            provider_id: Some("openrouter".into()),
+            model_id: Some("model-1".into()),
+            auth_method: Some(crate::control_codec::ProviderAuthMethod::CredentialReference),
+            credential_reference_sha256: Some("c".repeat(64)),
+        });
+        let mut workspace = ui::WorkspaceState::default();
+        workspace.apply_live_snapshot(snapshot);
+        for code in ['2', 'a', 's'] {
+            assert_eq!(
+                workspace.handle_key(KeyEvent::new(KeyCode::Char(code), KeyModifiers::NONE)),
+                ui::UiAction::None
+            );
+        }
+        (workspace, projection)
+    }
+
+    fn drive_recording_action(
+        workspace: &mut ui::WorkspaceState,
+        recording: &mut Option<crate::recording_dispatch::RecordingDispatchState>,
+        projection: &mut ControlProjection,
+        backend: &mut CountingOfflineBackend,
+        action: ui::UiAction,
+    ) -> bool {
+        let ui::UiAction::Control(control_action) = action else {
+            return false;
+        };
+        process_recording_control_action(workspace, recording, None, |state| {
+            crate::recording_dispatch::dispatch_with_backend(
+                control_action,
+                state,
+                backend,
+                projection,
+                format!("test-{}", control_action.id()),
+            )
+            .map_err(|_| RuntimeError(io::Error::other("control action failed")))
+        })
+    }
+
+    #[test]
+    fn inherited_pty_route_dispatches_offline_default_exactly_once() {
+        let (mut workspace, mut projection) = recording_workspace("complete", 2, true);
+        let mut recording = None;
+        let mut backend = CountingOfflineBackend::default();
+        for _ in 0..8 {
+            let action =
+                workspace.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+            let _ = drive_recording_action(
+                &mut workspace,
+                &mut recording,
+                &mut projection,
+                &mut backend,
+                action,
+            );
+        }
+        assert_eq!(backend.calls, ["offline", "catalog"]);
+        assert!(recording.is_some());
+        assert!(workspace.run_error.is_none());
+    }
+
+    #[test]
+    fn offline_default_invalid_states_retain_session_and_never_touch_backend() {
+        for (phase, covered, ready) in [("planned", 0, false), ("unknown", 2, true)] {
+            let (mut workspace, mut projection) = recording_workspace(phase, covered, ready);
+            let mut recording = None;
+            let mut backend = CountingOfflineBackend::default();
+            let action =
+                workspace.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+            assert!(!drive_recording_action(
+                &mut workspace,
+                &mut recording,
+                &mut projection,
+                &mut backend,
+                action
+            ));
+            assert!(workspace.run_error.is_some());
+            assert!(backend.calls.is_empty());
+        }
+        for unavailable in [false, true] {
+            let (mut workspace, mut projection) = recording_workspace("complete", 2, true);
+            if unavailable {
+                workspace.test_remove_benchmark_selection();
+            } else {
+                workspace.test_set_benchmark_control_revision(crate::control_codec::Revision(99));
+            }
+            let mut recording = None;
+            let mut backend = CountingOfflineBackend::default();
+            let action =
+                workspace.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+            assert!(!drive_recording_action(
+                &mut workspace,
+                &mut recording,
+                &mut projection,
+                &mut backend,
+                action
+            ));
+            assert!(workspace.run_error.is_some());
+            assert!(backend.calls.is_empty());
+        }
+    }
 
     #[test]
     fn recording_dispatch_preparation_rejects_unavailable_inputs_without_io() {

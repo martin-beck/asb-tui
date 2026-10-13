@@ -174,6 +174,10 @@ pub struct RecordingDispatchState {
     /// A frontend must not turn a stalled runner into an unbounded poll loop.
     progress_requests: u16,
     progress_campaign_id: Option<String>,
+    /// Session-local acknowledgement fence. Repeated terminal input must not
+    /// duplicate the authoritative offline-default mutation while a refreshed
+    /// snapshot is still converging.
+    offline_default_requested: Option<(String, crate::control_codec::Revision)>,
     pub selected_run_id: Option<crate::control_codec::RunId>,
     pub comparison_run_ids: Vec<crate::control_codec::RunId>,
     remove_confirmation_required: bool,
@@ -197,6 +201,7 @@ impl RecordingDispatchState {
             selected_cassette_sha256: None,
             progress_requests: 0,
             progress_campaign_id: None,
+            offline_default_requested: None,
             selected_run_id: None,
             comparison_run_ids: Vec::new(),
             remove_confirmation_required: false,
@@ -457,8 +462,24 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
             Ok(RecordingDispatchOutcome::ReconcileRequested)
         }
         UiAction::ActivateOfflineDefault => {
-            model.request(RecordingAction::ActivateOfflineDefault)?;
             let campaign_id = campaign_id(&snapshot)?;
+            let generation = campaign_generation(&snapshot)?;
+            let mutation_acknowledged = state
+                .offline_default_requested
+                .as_ref()
+                .is_some_and(|requested| requested == &(campaign_id.clone(), generation));
+            if mutation_acknowledged {
+                if state.authenticated_catalog.is_some() {
+                    return Ok(RecordingDispatchOutcome::OfflineDefaultRequested);
+                }
+                let catalog = session.recording_cassette_catalog(campaign_id, generation)?;
+                state.authenticated_catalog = Some(
+                    crate::benchmark_route::AuthenticatedCassetteCatalog::try_from(catalog)
+                        .map_err(|_| RecordingDispatchError::InvalidCassetteCatalog)?,
+                );
+                return Ok(RecordingDispatchOutcome::OfflineDefaultRequested);
+            }
+            model.request(RecordingAction::ActivateOfflineDefault)?;
             session
                 .set_recording_campaign_offline_default(
                     projection,
@@ -466,7 +487,7 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
                     idempotency_key,
                 )
                 .map_err(RecordingDispatchError::from)?;
-            let generation = campaign_generation(&snapshot)?;
+            state.offline_default_requested = Some((campaign_id.clone(), generation));
             let catalog = session.recording_cassette_catalog(campaign_id, generation)?;
             state.authenticated_catalog = Some(
                 crate::benchmark_route::AuthenticatedCassetteCatalog::try_from(catalog)
@@ -961,6 +982,22 @@ mod tests {
             ["execute", "progress", "reconcile", "offline", "catalog"]
         );
         assert!(state.authenticated_catalog.is_some());
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ActivateOfflineDefault,
+                &mut state,
+                &mut backend,
+                &mut complete,
+                "o-retry".into()
+            )
+            .unwrap(),
+            RecordingDispatchOutcome::OfflineDefaultRequested
+        );
+        assert_eq!(
+            backend.calls,
+            ["execute", "progress", "reconcile", "offline", "catalog"],
+            "repeated terminal input must not duplicate backend mutations"
+        );
     }
 
     #[test]
@@ -992,6 +1029,43 @@ mod tests {
             Ok(RecordingDispatchOutcome::CancelRequested)
         ));
         assert_eq!(backend.calls, ["cancel"]);
+    }
+
+    #[test]
+    fn acknowledged_offline_activation_retries_only_the_missing_catalog() {
+        let mut backend = FakeBackend {
+            invalid_catalog: true,
+            ..FakeBackend::default()
+        };
+        let mut state = state(WorkloadScope::All);
+        let mut complete = projection("complete", 2, true);
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ActivateOfflineDefault,
+                &mut state,
+                &mut backend,
+                &mut complete,
+                "offline-once".into(),
+            ),
+            Err(RecordingDispatchError::InvalidCassetteCatalog)
+        );
+        assert_eq!(backend.calls, ["offline", "catalog"]);
+        assert!(state.authenticated_catalog.is_none());
+
+        backend.invalid_catalog = false;
+        assert_eq!(
+            dispatch_with_backend(
+                UiAction::ActivateOfflineDefault,
+                &mut state,
+                &mut backend,
+                &mut complete,
+                "catalog-retry".into(),
+            )
+            .unwrap(),
+            RecordingDispatchOutcome::OfflineDefaultRequested
+        );
+        assert_eq!(backend.calls, ["offline", "catalog", "catalog"]);
+        assert!(state.authenticated_catalog.is_some());
     }
 
     #[test]

@@ -6,8 +6,9 @@ use asb_tui::{
     control_transport::{DynamicCatalogError, TransportError},
     fanout_dispatch::{FanoutDispatchState, FanoutSelection, FanoutSelectionError},
     formal_state::{
-        ContextHelpFormalState, FormalEvent, FormalUiState, VisibleMeasureAction,
-        VisibleMeasureScope,
+        ContextHelpFormalState, FormalEvent, FormalUiState, OfflineDefaultEffect,
+        OfflineDefaultFormalState, OfflineDefaultIdentity, OfflineDefaultReadiness,
+        VisibleMeasureAction, VisibleMeasureScope,
     },
     runtime::DevelopmentRouteFailure,
     shell::Route,
@@ -382,6 +383,21 @@ fn recording_dispatch_actions_are_declared_in_the_formal_model() {
             .iter()
             .any(|field| field == "recording_progress_requests")
     );
+    assert!(
+        fields
+            .iter()
+            .any(|field| field == "offline_default_dispatch_identity")
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|field| field == "offline_catalog_pending")
+    );
+    let capture_contract = model["recording_capture_contract"].as_str().unwrap();
+    assert!(capture_contract.contains("campaign and generation"));
+    assert!(capture_contract.contains("cannot duplicate the mutation"));
+    assert!(capture_contract.contains("catalog-read retry"));
+    assert!(capture_contract.contains("perform no backend I/O"));
     let bindings = model["bindings"].as_array().unwrap();
     for action in [
         "refresh_provider_catalog",
@@ -398,6 +414,55 @@ fn recording_dispatch_actions_are_declared_in_the_formal_model() {
             "missing formal binding for {action}"
         );
     }
+}
+
+#[test]
+fn offline_default_formal_model_is_one_shot_recoverable_and_fail_closed() {
+    let first = OfflineDefaultIdentity::new("campaign-a", 7);
+    let next = OfflineDefaultIdentity::new("campaign-a", 8);
+    let mut state = OfflineDefaultFormalState::default();
+
+    for readiness in [
+        OfflineDefaultReadiness::Premature,
+        OfflineDefaultReadiness::Malformed,
+        OfflineDefaultReadiness::Stale,
+        OfflineDefaultReadiness::Unavailable,
+    ] {
+        assert_eq!(
+            state.request(readiness, first.clone()),
+            OfflineDefaultEffect::RejectNoIo
+        );
+    }
+
+    assert_eq!(
+        state.request(OfflineDefaultReadiness::Ready, first.clone()),
+        OfflineDefaultEffect::MutationAndCatalog
+    );
+    assert_eq!(
+        state.request(OfflineDefaultReadiness::Ready, first.clone()),
+        OfflineDefaultEffect::NoOp,
+        "an in-flight identity cannot duplicate the mutation"
+    );
+    assert!(state.mutation_acknowledged(&first));
+    assert!(state.catalog_failed(&first));
+    assert_eq!(
+        state.request(OfflineDefaultReadiness::Ready, first.clone()),
+        OfflineDefaultEffect::CatalogOnly
+    );
+    assert!(state.catalog_loaded(&first));
+    assert_eq!(
+        state.request(OfflineDefaultReadiness::Ready, first.clone()),
+        OfflineDefaultEffect::NoOp
+    );
+
+    assert_eq!(
+        state.request(OfflineDefaultReadiness::Ready, next.clone()),
+        OfflineDefaultEffect::MutationAndCatalog,
+        "a new authoritative generation owns a new one-shot mutation"
+    );
+    assert!(!state.mutation_acknowledged(&first));
+    assert!(state.mutation_acknowledged(&next));
+    assert!(state.catalog_loaded(&next));
 }
 
 #[test]

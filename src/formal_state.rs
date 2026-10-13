@@ -166,6 +166,125 @@ pub enum FormalError {
     InvalidContextHelpState,
 }
 
+/// Authoritative readiness classification for the offline-default action.
+///
+/// Only a current, complete campaign identity may cross the runtime boundary.
+/// Every other classification is a fail-closed, zero-I/O outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineDefaultReadiness {
+    Ready,
+    Premature,
+    Malformed,
+    Stale,
+    Unavailable,
+}
+
+/// Campaign identity used by the session-local offline-default dispatch fence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineDefaultIdentity {
+    campaign: String,
+    generation: u64,
+}
+
+impl OfflineDefaultIdentity {
+    #[must_use]
+    pub fn new(campaign: impl Into<String>, generation: u64) -> Self {
+        Self {
+            campaign: campaign.into(),
+            generation,
+        }
+    }
+}
+
+/// Backend work admitted by the executable offline-default formal model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineDefaultEffect {
+    /// Send the mutation exactly once, then read the digest-only catalog.
+    MutationAndCatalog,
+    /// The mutation was acknowledged; retry only the failed catalog read.
+    CatalogOnly,
+    /// The same identity is already complete; repeated input is successful.
+    NoOp,
+    /// Readiness failed; retain the bounded error and perform no backend I/O.
+    RejectNoIo,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OfflineDefaultPhase {
+    MutationPending,
+    CatalogPending,
+    Complete,
+}
+
+/// Bounded executable model for campaign/generation-scoped offline-default
+/// activation. It mirrors the runtime fence without depending on transport or
+/// rendering code, so model tests can prove exactly-once mutation and recovery.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OfflineDefaultFormalState {
+    identity: Option<OfflineDefaultIdentity>,
+    phase: Option<OfflineDefaultPhase>,
+}
+
+impl OfflineDefaultFormalState {
+    /// Admit a user request. A new authoritative identity starts one mutation;
+    /// the same acknowledged identity can retry only its catalog read.
+    #[must_use]
+    pub fn request(
+        &mut self,
+        readiness: OfflineDefaultReadiness,
+        identity: OfflineDefaultIdentity,
+    ) -> OfflineDefaultEffect {
+        if readiness != OfflineDefaultReadiness::Ready {
+            return OfflineDefaultEffect::RejectNoIo;
+        }
+        if self.identity.as_ref() != Some(&identity) {
+            self.identity = Some(identity);
+            self.phase = Some(OfflineDefaultPhase::MutationPending);
+            return OfflineDefaultEffect::MutationAndCatalog;
+        }
+        match self.phase {
+            Some(OfflineDefaultPhase::MutationPending) => OfflineDefaultEffect::NoOp,
+            Some(OfflineDefaultPhase::CatalogPending) => OfflineDefaultEffect::CatalogOnly,
+            Some(OfflineDefaultPhase::Complete) => OfflineDefaultEffect::NoOp,
+            None => {
+                self.phase = Some(OfflineDefaultPhase::MutationPending);
+                OfflineDefaultEffect::MutationAndCatalog
+            }
+        }
+    }
+
+    /// Record the authoritative mutation acknowledgement before catalog I/O.
+    pub fn mutation_acknowledged(&mut self, identity: &OfflineDefaultIdentity) -> bool {
+        if self.identity.as_ref() == Some(identity)
+            && self.phase == Some(OfflineDefaultPhase::MutationPending)
+        {
+            self.phase = Some(OfflineDefaultPhase::CatalogPending);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A catalog failure deliberately preserves the catalog-only retry state.
+    #[must_use]
+    pub fn catalog_failed(&self, identity: &OfflineDefaultIdentity) -> bool {
+        self.identity.as_ref() == Some(identity)
+            && self.phase == Some(OfflineDefaultPhase::CatalogPending)
+    }
+
+    /// Complete only the exact campaign/generation whose catalog was loaded.
+    pub fn catalog_loaded(&mut self, identity: &OfflineDefaultIdentity) -> bool {
+        if self.identity.as_ref() == Some(identity)
+            && self.phase == Some(OfflineDefaultPhase::CatalogPending)
+        {
+            self.phase = Some(OfflineDefaultPhase::Complete);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Executable state for the modal contextual-help layer.
 ///
 /// The workspace routes development handoff through the authored landing
