@@ -202,7 +202,103 @@ fn selected_agent_orchestration_joins_online_and_replay_terminal_refs() {
     let human = SelectedAgentComparison::human(&result);
     assert!(human.contains("online=Online"));
     assert!(human.contains("replay=OfflineReplay"));
-    assert!(SelectedAgentComparison::json(&result).contains("OfflineReplay"));
+    assert!(human.contains("Availability: available"));
+    assert!(human.contains("baseline online: available"));
+    let json: serde_json::Value =
+        serde_json::from_str(&SelectedAgentComparison::json(&result)).unwrap();
+    assert_eq!(json["availability"], "available");
+    assert_eq!(json["sides"][0]["role"], "baseline");
+    assert_eq!(json["sides"][1]["role"], "candidate");
+    assert_eq!(
+        json["sides"][1]["unavailable_reasons"],
+        serde_json::json!([])
+    );
+    assert_eq!(json["terminal_sources"][1], "OfflineReplay");
+}
+
+#[test]
+fn selected_agent_comparison_projects_asymmetric_availability_to_human_and_json() {
+    let mut orchestration = SelectedAgentComparison::new(comparison_selection()).unwrap();
+    orchestration
+        .add_terminal(
+            id("baseline"),
+            "agent-a",
+            "smoke",
+            ComparisonTerminalSource::Online,
+        )
+        .unwrap();
+    orchestration
+        .add_terminal(
+            id("missing-candidate"),
+            "agent-b",
+            "smoke",
+            ComparisonTerminalSource::Online,
+        )
+        .unwrap();
+    let result = orchestration
+        .orchestrate(&[report("baseline", "catalog", false)])
+        .unwrap();
+    assert!(result.comparison.is_none());
+    let human = SelectedAgentComparison::human(&result);
+    assert!(human.contains("Status: not-ready"));
+    assert!(human.contains("Availability: partial"));
+    assert!(
+        human.contains("candidate missing-candidate: unavailable; unavailable: report_missing")
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&SelectedAgentComparison::json(&result)).unwrap();
+    assert_eq!(json["availability"], "partial");
+    assert_eq!(json["comparable"], false);
+    assert_eq!(
+        json["sides"][1]["unavailable_reasons"],
+        serde_json::json!(["report_missing"])
+    );
+}
+
+#[test]
+fn selected_agent_comparison_projects_multi_candidate_confounders_per_side() {
+    let selection = asb_tui::fanout_dispatch::FanoutSelection {
+        agent_ids: vec![
+            "baseline".into(),
+            "candidate-a".into(),
+            "candidate-b".into(),
+        ],
+        ..comparison_selection()
+    };
+    let mut orchestration = SelectedAgentComparison::new(selection).unwrap();
+    for (run, agent) in [
+        ("base", "baseline"),
+        ("candidate-a", "candidate-a"),
+        ("candidate-b", "candidate-b"),
+    ] {
+        orchestration
+            .add_terminal(id(run), agent, "smoke", ComparisonTerminalSource::Online)
+            .unwrap();
+    }
+    let result = orchestration
+        .orchestrate(&[
+            report("base", "same", false),
+            report("candidate-a", "same", false),
+            report("candidate-b", "different", false),
+        ])
+        .unwrap();
+    assert!(result.comparison.is_none());
+    let human = SelectedAgentComparison::human(&result);
+    assert!(human.contains("Availability: available"));
+    assert!(human.contains(
+        "candidate candidate-b: available; unavailable: none; confounders: provenance_differs"
+    ));
+    let json: serde_json::Value =
+        serde_json::from_str(&SelectedAgentComparison::json(&result)).unwrap();
+    assert_eq!(json["availability"], "available");
+    assert_eq!(
+        json["confounders"],
+        serde_json::json!(["provenance_differs"])
+    );
+    assert_eq!(
+        json["sides"][2]["confounders"],
+        serde_json::json!(["provenance_differs"])
+    );
 }
 
 #[test]
