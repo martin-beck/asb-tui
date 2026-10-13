@@ -11,8 +11,13 @@ use asb_tui::{
     renderer,
     runtime::{RuntimeError, TerminalSession},
     terminal::{CapabilityTier, RenderPolicy},
+    ui::{Screen, WorkspaceState},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    Terminal,
+    backend::{CrosstermBackend, TestBackend},
+};
 use std::{
     collections::BTreeSet,
     fs::{self, OpenOptions},
@@ -188,6 +193,51 @@ fn pseudo_terminal_error_unwind_restores_terminal_and_termios() {
         "error",
     );
     assert!(output.status.success(), "nested error probe failed");
+    assert_terminal_boundaries(&output.stdout);
+    assert_termios_restored(&output.stdout);
+}
+
+#[test]
+fn pseudo_terminal_stepper_keeps_location_reasons_and_navigation_across_resize() {
+    if std::env::var(CHILD_MODE).as_deref() == Ok("stepper") {
+        let policy = interactive_policy();
+        let _session = TerminalSession::enter(policy).unwrap();
+        let mut state = WorkspaceState::for_startup(false);
+        // This is intentionally a real Crossterm backend in the nested PTY,
+        // rather than only a TestBackend rendering assertion.
+        let mut live = Terminal::new(CrosstermBackend::new(io::stdout())).unwrap();
+        live.draw(|frame| asb_tui::ui::render(frame, &state, policy))
+            .unwrap();
+        live.resize(ratatui::layout::Rect::new(0, 0, 40, 12))
+            .unwrap();
+        live.draw(|frame| asb_tui::ui::render(frame, &state, policy))
+            .unwrap();
+        for (width, height, expected) in [(80, 24, "Step 1/13"), (24, 6, "location: 1/13 Agent")] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| asb_tui::ui::render(frame, &state, policy))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(text.contains(expected));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(state.screen, Screen::Landing);
+        state.open_wizard();
+        assert_eq!(state.screen, Screen::Wizard);
+        return;
+    }
+    let output = under_pty(
+        "pseudo_terminal_stepper_keeps_location_reasons_and_navigation_across_resize",
+        "stepper",
+    );
+    assert!(output.status.success(), "nested stepper PTY probe failed");
     assert_terminal_boundaries(&output.stdout);
     assert_termios_restored(&output.stdout);
 }
@@ -1975,15 +2025,42 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     );
     assert!(bounded_tmux(
         &tmux_socket,
+        &["send-keys", "-t", &tmux_session, "Tab"],
+    ));
+    assert!(bounded_tmux(
+        &tmux_socket,
+        &["resize-window", "-t", &tmux_session, "-x", "24", "-y", "6"],
+    ));
+    let tiny_stepper_visible = (0..RENDER_WAIT_ATTEMPTS).any(|_| {
+        let Some((before, pane, after)) =
+            tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+        else {
+            return false;
+        };
+        let text = String::from_utf8_lossy(&pane);
+        if before
+            && after
+            && text.contains("location: 1/13 Agent")
+            && text.contains("unavailable: workloads")
+        {
+            true
+        } else {
+            thread::sleep(Duration::from_millis(25));
+            false
+        }
+    });
+    assert!(
+        tiny_stepper_visible,
+        "tmux resize did not retain tiny stepper location and reason"
+    );
+    assert!(bounded_tmux(
+        &tmux_socket,
+        &["send-keys", "-t", &tmux_session, "Left"],
+    ));
+    assert!(bounded_tmux(
+        &tmux_socket,
         &["send-keys", "-t", &tmux_session, "q"],
     ));
-    assert!(
-        wait_for_tmux_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
-            tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
-        })
-        .is_ok(),
-        "wizard cancellation did not return to the landing screen"
-    );
     assert!(bounded_tmux(
         &tmux_socket,
         &["send-keys", "-t", &tmux_session, "q"],
