@@ -8,12 +8,12 @@ Step 1/13: [>] Agent · [-] ASB catalog/plan/completed runs
 │Choose the agent used for this benchmark.                   ││co                                  │
 │                                                            ││[-] Workloads: requires an          │
 │Value: co                                                   ││authoritative ASB catalog           │
-│Element: wizard.agent                                       ││[-] Measures: requires an           │
-│[-] Workloads: requires an authoritative ASB catalog        ││authoritative ASB catalog           │
-│[-] Measures: requires an authoritative ASB catalog         ││[-] Run: requires an authoritative  │
-│[-] Run: requires an authoritative ASB plan and launch      ││ASB plan and launch                 │
-│[-] Results: requires completed authoritative ASB runs      ││[-] Results: requires completed     │
-│[-] Compare: requires completed authoritative ASB runs      ││authoritative ASB runs              │
+│[-] Workloads: requires an authoritative ASB catalog        ││[-] Measures: requires an           │
+│[-] Measures: requires an authoritative ASB catalog         ││authoritative ASB catalog           │
+│[-] Run: requires an authoritative ASB plan and launch      ││[-] Run: requires an authoritative  │
+│[-] Results: requires completed authoritative ASB runs      ││ASB plan and launch                 │
+│[-] Compare: requires completed authoritative ASB runs      ││[-] Results: requires completed     │
+│                                                            ││authoritative ASB runs              │
 │                                                            ││[-] Compare: requires completed     │
 │                                                            ││authoritative ASB runs              │
 │                                                            ││                                    │
