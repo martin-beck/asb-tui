@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # SPDX-License-Identifier: MIT
-"""Run the paired ASB/TUI content-addressed qualification boundary.
+"""Consume ASB's content-addressed qualification runner from the TUI boundary.
 
-This runner deliberately reports incomplete downstream stages instead of
-turning an unavailable provider selection or missing cassette into a pass.
-It is a disposable development check: no credentials are read and no
-provider is contacted.
+The ASB repository owns plan creation, local/mock execution, cassette capture,
+strict replay, and comparison. This wrapper does not recreate those documents
+or call their individual commands: it invokes the versioned ASB runner once,
+validates its privacy-safe receipt, and records the paired TUI journey probe.
 """
 
 from __future__ import annotations
@@ -16,20 +16,23 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+from typing import Any
+
 
 _SECRET_ENV_MARKERS = (
-    "API_KEY",
-    "APIKEY",
-    "ACCESS_TOKEN",
-    "AUTH_TOKEN",
-    "CREDENTIAL",
-    "PASSWORD",
-    "PRIVATE_KEY",
-    "SECRET",
-    "TOKEN",
+    "API_KEY", "APIKEY", "ACCESS_TOKEN", "AUTH_TOKEN", "CREDENTIAL",
+    "PASSWORD", "PRIVATE_KEY", "SECRET", "TOKEN",
 )
+_RUNNER = Path("tools/run-content-addressed-qualification.py")
+_REQUIRED_UPSTREAM_KEYS = {
+    "schema_version", "status", "network", "credentials", "source_revision",
+    "paired_heads", "runner_sha256", "fixture_sha256", "provider_profile_sha256", "selection",
+    "plan_run_journey", "campaign", "negative_identity", "negative_incomplete_coverage",
+    "receipt_sha256",
+}
 
 
 def sanitized_environment() -> dict[str, str]:
@@ -40,15 +43,13 @@ def sanitized_environment() -> dict[str, str]:
         for name, value in os.environ.items()
         if not any(marker in name.upper() for marker in _SECRET_ENV_MARKERS)
     }
-    environment.update(
-        {
-            "ASB_TUI_NETWORK_POLICY": "deny",
-            "HTTP_PROXY": "http://127.0.0.1:1",
-            "HTTPS_PROXY": "http://127.0.0.1:1",
-            "ALL_PROXY": "http://127.0.0.1:1",
-            "NO_PROXY": "*",
-        }
-    )
+    environment.update({
+        "ASB_TUI_NETWORK_POLICY": "deny",
+        "HTTP_PROXY": "http://127.0.0.1:1",
+        "HTTPS_PROXY": "http://127.0.0.1:1",
+        "ALL_PROXY": "http://127.0.0.1:1",
+        "NO_PROXY": "*",
+    })
     return environment
 
 
@@ -58,7 +59,7 @@ def git(checkout: Path, ref: str = "HEAD") -> str:
     ).strip()
 
 
-def json_result(process: subprocess.CompletedProcess[str]) -> dict:
+def json_result(process: subprocess.CompletedProcess[str]) -> dict[str, Any]:
     for line in reversed((process.stdout + "\n" + process.stderr).splitlines()):
         try:
             value = json.loads(line)
@@ -66,27 +67,54 @@ def json_result(process: subprocess.CompletedProcess[str]) -> dict:
             continue
         if isinstance(value, dict):
             return value
-    raise AssertionError(f"no JSON result: {process.stdout}{process.stderr}")
+    raise AssertionError("no structured JSON result")
 
 
-def run(binary: Path, *args: str, expected: tuple[int, ...] = (0,)) -> dict:
-    process = subprocess.run(
-        [str(binary), "--json", *args],
-        env=sanitized_environment(),
-        text=True,
-        capture_output=True,
-        check=False,
+def load_upstream_receipt(path: Path, asb_head: str, tui_head: str) -> dict[str, Any]:
+    """Reject incomplete, mismatched, or non-private ASB qualification output."""
+
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or set(value) != _REQUIRED_UPSTREAM_KEYS:
+        raise ValueError("ASB qualification receipt has an unexpected shape")
+    if value["status"] != "qualified" or value["network"] != "denied" or value["credentials"] != "none":
+        raise ValueError("ASB qualification is not credential-free and offline")
+    paired = value["paired_heads"]
+    if not isinstance(paired, dict) or paired != {"asb": asb_head, "asb_tui": tui_head}:
+        raise ValueError("ASB qualification receipt is not bound to the requested paired heads")
+    journey, campaign, negative = (
+        value["plan_run_journey"], value["campaign"], value["negative_incomplete_coverage"]
     )
-    if process.returncode not in expected:
-        raise AssertionError(
-            f"{binary.name} {' '.join(args)} exited {process.returncode}: "
-            f"{process.stdout}{process.stderr}"
-        )
-    return json_result(process)
+    if not isinstance(journey, dict) or journey.get("comparison", {}).get("comparable") is not True:
+        raise ValueError("ASB qualification did not produce a comparable plan/run journey")
+    if not isinstance(campaign, dict) or campaign.get("comparison", {}).get("comparable") is not True:
+        raise ValueError("ASB qualification did not produce comparable replay evidence")
+    if not isinstance(negative, dict) or negative.get("rejected") is not True:
+        raise ValueError("ASB qualification did not retain the incomplete-coverage rejection")
+    return value
+
+
+def probe_tui(binary: Path) -> dict[str, Any]:
+    """Exercise the closed development journey without a broker or credentials."""
+
+    process = subprocess.run(
+        [str(binary), "journey", "--format", "json"],
+        input=json.dumps({
+            "schema_version": 1, "profile": "development", "asb_version": "fixture-1",
+            "expected_asb_version": "fixture-1", "catalog_version": 7,
+            "expected_catalog_version": 7, "bundle_available": True,
+            "broker_available": True, "protocol_version": 1,
+            "expected_protocol_version": 1,
+        }) + "\n",
+        env=sanitized_environment(), text=True, capture_output=True, check=False,
+    )
+    result = json_result(process)
+    if process.returncode != 0 or result.get("ready") is not True:
+        raise ValueError("TUI development journey probe did not become ready")
+    return {"passed": True, "code": result.get("code")}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tui_binary", type=Path)
     parser.add_argument("--asb-binary", type=Path, required=True)
     parser.add_argument("--asb-checkout", type=Path, required=True)
@@ -94,158 +122,44 @@ def main() -> int:
     parser.add_argument("--receipt", type=Path, required=True)
     args = parser.parse_args()
 
-    asb = args.asb_binary.resolve()
-    tui = args.tui_binary.resolve()
-    asb_checkout = args.asb_checkout.resolve()
-    tui_checkout = args.tui_checkout.resolve()
-    receipt: dict = {
-        "schema_version": 1,
-        "ar": "AR-1686",
-        "classification": "development/mock",
-        "network": "denied",
-        "credentials": "none",
+    asb, tui = args.asb_binary.resolve(), args.tui_binary.resolve()
+    asb_checkout, tui_checkout = args.asb_checkout.resolve(), args.tui_checkout.resolve()
+    runner = asb_checkout / _RUNNER
+    if not asb.is_file() or not tui.is_file() or not runner.is_file():
+        parser.error("ASB binary, TUI binary, and ASB qualification runner must exist")
+    asb_head, tui_head = git(asb_checkout), git(tui_checkout)
+    with tempfile.TemporaryDirectory(prefix="asb-tui-ar1686-") as temporary:
+        upstream_path = Path(temporary) / "asb-receipt.json"
+        completed = subprocess.run(
+            [sys.executable, str(runner), "--root", str(asb_checkout), "--asb", str(asb),
+             "--tui-head", tui_head, "--receipt", str(upstream_path)],
+            cwd=tui_checkout, env=sanitized_environment(), text=True, capture_output=True, check=False,
+        )
+        if completed.returncode != 0:
+            raise SystemExit("ASB-owned content-addressed qualification failed")
+        upstream = load_upstream_receipt(upstream_path, asb_head, tui_head)
+
+    receipt = {
+        "schema_version": 1, "ar": "AR-1686", "classification": "development/mock",
+        "network": "denied", "credentials": "none",
         "provenance": {
-            "asb_commit": git(asb_checkout),
-            "asb_tree": git(asb_checkout, "HEAD^{tree}"),
-            "tui_commit": git(tui_checkout),
-            "tui_tree": git(tui_checkout, "HEAD^{tree}"),
+            "asb_commit": asb_head, "asb_tree": git(asb_checkout, "HEAD^{tree}"),
+            "tui_commit": tui_head, "tui_tree": git(tui_checkout, "HEAD^{tree}"),
             "asb_executable_sha256": hashlib.sha256(asb.read_bytes()).hexdigest(),
             "tui_executable_sha256": hashlib.sha256(tui.read_bytes()).hexdigest(),
         },
-        "stages": {},
+        "stages": {
+            "asb_content_addressed_qualification": {
+                "passed": True, "receipt_sha256": upstream["receipt_sha256"],
+            },
+            "tui_journey": probe_tui(tui),
+        },
+        "complete": True,
     }
-
-    with tempfile.TemporaryDirectory(prefix="asb-tui-ar1686-") as directory:
-        root = Path(directory)
-        agent = root / "agent"
-        agent.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        agent.chmod(0o700)
-        plan_a = root / "plan-a.toml"
-        plan_b = root / "plan-b.toml"
-        create_a = run(
-            asb,
-            "plan",
-            "create",
-            "--workload",
-            "original.bug-fix",
-            "--agent-executable",
-            str(agent),
-            "--output",
-            str(plan_a),
-            "--run-id",
-            "ar1686-a",
-            "--result-root",
-            str(root / "results-a"),
-            "--work-root",
-            str(root / "work-a"),
-        )
-        validate_a = run(asb, "plan", str(plan_a))
-        run_a = run(asb, "run", str(plan_a), "--local-mock")
-        receipt["stages"]["plan_create"] = {
-            "passed": create_a.get("ok") is True and validate_a.get("ok") is True,
-            "experiment_sha256": create_a.get("experiment_sha256"),
-            "plan_schema_version": validate_a.get("plan_schema_version"),
-        }
-        receipt["stages"]["run"] = {
-            "passed": run_a.get("ok") is True,
-            "run_ids": run_a.get("run_ids", []),
-        }
-
-        create_b = run(
-            asb,
-            "plan",
-            "create",
-            "--workload",
-            "original.bug-fix",
-            "--agent-executable",
-            str(agent),
-            "--output",
-            str(plan_b),
-            "--run-id",
-            "ar1686-b",
-            "--result-root",
-            str(root / "results-b"),
-            "--work-root",
-            str(root / "work-b"),
-        )
-        run_b = run(asb, "run", str(plan_b), "--local-mock")
-        report_a = run(asb, "report", str(root / "results-a" / "runs" / "ar1686-a"))
-        report_b = run(asb, "report", str(root / "results-b" / "runs" / "ar1686-b"))
-        comparison = run(
-            asb,
-            "compare",
-            str(root / "results-a" / "runs" / "ar1686-a"),
-            str(root / "results-b" / "runs" / "ar1686-b"),
-        )
-        receipt["stages"]["comparison"] = {
-            "passed": comparison.get("comparable") is True,
-            "comparable": comparison.get("comparable"),
-            "unavailable_reasons": comparison.get("unavailable_reasons", []),
-            "note": "ASB-generated local/mock plans currently lack provider selection",
-        }
-        receipt["stages"]["reports"] = {
-            "passed": report_a.get("ok") is True and report_b.get("ok") is True,
-            "runs": [run_a.get("run_ids"), run_b.get("run_ids")],
-            "second_plan_experiment_sha256": create_b.get("experiment_sha256"),
-        }
-
-        agent.write_text("#!/bin/sh\necho changed\nexit 0\n", encoding="utf-8")
-        stale = subprocess.run(
-            [str(asb), "--json", "run", str(plan_a), "--local-mock"],
-            env=sanitized_environment(),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        stale_result = json_result(stale)
-        receipt["stages"]["stale_identity"] = {
-            "passed": stale.returncode == 3
-            and stale_result.get("error", {}).get("message")
-            == "agent executable digest does not match",
-            "exit_code": stale.returncode,
-            "error": stale_result.get("error", {}).get("message"),
-        }
-
-        tui_probe = subprocess.run(
-            [str(tui), "journey", "--format", "json"],
-            input=json.dumps(
-                {
-                    "schema_version": 1,
-                    "profile": "development",
-                    "asb_version": "fixture-1",
-                    "expected_asb_version": "fixture-1",
-                    "catalog_version": 7,
-                    "expected_catalog_version": 7,
-                    "bundle_available": True,
-                    "broker_available": True,
-                    "protocol_version": 1,
-                    "expected_protocol_version": 1,
-                }
-            )
-            + "\n",
-            env=sanitized_environment(),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        tui_result = json_result(tui_probe)
-        receipt["stages"]["tui_journey"] = {
-            "passed": tui_probe.returncode == 0 and tui_result.get("ready") is True,
-            "code": tui_result.get("code"),
-        }
-
-    receipt["stages"]["capture_replay"] = {
-        "passed": False,
-        "status": "not_run",
-        "note": "requires a runner-owned capture/cassette authority; no cassette is fabricated",
-    }
-    receipt["complete"] = all(
-        stage.get("passed") is True for stage in receipt["stages"].values()
-    )
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(receipt, sort_keys=True))
-    return 0 if receipt["complete"] else 2
+    return 0
 
 
 if __name__ == "__main__":
