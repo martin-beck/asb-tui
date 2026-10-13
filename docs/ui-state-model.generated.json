@@ -208,6 +208,11 @@
       "key": "A"
     },
     {
+      "action": "wizard_cycle_pane",
+      "element": "wizard.step_region",
+      "key": "Tab"
+    },
+    {
       "action": "wizard_development_enroll",
       "element": "wizard.authentication",
       "key": "E"
@@ -470,9 +475,14 @@
         "wizard.model",
         "wizard.configuration",
         "wizard.authentication",
+        "wizard.workload_stage",
+        "wizard.measure_stage",
         "wizard.recording",
         "wizard.replay",
         "wizard.review",
+        "wizard.execution_stage",
+        "wizard.results_stage",
+        "wizard.comparison_stage",
         "wizard.controls",
         "wizard.shell_footer",
         "navigation"
@@ -835,6 +845,24 @@
       "parent": null
     },
     {
+      "id": "wizard.workload_stage",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.workload_stage",
+      "focusable": false,
+      "hoverable": true,
+      "parent": "wizard.step_region"
+    },
+    {
+      "id": "wizard.measure_stage",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.measure_stage",
+      "focusable": false,
+      "hoverable": true,
+      "parent": "wizard.step_region"
+    },
+    {
       "id": "wizard.recording",
       "route": "wizard",
       "role": "selectable",
@@ -860,6 +888,33 @@
       "focusable": true,
       "hoverable": true,
       "parent": null
+    },
+    {
+      "id": "wizard.execution_stage",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.execution_stage",
+      "focusable": false,
+      "hoverable": true,
+      "parent": "wizard.step_region"
+    },
+    {
+      "id": "wizard.results_stage",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.results_stage",
+      "focusable": false,
+      "hoverable": true,
+      "parent": "wizard.step_region"
+    },
+    {
+      "id": "wizard.comparison_stage",
+      "route": "wizard",
+      "role": "status",
+      "help_id": "wizard.comparison_stage",
+      "focusable": false,
+      "hoverable": true,
+      "parent": "wizard.step_region"
     },
     {
       "id": "wizard.controls",
@@ -1004,6 +1059,14 @@
       "effects": [
         "wizard_step_changed",
         "focus_reset"
+      ]
+    },
+    {
+      "event": "wizard_cycle_pane",
+      "from": "wizard",
+      "to": "wizard",
+      "effects": [
+        "wizard_pane_changed"
       ]
     },
     {
@@ -1452,7 +1515,7 @@
     },
     {
       "id": "wizard.step_region",
-      "text": "The progress region shows completed, current, and remaining setup stages without changing the current selection."
+      "text": "The progress region shows the complete setup and run journey: [x] complete, [>] current, [ ] future, and [-] unavailable stages without changing the current selection."
     },
     {
       "id": "wizard.selection_list",
@@ -1487,6 +1550,14 @@
       "text": "Choose a safe credential-reference name without reading or rendering its credential value."
     },
     {
+      "id": "wizard.workload_stage",
+      "text": "The workload stage is visible but unavailable until the authoritative ASB catalog is connected; it is not a completed setup step."
+    },
+    {
+      "id": "wizard.measure_stage",
+      "text": "The measure stage is visible but unavailable until the authoritative ASB catalog is connected; it is not a completed setup step."
+    },
+    {
       "id": "wizard.recording",
       "text": "Choose an explicit live or local-mock recording mode without fallback."
     },
@@ -1499,8 +1570,20 @@
       "text": "Review every setup choice before completing the wizard."
     },
     {
+      "id": "wizard.execution_stage",
+      "text": "The run stage requires an authoritative ASB plan and launch, so the standalone setup wizard marks it unavailable."
+    },
+    {
+      "id": "wizard.results_stage",
+      "text": "Results require completed authoritative ASB runs, so the standalone setup wizard marks this stage unavailable."
+    },
+    {
+      "id": "wizard.comparison_stage",
+      "text": "Comparison requires completed authoritative ASB runs, so the standalone setup wizard marks this stage unavailable."
+    },
+    {
       "id": "wizard.controls",
-      "text": "Use Up or Down for bounded choices, Space to toggle an agent, A to select or clear visible agents, Enter to confirm, or question mark for contextual help."
+      "text": "Use Up or Down or j/k to move, Tab to cycle the visible pane, Space to toggle an agent, A to select or clear visible agents, Enter to confirm, Esc/Left/empty Backspace to go back, or question mark for contextual help."
     },
     {
       "id": "wizard.shell_footer",

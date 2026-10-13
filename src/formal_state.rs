@@ -409,6 +409,8 @@ fn validate_document(model: &Document) -> Result<(), String> {
             ["configuration_draft_changed", "focus_reset"].as_slice()
         } else if matches!(transition.event.as_str(), "wizard_next" | "wizard_back") {
             ["wizard_step_changed", "focus_reset"].as_slice()
+        } else if transition.event == "wizard_cycle_pane" {
+            ["wizard_pane_changed"].as_slice()
         } else if transition.event == "wizard_set_value" {
             ["wizard_draft_changed", "focus_reset"].as_slice()
         } else if transition.event == "wizard_bounded_choice_move" {

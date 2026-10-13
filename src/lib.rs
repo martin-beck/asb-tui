@@ -64,6 +64,7 @@ pub mod ui;
 pub mod visual;
 pub mod wizard;
 pub mod wizard_catalog;
+pub mod wizard_stepper;
 
 use serde::Deserialize;
 use std::{

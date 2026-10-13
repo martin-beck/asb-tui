@@ -208,7 +208,11 @@ class UiStateModelTests(unittest.TestCase):
         self.assertIn("development-mode warning-only", contract)
 
     def test_change_ownership_requires_model_and_focused_tests(self):
-        self.assertTrue({"src/startup.rs", "src/wizard.rs"}.issubset(MODULE.UI_OWNERS))
+        self.assertTrue(
+            {"src/startup.rs", "src/wizard.rs", "src/wizard_stepper.rs"}.issubset(
+                MODULE.UI_OWNERS
+            )
+        )
         for owner in MODULE.UI_OWNERS:
             errors = MODULE.validate_changes([owner])
             self.assertEqual(len(errors), 2, owner)

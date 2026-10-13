@@ -1206,7 +1206,13 @@ impl WorkspaceState {
                     }
                     UiAction::None
                 }
-                KeyCode::Up
+                KeyCode::Tab => {
+                    if self.wizard_formal.apply(FormalEvent::CyclePane).is_ok() {
+                        self.wizard = self.wizard_formal.wizard().clone();
+                    }
+                    UiAction::None
+                }
+                KeyCode::Up | KeyCode::Char('k')
                     if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) =>
                 {
                     let _ = self.wizard_formal.apply(FormalEvent::CatalogMove(-1));
@@ -1218,7 +1224,12 @@ impl WorkspaceState {
                     self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None
                 }
-                KeyCode::Down
+                KeyCode::Char('k') if self.wizard.has_bounded_choices() => {
+                    let _ = self.wizard_formal.apply(FormalEvent::BoundedChoiceMove(-1));
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Down | KeyCode::Char('j')
                     if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) =>
                 {
                     let _ = self.wizard_formal.apply(FormalEvent::CatalogMove(1));
@@ -1226,6 +1237,11 @@ impl WorkspaceState {
                     UiAction::None
                 }
                 KeyCode::Down if self.wizard.has_bounded_choices() => {
+                    let _ = self.wizard_formal.apply(FormalEvent::BoundedChoiceMove(1));
+                    self.wizard = self.wizard_formal.wizard().clone();
+                    UiAction::None
+                }
+                KeyCode::Char('j') if self.wizard.has_bounded_choices() => {
                     let _ = self.wizard_formal.apply(FormalEvent::BoundedChoiceMove(1));
                     self.wizard = self.wizard_formal.wizard().clone();
                     UiAction::None
@@ -1252,7 +1268,7 @@ impl WorkspaceState {
                     }
                     UiAction::None
                 }
-                KeyCode::Esc => {
+                KeyCode::Esc | KeyCode::Left => {
                     if self.wizard_formal.apply(FormalEvent::Back).is_err() {
                         self.screen = Screen::Landing;
                     } else {
@@ -1301,6 +1317,11 @@ impl WorkspaceState {
                 }
                 KeyCode::Backspace => {
                     if self.wizard.has_bounded_choices() {
+                        if self.wizard_formal.apply(FormalEvent::Back).is_err() {
+                            self.screen = Screen::Landing;
+                        } else {
+                            self.wizard = self.wizard_formal.wizard().clone();
+                        }
                         return UiAction::None;
                     }
                     if self.wizard.catalog().is_some() && catalog_step(self.wizard.step()) {
@@ -1308,6 +1329,14 @@ impl WorkspaceState {
                             .wizard
                             .catalog()
                             .map_or_else(String::new, |catalog| catalog.query().to_owned());
+                        if query.is_empty() {
+                            if self.wizard_formal.apply(FormalEvent::Back).is_err() {
+                                self.screen = Screen::Landing;
+                            } else {
+                                self.wizard = self.wizard_formal.wizard().clone();
+                            }
+                            return UiAction::None;
+                        }
                         query.pop();
                         if self
                             .wizard_formal
@@ -1319,6 +1348,14 @@ impl WorkspaceState {
                         return UiAction::None;
                     }
                     let mut value = self.wizard.current_value().to_owned();
+                    if value.is_empty() {
+                        if self.wizard_formal.apply(FormalEvent::Back).is_err() {
+                            self.screen = Screen::Landing;
+                        } else {
+                            self.wizard = self.wizard_formal.wizard().clone();
+                        }
+                        return UiAction::None;
+                    }
                     value.pop();
                     if self
                         .wizard_formal
@@ -2152,7 +2189,7 @@ fn previous_screen(screen: Screen) -> Screen {
 pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolicy) {
     let area = frame.area();
     if state.screen == Screen::Wizard {
-        wizard::render(frame, &state.wizard, policy);
+        wizard::render_with_pane(frame, &state.wizard, policy, state.wizard_formal.pane());
         if state.help {
             wizard_help_overlay(frame, area, policy, wizard::element_id(state.wizard.step()));
         }
@@ -3682,10 +3719,10 @@ mod tests {
         let selected = state.wizard.current_value().to_owned();
         assert_eq!(selected, "all defaults");
         state.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(state.wizard.current_value(), selected);
         state.handle_key(key(KeyCode::Backspace));
-        assert_eq!(state.wizard.current_value(), selected);
-        state.handle_key(key(KeyCode::Down));
-        assert_eq!(state.wizard.current_value(), selected);
+        assert_eq!(state.wizard.step(), crate::wizard::Step::Model);
+        assert_eq!(state.wizard.current_value(), "m");
     }
 
     #[test]

@@ -20,8 +20,11 @@ use crate::{
         SelectionMode, SelectionRow, action_hint, compact_action_hint, row_text, summary_text,
     },
     terminal::RenderPolicy,
-    visual::{LabelFit, LayoutTier, SemanticRole},
+    visual::SemanticRole,
     wizard_catalog::{OptionKind, WizardCatalog, WizardCatalogState},
+    wizard_stepper::{
+        StepPresentation, StepState, StepperLayout, WizardPane, render_text, wizard_progress,
+    },
 };
 use ratatui::{
     Frame,
@@ -653,6 +656,7 @@ pub enum FormalEvent {
     CatalogMove(isize),
     CatalogSelect,
     CatalogToggleVisibleAgents,
+    CyclePane,
     BoundedChoiceMove(isize),
     DevelopmentEnroll,
     DevelopmentTest,
@@ -667,6 +671,7 @@ pub enum FormalEvent {
 pub struct WizardFormalState {
     route: StartupRoute,
     wizard: Wizard,
+    pane: WizardPane,
 }
 
 impl WizardFormalState {
@@ -693,6 +698,7 @@ impl WizardFormalState {
         Ok(Self {
             route: StartupRoute::Landing,
             wizard,
+            pane: WizardPane::Choices,
         })
     }
 
@@ -722,6 +728,7 @@ impl WizardFormalState {
             FormalEvent::CatalogToggleVisibleAgents => {
                 ("wizard_catalog_toggle_visible_agents", "wizard")
             }
+            FormalEvent::CyclePane => ("wizard_cycle_pane", "wizard"),
             FormalEvent::BoundedChoiceMove(_) => ("wizard_bounded_choice_move", "wizard"),
             FormalEvent::DevelopmentEnroll => ("wizard_development_enroll", "wizard"),
             FormalEvent::DevelopmentTest => ("wizard_development_test", "wizard"),
@@ -762,6 +769,7 @@ impl WizardFormalState {
                 "focus_reset",
             ]
             .as_slice(),
+            "wizard_cycle_pane" => ["wizard_pane_changed"].as_slice(),
             "wizard_bounded_choice_move" => [
                 "wizard_bounded_choice_changed",
                 "wizard_draft_changed",
@@ -814,6 +822,9 @@ impl WizardFormalState {
             }
             FormalEvent::CatalogToggleVisibleAgents if next.route == StartupRoute::Wizard => {
                 next.wizard.toggle_visible_agents()?
+            }
+            FormalEvent::CyclePane if next.route == StartupRoute::Wizard => {
+                next.pane = next.pane.next()
             }
             FormalEvent::BoundedChoiceMove(offset) if next.route == StartupRoute::Wizard => {
                 next.wizard.move_bounded_choice(offset)?
@@ -871,6 +882,10 @@ impl WizardFormalState {
     pub const fn wizard(&self) -> &Wizard {
         &self.wizard
     }
+    #[must_use]
+    pub const fn pane(&self) -> WizardPane {
+        self.pane
+    }
 }
 
 #[derive(Deserialize)]
@@ -920,6 +935,16 @@ pub fn plain_text(wizard: &Wizard) -> String {
 }
 
 pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
+    render_with_pane(frame, wizard, policy, WizardPane::Choices);
+}
+
+/// Render the wizard with a formally modeled shell pane focus.
+pub fn render_with_pane(
+    frame: &mut Frame<'_>,
+    wizard: &Wizard,
+    policy: RenderPolicy,
+    pane: WizardPane,
+) {
     let area = frame.area();
     if area.width < 30 || area.height < 10 {
         frame.render_widget(
@@ -949,7 +974,10 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         ),
         regions[0],
     );
-    frame.render_widget(wizard_step_region(wizard, policy, regions[1]), regions[1]);
+    frame.render_widget(
+        wizard_step_region(wizard, policy, pane, regions[1]),
+        regions[1],
+    );
     let (details, summary, compact_summary) = if wizard.has_bounded_choices() {
         let selected = wizard.bounded_selected_index();
         let mut lines = vec![
@@ -1122,7 +1150,11 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
             Paragraph::new(details).wrap(Wrap { trim: true }).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Choice details "),
+                    .title(if pane == WizardPane::Choices {
+                        " Choice details * "
+                    } else {
+                        " Choice details "
+                    }),
             ),
             body_regions[0],
         );
@@ -1173,7 +1205,11 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Selection summary "),
+                .title(if pane == WizardPane::Summary {
+                    " Selection summary * "
+                } else {
+                    " Selection summary "
+                }),
         ),
         body_regions[1],
     );
@@ -1192,7 +1228,7 @@ pub fn render(frame: &mut Frame<'_>, wizard: &Wizard, policy: RenderPolicy) {
         .block(
             Block::default()
                 .borders(Borders::TOP)
-                .title(" Keyboard help "),
+                .title(if pane == WizardPane::Controls { " Keyboard help * " } else { " Keyboard help " }),
         ),
         regions[3],
     );
@@ -1211,62 +1247,69 @@ fn choice_style(row: &SelectionRow<'_>, policy: RenderPolicy) -> Style {
     shell_style(role, policy)
 }
 
-const WIZARD_STEPS: [Step; 8] = [
-    Step::Agent,
-    Step::Provider,
-    Step::Model,
-    Step::Configuration,
-    Step::Authentication,
-    Step::Recording,
-    Step::Replay,
-    Step::Review,
-];
-
 fn wizard_step_region(
     wizard: &Wizard,
     policy: RenderPolicy,
+    pane: WizardPane,
     area: ratatui::layout::Rect,
 ) -> Paragraph<'static> {
-    let current = WIZARD_STEPS
-        .iter()
-        .position(|step| *step == wizard.step)
-        .expect("every wizard step is listed");
-    let tier = LayoutTier::from_dimensions(area.width, area.height.saturating_add(22));
-    let text = if matches!(tier, LayoutTier::Compact) {
-        format!(
-            "Step {}/{}: {}",
-            current + 1,
-            WIZARD_STEPS.len(),
-            step_title(wizard.step)
-        )
+    let stages = wizard_progress(wizard.step);
+    let horizontal = render_text(&stages, StepperLayout::Horizontal);
+    // `area` is the two-line progress region, not the whole terminal.  The
+    // outer renderer already supplies the truthful tiny-frame fallback.
+    let layout = if area.width < 40 {
+        StepperLayout::Tiny
+    } else if horizontal.chars().count().saturating_add(2) <= usize::from(area.width) {
+        StepperLayout::Horizontal
     } else {
-        let complete = if policy.unicode { "✓" } else { "x" };
-        let current_marker = if policy.unicode { "▶" } else { ">" };
-        WIZARD_STEPS
-            .iter()
-            .enumerate()
-            .map(|(index, step)| {
-                if index < current {
-                    format!("{complete} {}", step_title(*step))
-                } else if index == current {
-                    format!("{current_marker} {}", step_title(*step))
+        StepperLayout::Compact
+    };
+    let content = match layout {
+        StepperLayout::Horizontal => Line::from(
+            stages
+                .iter()
+                .enumerate()
+                .flat_map(|(index, stage)| {
+                    let mut spans = Vec::new();
+                    if index > 0 {
+                        spans.push(Span::raw(" ─ "));
+                    }
+                    spans.push(Span::styled(
+                        format!("{} {}", stage.state.marker(), stage.stage.label()),
+                        shell_style(stepper_role(stage), policy),
+                    ));
+                    spans
+                })
+                .collect::<Vec<_>>(),
+        ),
+        StepperLayout::Compact | StepperLayout::Tiny => Line::from(Span::styled(
+            render_text(&stages, layout),
+            shell_style(
+                if pane == WizardPane::Progress {
+                    SemanticRole::Focus
                 } else {
-                    format!(
-                        "{} {}",
-                        if policy.unicode { "·" } else { "." },
-                        step_title(*step)
-                    )
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("  ")
+                    SemanticRole::Text
+                },
+                policy,
+            ),
+        )),
     };
-    let fitted = match LabelFit::fit(&text, area.width.saturating_sub(2) as usize) {
-        LabelFit::Full(text) | LabelFit::Truncated { text, .. } => text,
-    };
-    Paragraph::new(fitted)
-        .style(shell_style(SemanticRole::Focus, policy))
-        .block(Block::default().borders(Borders::TOP).title(" Progress "))
+    Paragraph::new(content).block(Block::default().borders(Borders::TOP).title(
+        if pane == WizardPane::Progress {
+            " Progress * "
+        } else {
+            " Progress "
+        },
+    ))
+}
+
+fn stepper_role(stage: &StepPresentation) -> SemanticRole {
+    match stage.state {
+        StepState::Complete => SemanticRole::StepComplete,
+        StepState::Current => SemanticRole::Focus,
+        StepState::Future => SemanticRole::Muted,
+        StepState::Unavailable => SemanticRole::Disabled,
+    }
 }
 
 fn shell_style(role: SemanticRole, policy: RenderPolicy) -> Style {

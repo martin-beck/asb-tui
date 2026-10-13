@@ -9,6 +9,7 @@ use asb_tui::{
         startup_route,
     },
     wizard_catalog::{OptionKind, WizardCatalog, WizardOption},
+    wizard_stepper::WizardPane,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
@@ -33,6 +34,25 @@ fn rendered_text(wizard: &Wizard, policy: RenderPolicy, width: u16, height: u16)
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal
         .draw(|frame| render(frame, wizard, policy))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
+fn rendered_workspace_text(
+    state: &WorkspaceState,
+    policy: RenderPolicy,
+    width: u16,
+    height: u16,
+) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| asb_tui::ui::render(frame, state, policy))
         .unwrap();
     terminal
         .backend()
@@ -140,12 +160,13 @@ fn wizard_render_has_stable_context_and_tiny_fallback() {
 #[test]
 fn wizard_shell_keeps_identity_progress_content_and_contextual_footer_visible() {
     let wizard = Wizard::default();
-    let text = rendered_text(&wizard, policy(true), 120, 24);
+    let text = rendered_text(&wizard, policy(true), 240, 24);
     for label in [
         "Wizard shell",
         "Progress",
-        "▶ Agent",
-        "· Provider",
+        "[>] Agent",
+        "[ ] Provider",
+        "[-] Workloads",
         "Choice details",
         "Selection summary",
         "Keyboard help",
@@ -229,7 +250,7 @@ fn compact_monochrome_shell_uses_textual_progress_and_never_sets_colours() {
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(text.contains("Step 1/8: Agent"));
+    assert!(text.contains("Step 1/13: [>] Agent"));
     assert!(text.contains("Keyboard help"));
     assert!(
         terminal
@@ -240,6 +261,65 @@ fn compact_monochrome_shell_uses_textual_progress_and_never_sets_colours() {
             .all(|cell| cell.fg == ratatui::style::Color::Reset
                 && cell.bg == ratatui::style::Color::Reset)
     );
+}
+
+#[test]
+fn stepper_resizes_truthfully_from_full_journey_to_compact_and_tiny() {
+    let wizard = Wizard::default();
+    let wide = rendered_text(&wizard, policy(false), 240, 24);
+    for label in [
+        "[>] Agent",
+        "[ ] Provider",
+        "[-] Workloads",
+        "[-] Measures",
+        "[-] Run",
+        "[-] Results",
+        "[-] Compare",
+    ] {
+        assert!(wide.contains(label), "missing wide stepper label {label:?}");
+    }
+
+    let compact = rendered_text(&wizard, policy(false), 80, 24);
+    assert!(compact.contains("Step 1/13: [>] Agent"));
+    assert!(compact.contains("unavailable stages are marked [-]"));
+
+    let tiny = rendered_text(&wizard, policy(false), 24, 6);
+    assert!(tiny.contains("ASB setup wizard"));
+}
+
+#[test]
+fn modeled_pane_cycle_and_conventional_navigation_preserve_draft() {
+    let mut formal = WizardFormalState::new().unwrap();
+    formal.apply(FormalEvent::OpenWizard).unwrap();
+    assert_eq!(formal.pane(), WizardPane::Choices);
+    for expected in [
+        WizardPane::Summary,
+        WizardPane::Controls,
+        WizardPane::Progress,
+        WizardPane::Choices,
+    ] {
+        formal.apply(FormalEvent::CyclePane).unwrap();
+        assert_eq!(formal.pane(), expected);
+    }
+
+    let mut state = WorkspaceState::for_startup(false);
+    state.handle_key(key(KeyCode::Char('a')));
+    state.handle_key(key(KeyCode::Enter));
+    assert_eq!(state.wizard.step(), Step::Provider);
+    state.handle_key(key(KeyCode::Left));
+    assert_eq!(state.wizard.step(), Step::Agent);
+    state.handle_key(key(KeyCode::Backspace));
+    assert_eq!(state.wizard.current_value(), "");
+    assert_eq!(state.screen, Screen::Wizard);
+    state.handle_key(key(KeyCode::Backspace));
+    assert_eq!(state.screen, Screen::Landing);
+
+    let mut pane_state = WorkspaceState::for_startup(false);
+    let before = rendered_workspace_text(&pane_state, policy(false), 140, 24);
+    pane_state.handle_key(key(KeyCode::Tab));
+    let after = rendered_workspace_text(&pane_state, policy(false), 140, 24);
+    assert!(before.contains("Choice details *"));
+    assert!(after.contains("Selection summary *"));
 }
 
 #[test]
