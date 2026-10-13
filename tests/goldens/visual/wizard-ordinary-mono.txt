@@ -20,5 +20,5 @@ Step 1/13: [>] Agent · [-] ASB catalog/plan/completed runs
 │                                                            ││                                    │
 └────────────────────────────────────────────────────────────┘└────────────────────────────────────┘
  Context ───────────────────────────────────────────────────────────────────────────────────────────
-Agent: Choose which supported agents will execute the benchmark.
+Wizard: Agent | Agent: Choose which supported agents will execute the benchmark.
 ? / h Help  |  Tab Cycle wizard pane  |  q Cancel wizard  |  Type Edit wizard value

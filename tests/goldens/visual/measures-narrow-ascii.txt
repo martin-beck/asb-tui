@@ -12,5 +12,5 @@
 |                                    ||visible  b benchmark|
 +------------------------------------++--------------------+
  Context ---------------------------------------------------
-Measure: Choose whether this benchmark measure will run.
+Measures: Filtered latency | Measure: Choose whether this...
 ? / h Help  |  Up / Down Move measure cursor

@@ -2228,6 +2228,7 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
             &tmux_socket,
             &["resize-window", "-t", &tmux_session, "-x", "24", "-y", "6"],
         ));
+        let mut tiny_stepper_capture = String::new();
         let tiny_stepper_visible = (0..RENDER_WAIT_ATTEMPTS).any(|_| {
             let Some((before, pane, after)) =
                 tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
@@ -2235,10 +2236,11 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
                 return false;
             };
             let text = String::from_utf8_lossy(&pane);
+            tiny_stepper_capture = text.into_owned();
             if before
                 && after
-                && text.contains("location: 1/13 Agent")
-                && text.contains("unavailable: workloads")
+                && tiny_stepper_capture.contains("location: 1/13 Agent")
+                && tiny_stepper_capture.contains("unavailable: workloads")
             {
                 true
             } else {
@@ -2248,7 +2250,7 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
         });
         assert!(
             tiny_stepper_visible,
-            "tmux resize did not retain tiny stepper location and reason"
+            "tmux resize did not retain tiny stepper location and reason: {tiny_stepper_capture:?}"
         );
         assert!(bounded_tmux(
             &tmux_socket,
@@ -2265,9 +2267,12 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
         let tmux_restored = wait_for_marker(&tmux_marker);
         assert!(tmux_restored, "tmux session did not restore termios");
     }));
-    let tmux_stopped = tmux_guard.stop();
+    let mut tmux_stopped = tmux_guard.stop();
+    let tmux_child_gone = terminate_exact_process(&tmux_process);
+    if !tmux_stopped {
+        tmux_stopped = tmux_guard.stop();
+    }
     let tmux_gone = tmux_guard.is_gone();
-    let tmux_child_gone = wait_for_process_generation_gone(&tmux_process);
     if let Err(payload) = tmux_result {
         assert!(
             tmux_stopped,

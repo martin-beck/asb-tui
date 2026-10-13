@@ -20,5 +20,5 @@
         │Help                                                                              │
         │? / h            Help - Open searchable help for actions and key bindings.        │
  Context│About Search: Press / and type a word such as report or measure to narrow the     │────────
-Help ent└──────────────────────────────────────────────────────────────────────────────────┘
+Help: Op└──────────────────────────────────────────────────────────────────────────────────┘
 ? / h Help  |  / Search  |  1 Home  |  2 Measures  |  3 Configuration  |  s Run  |  4 Reports

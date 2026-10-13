@@ -3046,6 +3046,10 @@ fn previous_screen(screen: Screen) -> Screen {
 
 pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolicy) {
     let area = frame.area();
+    if area.width < 38 || area.height < 8 {
+        render_compact(frame, area, state, policy);
+        return;
+    }
     if state.screen == Screen::Wizard {
         wizard::render_with_pane(frame, &state.wizard, policy, state.wizard_formal.pane());
         let footer_area = Rect {
@@ -3070,10 +3074,6 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
         if state.help {
             help_overlay(frame, area, state, policy);
         }
-        return;
-    }
-    if area.width < 38 || area.height < 8 {
-        render_compact(frame, area, state, policy);
         return;
     }
     let chunks = Layout::default()
@@ -3638,6 +3638,7 @@ fn contextual_footer(
         },
         |reason| format!("Unavailable: {reason}"),
     );
+    let description = format!("{} | {description}", semantic_state_label(state));
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(fit_display_width(&description, available)),
@@ -3655,6 +3656,80 @@ fn contextual_footer(
     );
 }
 
+fn semantic_state_label(state: &WorkspaceState) -> String {
+    match state.screen {
+        Screen::Landing => state.live.as_ref().map_or_else(
+            || "Landing: Empty".into(),
+            |snapshot| {
+                if snapshot.connection == Connection::Disconnected {
+                    "Landing: Warning".into()
+                } else {
+                    "Landing: Ready".into()
+                }
+            },
+        ),
+        Screen::DevelopmentHandoff => {
+            format!("Development handoff: {:?}", state.development_handoff.phase)
+        }
+        Screen::Wizard => format!(
+            "Wizard: {}",
+            match state.wizard.step() {
+                wizard::Step::Agent => "Agent",
+                wizard::Step::Provider => "Provider",
+                wizard::Step::Model => "Model",
+                wizard::Step::Configuration => "Configuration",
+                wizard::Step::Authentication => "Authentication",
+                wizard::Step::Recording => "Recording",
+                wizard::Step::Replay => "Offline replay",
+                wizard::Step::Review => "Review",
+            }
+        ),
+        Screen::Measures if state.measures.is_empty() => "Measures: Unavailable".into(),
+        Screen::Measures if state.visible_indices().is_empty() => "Measures: Empty".into(),
+        Screen::Measures if !state.search.is_empty() => {
+            format!("Measures: Filtered {}", state.search)
+        }
+        Screen::Measures => format!(
+            "Measures: {} selected",
+            state.measures.iter().filter(|row| row.selected).count()
+        ),
+        Screen::Configuration if state.preflight.is_some() => "Configuration: Preflight".into(),
+        Screen::Configuration => format!(
+            "Configuration: {}",
+            match state.configuration_save_state {
+                ConfigurationSaveState::Clean => "Clean",
+                ConfigurationSaveState::Dirty => "Draft",
+                ConfigurationSaveState::Saved => "Saved",
+                ConfigurationSaveState::Unavailable => "Unavailable",
+                ConfigurationSaveState::Failed => "Failed",
+                ConfigurationSaveState::Invalid => "Warning",
+            }
+        ),
+        Screen::RunControl => format!(
+            "Run: {}",
+            state
+                .launch_state
+                .as_ref()
+                .map_or_else(|| "Ready".into(), |launch| format!("{:?}", launch.state()))
+        ),
+        Screen::Reports => {
+            let Some(snapshot) = state.live.as_ref() else {
+                return "Reports: Empty".into();
+            };
+            if snapshot.connection == Connection::Disconnected {
+                "Reports: Warning".into()
+            } else if snapshot.analysis.is_some() {
+                "Reports: Comparison".into()
+            } else if let Some(run) = snapshot.runs.first() {
+                format!("Reports: {:?}", run.state)
+            } else {
+                "Reports: Empty".into()
+            }
+        }
+        Screen::Help => "Help: Open".into(),
+    }
+}
+
 fn help_overlay(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
     if area.width < 60 || area.height < 16 {
         let help = document_help_entry(state.contextual_help_element());
@@ -3669,9 +3744,14 @@ fn help_overlay(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, polic
             || "Action: none currently available".to_owned(),
             |action| format!("> {} {}", action.key, action.label),
         );
-        let detail = selected.map_or_else(
-            || "Detail: leave help and complete the required setup.".to_owned(),
-            |action| format!("About: {}", action.usage),
+        let detail = state.contextual_unavailable_reason().map_or_else(
+            || {
+                selected.map_or_else(
+                    || "Detail: leave help and complete the required setup.".to_owned(),
+                    |action| format!("About: {}", action.usage),
+                )
+            },
+            |reason| format!("Unavailable: {reason}"),
         );
         frame.render_widget(
             Paragraph::new(vec![
@@ -3791,16 +3871,137 @@ fn render_compact(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, pol
         help_overlay(frame, area, state, policy);
         return;
     }
-    let help = document_help_entry(state.contextual_help_element());
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from("ASB | ? help | q quit"),
-            Line::from(help.map_or("Context help unavailable.", |entry| entry.summary)),
-        ])
-        .wrap(Wrap { trim: true })
-        .style(accent(policy)),
-        area,
-    );
+    let lines = compact_state_lines(state)
+        .into_iter()
+        .map(|line| Line::from(fit_display_width(&line, usize::from(area.width))))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines).style(accent(policy)), area);
+}
+
+fn compact_state_lines(state: &WorkspaceState) -> Vec<String> {
+    let mut lines = match state.screen {
+        Screen::Landing => {
+            let status = state.live.as_ref().map_or("Empty", |snapshot| {
+                if snapshot.connection == Connection::Disconnected {
+                    "Warning"
+                } else {
+                    "Ready"
+                }
+            });
+            vec!["ASB | Landing".into(), format!("State: {status}")]
+        }
+        Screen::DevelopmentHandoff => vec![
+            "ASB | Development handoff".into(),
+            format!("State: {:?}", state.development_handoff.phase),
+        ],
+        Screen::Wizard => {
+            let step = match state.wizard.step() {
+                wizard::Step::Agent => "Agent",
+                wizard::Step::Provider => "Provider",
+                wizard::Step::Model => "Model",
+                wizard::Step::Configuration => "Configuration",
+                wizard::Step::Authentication => "Authentication",
+                wizard::Step::Recording => "Recording",
+                wizard::Step::Replay => "Offline replay",
+                wizard::Step::Review => "Review",
+            };
+            let position = match state.wizard.step() {
+                wizard::Step::Agent => 1,
+                wizard::Step::Provider => 2,
+                wizard::Step::Model => 3,
+                wizard::Step::Configuration => 4,
+                wizard::Step::Authentication => 5,
+                wizard::Step::Recording => 6,
+                wizard::Step::Replay => 7,
+                wizard::Step::Review => 8,
+            };
+            let mut lines = vec![
+                "ASB | Setup wizard".into(),
+                format!("Step: {step}"),
+                format!("location: {position}/13 {step}"),
+                "unavailable: workloads".into(),
+            ];
+            if state.wizard.step() == wizard::Step::Review {
+                lines.extend([
+                    "Workloads/Measures: ASB catalog".into(),
+                    "Run: ASB plan".into(),
+                    "Results/Compare: completed runs".into(),
+                ]);
+            } else if state.wizard.catalog().is_none()
+                && matches!(
+                    state.wizard.step(),
+                    wizard::Step::Agent | wizard::Step::Provider | wizard::Step::Model
+                )
+            {
+                lines.push("Choice: catalog unavailable".into());
+            }
+            if !state.wizard.current_value().is_empty() {
+                lines.push(format!("Draft: {}", state.wizard.current_value()));
+            }
+            lines
+        }
+        Screen::Measures => {
+            let selected = state.measures.iter().filter(|row| row.selected).count();
+            let mut lines = vec!["ASB | Measures".into(), format!("Selected: {selected}")];
+            if state.measures.is_empty() {
+                lines.push("Catalog: unavailable".into());
+            } else if state.visible_indices().is_empty() {
+                lines.push(format!("No matches: {}", state.search));
+            } else if !state.search.is_empty() {
+                lines.push(format!("Filter: {}", state.search));
+            }
+            lines
+        }
+        Screen::Configuration => {
+            let status = match state.configuration_save_state {
+                ConfigurationSaveState::Clean => "Clean",
+                ConfigurationSaveState::Dirty => "Draft",
+                ConfigurationSaveState::Saved => "Saved",
+                ConfigurationSaveState::Unavailable => "Unavailable",
+                ConfigurationSaveState::Failed => "Failed",
+                ConfigurationSaveState::Invalid => "Warning",
+            };
+            let mut lines = vec!["ASB | Configuration".into(), format!("State: {status}")];
+            if state.preflight.is_some() {
+                lines.push("Preflight: ready".into());
+            }
+            lines
+        }
+        Screen::RunControl => {
+            let status = state
+                .launch_state
+                .as_ref()
+                .map_or("Ready".into(), |launch| format!("{:?}", launch.state()));
+            vec!["ASB | Run control".into(), format!("State: {status}")]
+        }
+        Screen::Reports => {
+            let Some(snapshot) = state.live.as_ref() else {
+                return vec![
+                    "ASB | Reports".into(),
+                    "State: Empty".into(),
+                    "? help | q quit".into(),
+                ];
+            };
+            let mut lines = vec!["ASB | Reports".into()];
+            if snapshot.connection == Connection::Disconnected {
+                lines.push("State: Warning".into());
+            } else if let Some(analysis) = &snapshot.analysis {
+                lines.push(format!("Analysis: {} runs", analysis.run_count));
+            } else if let Some(run) = snapshot.runs.first() {
+                lines.push(format!("Run: {} {:?}", run.run_id.0, run.state));
+            } else {
+                lines.push("State: Empty".into());
+            }
+            if !state.report_selection.is_empty() {
+                lines.push(format!("Selected: {}", state.report_selection.len()));
+            }
+            lines
+        }
+        Screen::Help => vec!["ASB | Help".into()],
+    };
+    lines.push(format!("Focus: {}", state.contextual_focus_element()));
+    lines.push("? help | q quit".into());
+    lines
 }
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let w = width.min(area.width.saturating_sub(2));
@@ -6170,13 +6371,19 @@ mod tests {
             ("measurement_selection", "filtered") => {
                 let mut state = WorkspaceState::default();
                 state.screen = Screen::Measures;
-                state.search = "latency".into();
+                state.handle_key(key(KeyCode::Char('/')));
+                for character in "latency".chars() {
+                    state.handle_key(key(KeyCode::Char(character)));
+                }
                 state
             }
             ("measurement_selection", "empty") => {
                 let mut state = WorkspaceState::default();
                 state.screen = Screen::Measures;
-                state.search = "no-match".into();
+                state.handle_key(key(KeyCode::Char('/')));
+                for character in "no-match".chars() {
+                    state.handle_key(key(KeyCode::Char(character)));
+                }
                 state
             }
             ("measurement_selection", "unavailable") => {
@@ -6371,54 +6578,105 @@ mod tests {
             .collect()
     }
 
-    fn visual_scenario_marker(route: &str, scenario: &str) -> &'static str {
+    fn visual_scenario_marker(route: &str, scenario: &str, compact: bool) -> &'static str {
+        if compact {
+            return match (route, scenario) {
+                ("landing", "ready") => "State: Ready",
+                ("landing", "warning") => "State: Warning",
+                ("landing", "empty") => "State: Empty",
+                ("landing", "development_handoff") => "Development handoff",
+                ("wizard", "step_agent") => "Step: Agent",
+                ("wizard", "step_provider") => "Step: Provider",
+                ("wizard", "step_model") => "Step: Model",
+                ("wizard", "step_configuration") => "Step: Configuration",
+                ("wizard", "step_credentials") => "Step: Authentication",
+                ("wizard", "step_recording") => "Step: Recording",
+                ("wizard", "step_replay") => "Step: Offline replay",
+                ("wizard", "step_review") => "Step: Review",
+                ("wizard", "step_workloads") | ("wizard", "step_measures") => {
+                    "Workloads/Measures: ASB catalog"
+                }
+                ("wizard", "step_execution") => "Run: ASB plan",
+                ("wizard", "step_results") | ("wizard", "step_comparison") => {
+                    "Results/Compare: completed runs"
+                }
+                ("wizard", "choice_unavailable") => "Choice: catalog unavailable",
+                ("wizard", "draft") => "Draft: codex",
+                ("wizard", "help")
+                | ("measurement_selection", "help")
+                | ("configuration", "help")
+                | ("run_control", "help")
+                | ("reports", "help") => "Context:",
+                ("measurement_selection", "selected") => "Selected: 3",
+                ("measurement_selection", "filtered") => "Filter: latency",
+                ("measurement_selection", "empty") => "No matches: no-match",
+                ("measurement_selection", "unavailable") => "Catalog: unavailable",
+                ("configuration", "clean") => "State: Clean",
+                ("configuration", "draft") => "State: Draft",
+                ("configuration", "warning") => "State: Warning",
+                ("configuration", "preflight") => "Preflight: ready",
+                ("run_control", "ready") => "State: Ready",
+                ("run_control", "running") => "State: Running",
+                ("run_control", "failed") => "State: Failed",
+                ("run_control", "cancelled") => "State: Cancelled",
+                ("recent_runs", "empty") | ("reports", "empty") => "State: Empty",
+                ("recent_runs", "completed") => "Run: run-completed Completed",
+                ("recent_runs", "failed") => "Run: run-failed Failed",
+                ("recent_runs", "selected") => "Selected: 1",
+                ("reports", "results") => "Run: run-a Completed",
+                ("reports", "comparison") => "Analysis: 2 runs",
+                ("reports", "warning") => "State: Warning",
+                ("help", "selected_action") => "> 1 Home",
+                ("help", "grouped_actions") => "> / Search",
+                ("help", "unavailable_action") => "Unavailable:",
+                _ => panic!("compact visual scenario marker missing: {route}/{scenario}"),
+            };
+        }
         match (route, scenario) {
-            ("landing", "ready") => "authenticated runner",
-            ("landing", "warning") => "Connection: disconnected",
-            ("landing", "empty") => "waiting for ASB control plane",
-            ("landing", "development_handoff") => "Development channel handoff",
-            ("wizard", "step_agent") => "Step: Agent",
-            ("wizard", "step_provider") => "Step: Provider",
-            ("wizard", "step_model") => "Step: Model",
-            ("wizard", "step_configuration") => "Step: Configuration",
-            ("wizard", "step_credentials") => "Step: Authentication",
-            ("wizard", "step_recording") => "Step: Recording",
-            ("wizard", "step_replay") => "Step: Offline replay",
-            ("wizard", "step_review") => "Step: Review",
-            ("wizard", "step_workloads") => "[-] Workloads:",
-            ("wizard", "step_measures") => "[-] Measures:",
-            ("wizard", "step_execution") => "[-] Run:",
-            ("wizard", "step_results") => "[-] Results:",
-            ("wizard", "step_comparison") => "[-] Compare:",
-            ("wizard", "choice_unavailable") => "requires an authoritative ASB catalog",
-            ("wizard", "draft") => "Value: codex",
+            ("landing", "ready") => "Landing: Ready",
+            ("landing", "warning") => "Landing: Warning",
+            ("landing", "empty") => "Landing: Empty",
+            ("landing", "development_handoff") => "Development handoff:",
+            ("wizard", "step_agent") => "Wizard: Agent",
+            ("wizard", "step_provider") => "Wizard: Provider",
+            ("wizard", "step_model") => "Wizard: Model",
+            ("wizard", "step_configuration") => "Wizard: Configuration",
+            ("wizard", "step_credentials") => "Wizard: Authentication",
+            ("wizard", "step_recording") => "Wizard: Recording",
+            ("wizard", "step_replay") => "Wizard: Offline replay",
+            ("wizard", "step_review")
+            | ("wizard", "step_workloads")
+            | ("wizard", "step_measures")
+            | ("wizard", "step_execution")
+            | ("wizard", "step_results")
+            | ("wizard", "step_comparison") => "Wizard: Review",
+            ("wizard", "choice_unavailable") | ("wizard", "draft") => "Wizard: Agent",
             ("wizard", "help") => "Context-sensitive shortcuts",
-            ("measurement_selection", "selected") => "Correctness",
-            ("measurement_selection", "filtered") => "latency",
-            ("measurement_selection", "empty") => "no-match",
-            ("measurement_selection", "unavailable") => "Measures: none selected",
+            ("measurement_selection", "selected") => "Measures: 3 selected",
+            ("measurement_selection", "filtered") => "Measures: Filtered latency",
+            ("measurement_selection", "empty") => "Measures: Empty",
+            ("measurement_selection", "unavailable") => "Measures: Unavailable",
             ("measurement_selection", "help") => "Context-sensitive shortcuts",
-            ("configuration", "clean") => "No local changes",
-            ("configuration", "draft") => "Unsaved local changes",
-            ("configuration", "warning") => "Invalid value:",
-            ("configuration", "preflight") => "Preflight",
+            ("configuration", "clean") => "Configuration: Clean",
+            ("configuration", "draft") => "Configuration: Draft",
+            ("configuration", "warning") => "Configuration: Warning",
+            ("configuration", "preflight") => "Configuration: Preflight",
             ("configuration", "help") => "Context-sensitive shortcuts",
-            ("run_control", "ready") => "No reviewed configuration is ready",
-            ("run_control", "running") => "Running",
-            ("run_control", "failed") => "Failed",
-            ("run_control", "cancelled") => "Cancelled",
+            ("run_control", "ready") => "Run: Ready",
+            ("run_control", "running") => "Run: Running",
+            ("run_control", "failed") => "Run: Failed",
+            ("run_control", "cancelled") => "Run: Cancelled",
             ("run_control", "help") => "Context-sensitive shortcuts",
-            ("recent_runs", "empty") | ("reports", "empty") => "No authoritative history",
-            ("recent_runs", "completed") => "run-completed",
-            ("recent_runs", "failed") => "run-failed",
-            ("recent_runs", "selected") => "run-selected",
-            ("reports", "results") => "run-a",
-            ("reports", "comparison") => "Analysis: 2 runs",
-            ("reports", "warning") => "Unavailable:",
+            ("recent_runs", "empty") | ("reports", "empty") => "Reports: Empty",
+            ("recent_runs", "completed") | ("recent_runs", "selected") => "Reports: Completed",
+            ("recent_runs", "failed") => "Reports: Failed",
+            ("reports", "results") => "Reports: Completed",
+            ("reports", "comparison") => "Reports: Comparison",
+            ("reports", "warning") => "Reports: Warning",
             ("reports", "help") => "Context-sensitive shortcuts",
-            ("help", "selected_action") => "> ",
-            ("help", "grouped_actions") => "Navigation",
-            ("help", "unavailable_action") => "No reviewed configuration is ready",
+            ("help", "selected_action") => "> 1",
+            ("help", "grouped_actions") => "> /",
+            ("help", "unavailable_action") => "Unavailable:",
             _ => panic!("visual scenario marker missing: {route}/{scenario}"),
         }
     }
@@ -6452,15 +6710,17 @@ mod tests {
                         if !policy.unicode {
                             assert!(text.is_ascii(), "{route_id}/{scenario_id}");
                         }
-                        if dimension["id"].as_str() == Some("wide")
-                            && capability["id"].as_str() == Some("color_unicode")
-                        {
-                            let marker = visual_scenario_marker(route_id, scenario_id);
-                            assert!(
-                                text.contains(marker),
-                                "{route_id}/{scenario_id} omitted {marker:?}"
-                            );
-                        }
+                        let marker = visual_scenario_marker(
+                            route_id,
+                            scenario_id,
+                            dimension["id"].as_str() == Some("minimum"),
+                        );
+                        assert!(
+                            text.contains(marker),
+                            "{route_id}/{scenario_id}/{}/{} omitted {marker:?}",
+                            dimension["id"].as_str().unwrap(),
+                            capability["id"].as_str().unwrap()
+                        );
                         rendered += 1;
                     }
                 }

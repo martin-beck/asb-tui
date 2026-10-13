@@ -20,5 +20,5 @@
 │Invalid value: correct it before applying  value reje...││                                        │
 └────────────────────────────────────────────────────────┘└────────────────────────────────────────┘
  Context ───────────────────────────────────────────────────────────────────────────────────────────
-Configuration value: Edit the setting used by the next benchmark.
+Configuration: Warning | Configuration value: Edit the setting used by the next benchmark.
 F1 Help  |  Type Type configuration value  |  Backspace Correct configuration value
