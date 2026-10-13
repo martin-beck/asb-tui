@@ -1,0 +1,16 @@
+ ASB - Agent Systems Benchmark
+ 1 Home | 2 Measures | 3 Configure | s Run | 4 Reports
+
+ / Search                              Selection summary
+latency                               Measures: 3 selected
+ Pool > Group > Benchmark > Measure - Correctness,
+> [x] Efficiency / Efficiency benchmarConsistency, Latency
+
+                                      Up/Down navigate
+                                      Space toggle
+                                      A select/clear visible
+                                      b benchmark
+                                      g group  P pool  Type
+ Context
+Measure: Choose whether this benchmark measure will run.
+? / h Help  |  Up / Down Move measure cursor

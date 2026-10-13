@@ -3085,11 +3085,12 @@ pub fn render(frame: &mut Frame<'_>, state: &WorkspaceState, policy: RenderPolic
     };
     frame.render_widget(
         Tabs::new(titles)
+            .divider(if policy.unicode { "│" } else { "|" })
             .select(selected)
             .block(
                 Block::default()
                     .title(" ASB - Agent Systems Benchmark ")
-                    .borders(Borders::ALL),
+                    .borders(semantic_borders(policy, Borders::ALL)),
             )
             .highlight_style(accent(policy)),
         chunks[0],
@@ -3568,15 +3569,20 @@ fn contextual_footer(
 ) {
     let element = document_help_entry(state.contextual_help_element());
     let actions = state.contextual_help_actions();
+    let action_limit = if area.width < 80 { 2 } else { 5 };
     let mut footer_actions = actions
         .iter()
-        .filter(|action| action.id != "open_help")
-        .take(4)
+        .find(|action| action.id == "open_help")
         .copied()
+        .into_iter()
         .collect::<Vec<_>>();
-    if let Some(help) = actions.iter().find(|action| action.id == "open_help") {
-        footer_actions.push(*help);
-    }
+    footer_actions.extend(
+        actions
+            .iter()
+            .filter(|action| action.id != "open_help")
+            .take(action_limit - footer_actions.len())
+            .copied(),
+    );
     let action_text = footer_actions
         .into_iter()
         .map(|action| format!("{} {}", action.key, action.label))
@@ -3595,7 +3601,11 @@ fn contextual_footer(
         Paragraph::new(vec![Line::from(description), Line::from(action_text)])
             .alignment(Alignment::Left)
             .style(muted(policy))
-            .block(Block::default().borders(Borders::TOP).title(" Context ")),
+            .block(
+                Block::default()
+                    .borders(semantic_borders(policy, Borders::TOP))
+                    .title(" Context "),
+            ),
         area,
     );
 }
@@ -3758,11 +3768,16 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 fn panel(title: &'static str, policy: RenderPolicy) -> Block<'static> {
-    Block::default().title(title).borders(if policy.unicode {
-        Borders::ALL
+    Block::default()
+        .title(title)
+        .borders(semantic_borders(policy, Borders::ALL))
+}
+fn semantic_borders(policy: RenderPolicy, borders: Borders) -> Borders {
+    if policy.unicode {
+        borders
     } else {
         Borders::NONE
-    })
+    }
 }
 fn accent(policy: RenderPolicy) -> Style {
     if matches!(policy.tier, CapabilityTier::Plain) {
@@ -5244,6 +5259,124 @@ mod tests {
             terminal
                 .draw(|frame| render(frame, &state, policy()))
                 .unwrap();
+        }
+    }
+
+    #[test]
+    fn resize_preserves_selection_focus_drafts_and_context_help_exactly() {
+        let dimensions = [(140, 36), (100, 24), (60, 16), (32, 8)];
+
+        let mut measures = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        measures.handle_key(key(KeyCode::Char('/')));
+        for character in "latency".chars() {
+            measures.handle_key(key(KeyCode::Char(character)));
+        }
+        measures.handle_key(key(KeyCode::Enter));
+        measures.handle_key(key(KeyCode::F(1)));
+        measures.handle_key(key(KeyCode::Down));
+        let measure_contract = (
+            measures.search.clone(),
+            measures.measure_cursor,
+            measures.measure_search_focused,
+            measures
+                .measures
+                .iter()
+                .map(|measure| measure.selected)
+                .collect::<Vec<_>>(),
+            measures.contextual_help_element(),
+            measures.contextual_help_selected(),
+            measures.help,
+        );
+        for (width, height) in dimensions {
+            assert!(measures.apply_resize(width, height));
+            let _ = rendered_workspace(&measures, width, height);
+            assert_eq!(
+                measure_contract,
+                (
+                    measures.search.clone(),
+                    measures.measure_cursor,
+                    measures.measure_search_focused,
+                    measures
+                        .measures
+                        .iter()
+                        .map(|measure| measure.selected)
+                        .collect::<Vec<_>>(),
+                    measures.contextual_help_element(),
+                    measures.contextual_help_selected(),
+                    measures.help,
+                )
+            );
+        }
+
+        let mut configuration = WorkspaceState {
+            screen: Screen::Configuration,
+            ..WorkspaceState::default()
+        };
+        configuration.handle_key(key(KeyCode::Enter));
+        for character in "draft-value".chars() {
+            configuration.handle_key(key(KeyCode::Char(character)));
+        }
+        configuration.handle_key(key(KeyCode::F(1)));
+        configuration.handle_key(key(KeyCode::Down));
+        let configuration_contract = (
+            configuration.config_cursor,
+            configuration.configuration_draft.clone(),
+            configuration.configuration_editing,
+            configuration.configuration_edit_buffer.clone(),
+            configuration.configuration_edit_error.clone(),
+            configuration.contextual_help_element(),
+            configuration.contextual_help_selected(),
+            configuration.help,
+        );
+        for (width, height) in dimensions {
+            assert!(configuration.apply_resize(width, height));
+            let _ = rendered_workspace(&configuration, width, height);
+            assert_eq!(
+                configuration_contract,
+                (
+                    configuration.config_cursor,
+                    configuration.configuration_draft.clone(),
+                    configuration.configuration_editing,
+                    configuration.configuration_edit_buffer.clone(),
+                    configuration.configuration_edit_error.clone(),
+                    configuration.contextual_help_element(),
+                    configuration.contextual_help_selected(),
+                    configuration.help,
+                )
+            );
+        }
+
+        let mut wizard = WorkspaceState::for_startup(false);
+        wizard.handle_key(key(KeyCode::Char('c')));
+        wizard.handle_key(key(KeyCode::Char('o')));
+        wizard.handle_key(key(KeyCode::Tab));
+        wizard.handle_key(key(KeyCode::F(1)));
+        wizard.handle_key(key(KeyCode::Down));
+        let wizard_contract = (
+            wizard.wizard.values().clone(),
+            wizard.wizard.step(),
+            wizard.wizard_formal.pane(),
+            wizard.contextual_help_element(),
+            wizard.contextual_help_selected(),
+            wizard.help,
+        );
+        for (width, height) in dimensions {
+            assert!(wizard.apply_resize(width, height));
+            let _ = rendered_workspace(&wizard, width, height);
+            assert_eq!(
+                wizard_contract,
+                (
+                    wizard.wizard.values().clone(),
+                    wizard.wizard.step(),
+                    wizard.wizard_formal.pane(),
+                    wizard.contextual_help_element(),
+                    wizard.contextual_help_selected(),
+                    wizard.help,
+                )
+            );
         }
     }
 

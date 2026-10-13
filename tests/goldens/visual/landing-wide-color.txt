@@ -1,0 +1,36 @@
+┌ ASB - Agent Systems Benchmark ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 1 Home │ 2 Measures │ 3 Configure │ s Run │ 4 Reports                                                                                    │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                               Welcome to ASB
+
+
+┌ Ready ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                     Review benchmark plans, select measures, and compare recent runs.                                    │
+│                                                 Connection: waiting for ASB control plane                                                │
+│                                  The runner remains external; this workspace is a safe control surface.                                  │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                Press d for development handoff  |  2 measures  |  3 configure  |  4 reports
+
+
+ Context ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Landing: Choose a benchmark task or review prior results.
+? / h Help  |  d Open development handoff  |  1 Home  |  2 Measures  |  3 Configuration

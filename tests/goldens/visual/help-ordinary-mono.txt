@@ -1,0 +1,24 @@
+┌ ASB - Agent Systems Benchmark ───────────────────────────────────────────────────────────────────┐
+│ 1 Home┌ Help ────────────────────────────────────────────────────────────────────────────┐       │
+└───────│Context-sensitive shortcuts                                                       │───────┘
+        │Read the explanation and key binding for this context.                            │
+        │Navigation                                                                        │
+        │1                Home - Open the landing screen and choose another benchmark task.│
+┌ Ready │2                Measures - Open the catalog for choosing benchmark groups and    │───────┐
+│       │measures.                                                                         │       │
+│       │3                Configuration - Open the settings used by the frontend before a  │       │
+│       │run.                                                                              │       │
+│       │s                Run - Open the screen for starting or stopping a benchmark run.  │       │
+│       │4                Reports - Open report analysis for comparing selected benchmark  │       │
+│       │runs.                                                                             │       │
+│       │Editing                                                                           │       │
+│       │> /                Search - Focus the search field for filtering the current help │       │
+│       │catalog.                                                                          │       │
+│       │Lifecycle                                                                         │       │
+└───────│q                Quit - Close the ASB TUI while leaving the benchmark runner      │───────┘
+        │running.                                                                          │
+        │Help                                                                              │
+        │? / h            Help - Open searchable help for actions and key bindings.        │
+ Context│About Search: Press / and type a word such as report or measure to narrow the     │────────
+Help ent└──────────────────────────────────────────────────────────────────────────────────┘
+? / h Help  |  / Search  |  1 Home  |  2 Measures  |  3 Configuration

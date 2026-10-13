@@ -1,0 +1,24 @@
+┌ ASB - Agent Systems Benchmark ───────────────────────────────────────────────────────────────────┐
+│ 1 Home │ 2 Measures │ 3 Configure │ s Run │ 4 Reports                                            │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Configuration - Enter focus, Ctrl-S apply ─────────────┐┌ ASB control status ────────────────────┐
+│Theme = dark-v2 [Appearance]                            ││Runner setup: not connected             │
+│High contrast = false [Appearance]                      ││Provider/model catalog unavailable      │
+│Motion = full [Appearance]                              ││                                        │
+│Refresh cadence = 1000 [Behaviour]                      ││                                        │
+│Key hints = true [Navigation]                           ││                                        │
+│Landing destination = home [Navigation]                 ││                                        │
+│Benchmark defaults = managed benchmark defaults [Benchma││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+Invalid value: correct it before applying  value rejected │                                        │
+└────────────────────────────────────────────────────────┘└────────────────────────────────────────┘
+ Context ───────────────────────────────────────────────────────────────────────────────────────────
+Configuration value: Edit the setting used by the next benchmark.
+F1 Help  |  Type Type configuration value  |  Backspace Correct configuration value  |  Enter Commit

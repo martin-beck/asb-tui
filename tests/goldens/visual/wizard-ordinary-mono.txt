@@ -1,0 +1,24 @@
+┌ Wizard shell ────────────────────────────────────────────────────────────────────────────────────┐
+│ASB setup wizard                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ Progress ──────────────────────────────────────────────────────────────────────────────────────────
+Step 1/13: [>] Agent · [-] ASB catalog/plan/completed runs
+┌ Choice details * ──────────────────────────────────────────┐┌ Selection summary ─────────────────┐
+│Step: Agent                                                 ││Agent: 1 selected                   │
+│Choose the agent used for this benchmark.                   ││co                                  │
+│                                                            ││[-] Workloads: requires an          │
+│Value: co                                                   ││authoritative ASB catalog           │
+│Element: wizard.agent                                       ││[-] Measures: requires an           │
+│[-] Workloads: requires an authoritative ASB catalog        ││authoritative ASB catalog           │
+│[-] Measures: requires an authoritative ASB catalog         ││[-] Run: requires an authoritative  │
+│[-] Run: requires an authoritative ASB plan and launch      ││ASB plan and launch                 │
+│[-] Results: requires completed authoritative ASB runs      ││[-] Results: requires completed     │
+│[-] Compare: requires completed authoritative ASB runs      ││authoritative ASB runs              │
+│                                                            ││[-] Compare: requires completed     │
+│                                                            ││authoritative ASB runs              │
+│                                                            ││                                    │
+│                                                            ││                                    │
+└────────────────────────────────────────────────────────────┘└────────────────────────────────────┘
+ Context ───────────────────────────────────────────────────────────────────────────────────────────
+Agent: Choose which supported agents will execute the benchmark.nue  |  Esc back  |  q cancel
+? / h Help  |  Tab Cycle wizard pane  |  q Cancel wizard  |  Type Edit wizard value  |  Backspace Co

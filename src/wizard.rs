@@ -970,7 +970,7 @@ pub fn render_with_pane(
         ]))
         .block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(semantic_borders(policy, Borders::ALL))
                 .title(" Wizard shell "),
         ),
         regions[0],
@@ -1154,7 +1154,7 @@ pub fn render_with_pane(
         frame.render_widget(
             Paragraph::new(details).wrap(Wrap { trim: true }).block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(semantic_borders(policy, Borders::ALL))
                     .title(if pane == WizardPane::Choices {
                         " Choice details * "
                     } else {
@@ -1209,7 +1209,7 @@ pub fn render_with_pane(
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(semantic_borders(policy, Borders::ALL))
                 .title(if pane == WizardPane::Summary {
                     " Selection summary * "
                 } else {
@@ -1232,7 +1232,7 @@ pub fn render_with_pane(
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
-                .borders(Borders::TOP)
+                .borders(semantic_borders(policy, Borders::TOP))
                 .title(if pane == WizardPane::Controls { " Keyboard help * " } else { " Keyboard help " }),
         ),
         regions[3],
@@ -1277,7 +1277,7 @@ fn wizard_step_region(
                 .flat_map(|(index, stage)| {
                     let mut spans = Vec::new();
                     if index > 0 {
-                        spans.push(Span::raw(" ─ "));
+                        spans.push(Span::raw(if policy.unicode { " ─ " } else { " - " }));
                     }
                     spans.push(Span::styled(
                         format!("{} {}", stage.state.marker(), stage.stage.label()),
@@ -1288,7 +1288,7 @@ fn wizard_step_region(
                 .collect::<Vec<_>>(),
         ),
         StepperLayout::Compact | StepperLayout::Tiny => Line::from(Span::styled(
-            render_text(&stages, layout),
+            ascii_fallback(render_text(&stages, layout), policy),
             shell_style(
                 if pane == WizardPane::Progress {
                     SemanticRole::Focus
@@ -1299,13 +1299,38 @@ fn wizard_step_region(
             ),
         )),
     };
-    Paragraph::new(content).block(Block::default().borders(Borders::TOP).title(
-        if pane == WizardPane::Progress {
-            " Progress * "
-        } else {
-            " Progress "
-        },
-    ))
+    Paragraph::new(content).block(
+        Block::default()
+            .borders(semantic_borders(policy, Borders::TOP))
+            .title(if pane == WizardPane::Progress {
+                " Progress * "
+            } else {
+                " Progress "
+            }),
+    )
+}
+
+fn semantic_borders(policy: RenderPolicy, borders: Borders) -> Borders {
+    if policy.unicode {
+        borders
+    } else {
+        Borders::NONE
+    }
+}
+
+fn ascii_fallback(value: String, policy: RenderPolicy) -> String {
+    if policy.unicode {
+        value
+    } else {
+        value.replace(
+            [
+                char::from_u32(0x2500).expect("valid scalar"),
+                char::from_u32(0x00b7).expect("valid scalar"),
+                char::from_u32(0x2014).expect("valid scalar"),
+            ],
+            "-",
+        )
+    }
 }
 
 fn stepper_role(stage: &StepPresentation) -> SemanticRole {

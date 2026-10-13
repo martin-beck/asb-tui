@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "dimensions": [
+    {"id":"wide","columns":140,"lines":36},
+    {"id":"ordinary","columns":100,"lines":24},
+    {"id":"narrow","columns":60,"lines":16},
+    {"id":"minimum","columns":32,"lines":8}
+  ],
+  "capabilities": [
+    {"id":"color_unicode","tier":"true_color","unicode":true},
+    {"id":"mono_unicode","tier":"plain","unicode":true},
+    {"id":"ascii_plain","tier":"plain","unicode":false}
+  ],
+  "routes": [
+    {"id":"landing","states":["ready","warning","empty"]},
+    {"id":"wizard","states":["all_steps","choice_unavailable","draft","help"]},
+    {"id":"measurement_selection","states":["selected","filtered","empty","unavailable","help"]},
+    {"id":"configuration","states":["clean","draft","warning","preflight","help"]},
+    {"id":"run_control","states":["ready","running","failed","cancelled","help"]},
+    {"id":"recent_runs","states":["empty","completed","failed","selected"]},
+    {"id":"reports","states":["empty","results","comparison","warning","help"]},
+    {"id":"help","states":["search","grouped_actions","unavailable_action"]}
+  ],
+  "goldens": [
+    {"id":"landing-wide-color","route":"landing","state":"ready","dimension":"wide","capability":"color_unicode","file":"tests/goldens/visual/landing-wide-color.txt","markers":["Welcome to ASB","Landing:","? / h Help"]},
+    {"id":"wizard-ordinary-mono","route":"wizard","state":"draft","dimension":"ordinary","capability":"mono_unicode","file":"tests/goldens/visual/wizard-ordinary-mono.txt","markers":["ASB setup wizard","Progress","? / h Help"]},
+    {"id":"measures-narrow-ascii","route":"measurement_selection","state":"filtered","dimension":"narrow","capability":"ascii_plain","file":"tests/goldens/visual/measures-narrow-ascii.txt","markers":["Search","latency","Measure:"]},
+    {"id":"configuration-ordinary-color","route":"configuration","state":"draft","dimension":"ordinary","capability":"color_unicode","file":"tests/goldens/visual/configuration-ordinary-color.txt","markers":["Configuration","Invalid value","Configuration value:"]},
+    {"id":"run-minimum-ascii","route":"run_control","state":"ready","dimension":"minimum","capability":"ascii_plain","file":"tests/goldens/visual/run-minimum-ascii.txt","markers":["ASB","benchmark","? help"]},
+    {"id":"reports-wide-color","route":"reports","state":"results","dimension":"wide","capability":"color_unicode","file":"tests/goldens/visual/reports-wide-color.txt","markers":["Reports","run-a","? / h Help"]},
+    {"id":"help-ordinary-mono","route":"help","state":"grouped_actions","dimension":"ordinary","capability":"mono_unicode","file":"tests/goldens/visual/help-ordinary-mono.txt","markers":["Context-sensitive shortcuts","Navigation","? / h Help"]},
+    {"id":"overlay-minimum-ascii","route":"configuration","state":"help","dimension":"minimum","capability":"ascii_plain","file":"tests/goldens/visual/overlay-minimum-ascii.txt","markers":["Context:","About:","Esc/F1 close"]}
+  ],
+  "privacy_forbidden": ["/home/", "api_key", "authorization:", "bearer ", "sk-"]
+}

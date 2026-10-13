@@ -26,6 +26,8 @@ use std::{
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::ffi::OsStrExt,
     os::unix::fs::{FileTypeExt, MetadataExt},
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    path::Path,
     process::{Command, Stdio},
     sync::{Arc, Mutex, MutexGuard, mpsc},
     thread,
@@ -46,6 +48,27 @@ fn serialize_live_tmux_fixture() -> MutexGuard<'static, ()> {
 fn lock_unpoisoned(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
     lock.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn matching_asb_tui_processes(binary: &Path) -> BTreeSet<u32> {
+    let expected = fs::canonicalize(binary).expect("ASB TUI executable must be canonicalizable");
+    fs::read_dir("/proc")
+        .expect("procfs must be readable for the live terminal cleanup proof")
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+        .filter(|pid| fs::read_link(format!("/proc/{pid}/exe")).ok().as_ref() == Some(&expected))
+        .collect()
+}
+
+fn wait_for_no_new_asb_tui_processes(binary: &Path, baseline: &BTreeSet<u32>) -> bool {
+    for _ in 0..100 {
+        let current = matching_asb_tui_processes(binary);
+        if current.is_subset(baseline) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    false
 }
 
 fn under_pty(test: &str, mode: &str) -> std::process::Output {
@@ -1952,7 +1975,9 @@ fn live_tmux_fixture_lock_is_exclusive() {
 #[test]
 fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     let _fixture_lock = serialize_live_tmux_fixture();
-    let binary = env!("CARGO_BIN_EXE_asb-tui");
+    let binary_path = Path::new(env!("CARGO_BIN_EXE_asb-tui"));
+    let baseline_processes = matching_asb_tui_processes(binary_path);
+    let binary = binary_path.to_string_lossy();
     let directory = PrivateDirectory::create();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1978,100 +2003,191 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     .unwrap_or_else(|failure| panic!("{failure}"));
     set_tmux_remain_on_exit(&tmux_socket, &tmux_session, &tmux_guard)
         .unwrap_or_else(|failure| panic!("{failure}"));
-    let readiness =
-        wait_for_tmux_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
-            tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+    let tmux_result = catch_unwind(AssertUnwindSafe(|| {
+        let readiness =
+            wait_for_tmux_rendered_screen(RENDER_WAIT_ATTEMPTS, Duration::from_millis(25), || {
+                tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+            });
+        if let Err(pane) = readiness {
+            let diagnostic = tmux_diagnostics(&tmux_socket, &tmux_session, &pane);
+            panic!("tmux UI did not reach its first rendered frame: {diagnostic}");
+        }
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "2"],
+        ));
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "/"],
+        ));
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "latency", "Enter"],
+        ));
+        let keyboard_selection_visible = (0..RENDER_WAIT_ATTEMPTS).any(|_| {
+            let Some((before, pane, after)) =
+                tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+            else {
+                return false;
+            };
+            let text = String::from_utf8_lossy(&pane);
+            if before
+                && after
+                && text.contains("Measures")
+                && text.contains("latency")
+                && text.contains("[x]")
+                && text.contains("? / h Help")
+            {
+                true
+            } else {
+                thread::sleep(Duration::from_millis(25));
+                false
+            }
         });
-    if let Err(pane) = readiness {
-        let diagnostic = tmux_diagnostics(&tmux_socket, &tmux_session, &pane);
         assert!(
-            tmux_guard.stop(),
-            "tmux cleanup ownership could not be revalidated"
+            keyboard_selection_visible,
+            "keyboard-only measure search did not retain selection and help"
         );
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "F1"],
+        ));
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["resize-window", "-t", &tmux_session, "-x", "60", "-y", "16"],
+        ));
+        let mut resized_help_capture = String::new();
+        let resized_help_visible = (0..RENDER_WAIT_ATTEMPTS).any(|_| {
+            let Some((before, pane, after)) =
+                tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+            else {
+                return false;
+            };
+            let text = String::from_utf8_lossy(&pane);
+            resized_help_capture = text.into_owned();
+            if before
+                && after
+                && resized_help_capture.contains("Context-sensitive")
+                && resized_help_capture.contains("Move measure cursor")
+                && resized_help_capture.contains("Help")
+            {
+                true
+            } else {
+                thread::sleep(Duration::from_millis(25));
+                false
+            }
+        });
         assert!(
-            tmux_guard.is_gone(),
-            "tmux cleanup failed after readiness timeout"
+            resized_help_visible,
+            "keyboard-opened help did not survive a narrow PTY resize: {resized_help_capture:?}"
         );
-        panic!("tmux UI did not reach its first rendered frame: {diagnostic}");
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "F1"],
+        ));
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["resize-window", "-t", &tmux_session, "-x", "80", "-y", "24"],
+        ));
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "1"],
+        ));
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "w"],
+        ));
+        let wizard_shell_visible = (0..RENDER_WAIT_ATTEMPTS).any(|_| {
+            let Some((before, pane, after)) =
+                tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+            else {
+                return false;
+            };
+            let text = String::from_utf8_lossy(&pane);
+            if before
+                && after
+                && text.contains("ASB setup wizard")
+                && text.contains("Progress")
+                && text.contains("Choice details")
+                && text.contains("Selection summary")
+                && text.contains("Context")
+            {
+                true
+            } else {
+                thread::sleep(Duration::from_millis(25));
+                false
+            }
+        });
+        assert!(
+            wizard_shell_visible,
+            "tmux wizard did not render the persistent visual shell"
+        );
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "Tab"],
+        ));
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["resize-window", "-t", &tmux_session, "-x", "24", "-y", "6"],
+        ));
+        let tiny_stepper_visible = (0..RENDER_WAIT_ATTEMPTS).any(|_| {
+            let Some((before, pane, after)) =
+                tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
+            else {
+                return false;
+            };
+            let text = String::from_utf8_lossy(&pane);
+            if before
+                && after
+                && text.contains("location: 1/13 Agent")
+                && text.contains("unavailable: workloads")
+            {
+                true
+            } else {
+                thread::sleep(Duration::from_millis(25));
+                false
+            }
+        });
+        assert!(
+            tiny_stepper_visible,
+            "tmux resize did not retain tiny stepper location and reason"
+        );
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "Left"],
+        ));
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "q"],
+        ));
+        assert!(bounded_tmux(
+            &tmux_socket,
+            &["send-keys", "-t", &tmux_session, "q"],
+        ));
+        let tmux_restored = wait_for_marker(&tmux_marker);
+        assert!(tmux_restored, "tmux session did not restore termios");
+    }));
+    let tmux_stopped = tmux_guard.stop();
+    let tmux_gone = tmux_guard.is_gone();
+    let tmux_child_gone = wait_for_no_new_asb_tui_processes(binary_path, &baseline_processes);
+    if let Err(payload) = tmux_result {
+        assert!(
+            tmux_stopped,
+            "tmux cleanup ownership could not be revalidated after test failure"
+        );
+        assert!(tmux_gone, "tmux session leaked after test failure");
+        assert!(
+            tmux_child_gone,
+            "ASB TUI child leaked after failed tmux journey"
+        );
+        resume_unwind(payload);
     }
-    assert!(bounded_tmux(
-        &tmux_socket,
-        &["send-keys", "-t", &tmux_session, "w"],
-    ));
-    let wizard_shell_visible = (0..RENDER_WAIT_ATTEMPTS).any(|_| {
-        let Some((before, pane, after)) =
-            tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
-        else {
-            return false;
-        };
-        let text = String::from_utf8_lossy(&pane);
-        if before
-            && after
-            && text.contains("ASB setup wizard")
-            && text.contains("Progress")
-            && text.contains("Choice details")
-            && text.contains("Selection summary")
-            && text.contains("Context")
-        {
-            true
-        } else {
-            thread::sleep(Duration::from_millis(25));
-            false
-        }
-    });
     assert!(
-        wizard_shell_visible,
-        "tmux wizard did not render the persistent visual shell"
-    );
-    assert!(bounded_tmux(
-        &tmux_socket,
-        &["send-keys", "-t", &tmux_session, "Tab"],
-    ));
-    assert!(bounded_tmux(
-        &tmux_socket,
-        &["resize-window", "-t", &tmux_session, "-x", "24", "-y", "6"],
-    ));
-    let tiny_stepper_visible = (0..RENDER_WAIT_ATTEMPTS).any(|_| {
-        let Some((before, pane, after)) =
-            tmux_visible_alternate_capture(&tmux_socket, &tmux_session)
-        else {
-            return false;
-        };
-        let text = String::from_utf8_lossy(&pane);
-        if before
-            && after
-            && text.contains("location: 1/13 Agent")
-            && text.contains("unavailable: workloads")
-        {
-            true
-        } else {
-            thread::sleep(Duration::from_millis(25));
-            false
-        }
-    });
-    assert!(
-        tiny_stepper_visible,
-        "tmux resize did not retain tiny stepper location and reason"
-    );
-    assert!(bounded_tmux(
-        &tmux_socket,
-        &["send-keys", "-t", &tmux_session, "Left"],
-    ));
-    assert!(bounded_tmux(
-        &tmux_socket,
-        &["send-keys", "-t", &tmux_session, "q"],
-    ));
-    assert!(bounded_tmux(
-        &tmux_socket,
-        &["send-keys", "-t", &tmux_session, "q"],
-    ));
-    let tmux_restored = wait_for_marker(&tmux_marker);
-    assert!(tmux_restored, "tmux session did not restore termios");
-    assert!(
-        tmux_guard.stop(),
+        tmux_stopped,
         "tmux cleanup ownership could not be revalidated"
     );
-    assert!(tmux_guard.is_gone(), "tmux session leaked after cleanup");
+    assert!(tmux_gone, "tmux session leaked after cleanup");
+    assert!(tmux_child_gone, "ASB TUI child leaked after tmux cleanup");
 
     let screen_marker = directory.path().join("screen-restored");
     let screen_capture = directory.path().join("screen.capture");
@@ -2120,6 +2236,10 @@ fn local_tmux_and_screen_sessions_quit_and_restore_termios() {
     assert!(
         screen_guard.is_gone(),
         "GNU screen session leaked after cleanup"
+    );
+    assert!(
+        wait_for_no_new_asb_tui_processes(binary_path, &baseline_processes),
+        "ASB TUI child leaked after terminal journey"
     );
 }
 
