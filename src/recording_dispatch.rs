@@ -174,6 +174,10 @@ pub struct RecordingDispatchState {
     /// A frontend must not turn a stalled runner into an unbounded poll loop.
     progress_requests: u16,
     progress_campaign_id: Option<String>,
+    /// Session-local acknowledgement fence. Repeated terminal input must not
+    /// duplicate the authoritative offline-default mutation while a refreshed
+    /// snapshot is still converging.
+    offline_default_requested: Option<(String, crate::control_codec::Revision)>,
     pub selected_run_id: Option<crate::control_codec::RunId>,
     pub comparison_run_ids: Vec<crate::control_codec::RunId>,
     remove_confirmation_required: bool,
@@ -197,6 +201,7 @@ impl RecordingDispatchState {
             selected_cassette_sha256: None,
             progress_requests: 0,
             progress_campaign_id: None,
+            offline_default_requested: None,
             selected_run_id: None,
             comparison_run_ids: Vec::new(),
             remove_confirmation_required: false,
@@ -457,8 +462,18 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
             Ok(RecordingDispatchOutcome::ReconcileRequested)
         }
         UiAction::ActivateOfflineDefault => {
-            model.request(RecordingAction::ActivateOfflineDefault)?;
             let campaign_id = campaign_id(&snapshot)?;
+            let generation = campaign_generation(&snapshot)?;
+            if state
+                .offline_default_requested
+                .as_ref()
+                .is_some_and(|requested| requested == &(campaign_id.clone(), generation))
+            {
+                return Err(RecordingDispatchError::Model(
+                    RecordingModelError::ActionUnavailable,
+                ));
+            }
+            model.request(RecordingAction::ActivateOfflineDefault)?;
             session
                 .set_recording_campaign_offline_default(
                     projection,
@@ -466,7 +481,7 @@ pub fn dispatch_with_backend<B: RecordingBackend>(
                     idempotency_key,
                 )
                 .map_err(RecordingDispatchError::from)?;
-            let generation = campaign_generation(&snapshot)?;
+            state.offline_default_requested = Some((campaign_id.clone(), generation));
             let catalog = session.recording_cassette_catalog(campaign_id, generation)?;
             state.authenticated_catalog = Some(
                 crate::benchmark_route::AuthenticatedCassetteCatalog::try_from(catalog)
@@ -961,6 +976,23 @@ mod tests {
             ["execute", "progress", "reconcile", "offline", "catalog"]
         );
         assert!(state.authenticated_catalog.is_some());
+        assert!(matches!(
+            dispatch_with_backend(
+                UiAction::ActivateOfflineDefault,
+                &mut state,
+                &mut backend,
+                &mut complete,
+                "o-retry".into()
+            ),
+            Err(RecordingDispatchError::Model(
+                RecordingModelError::ActionUnavailable
+            ))
+        ));
+        assert_eq!(
+            backend.calls,
+            ["execute", "progress", "reconcile", "offline", "catalog"],
+            "repeated terminal input must not duplicate backend mutations"
+        );
     }
 
     #[test]
