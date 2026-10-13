@@ -5,7 +5,10 @@ use asb_tui::{
     Capabilities,
     control_transport::{DynamicCatalogError, TransportError},
     fanout_dispatch::{FanoutDispatchState, FanoutSelection, FanoutSelectionError},
-    formal_state::{FormalEvent, FormalUiState, VisibleMeasureAction, VisibleMeasureScope},
+    formal_state::{
+        ContextHelpFormalState, FormalEvent, FormalUiState, VisibleMeasureAction,
+        VisibleMeasureScope,
+    },
     runtime::DevelopmentRouteFailure,
     shell::Route,
     wizard::{FormalEvent as WizardEvent, WizardFormalState},
@@ -579,4 +582,53 @@ fn development_authentication_actions_are_formally_executable() {
             .credential_locator_sha256
             .is_none()
     );
+}
+
+#[test]
+fn contextual_help_events_are_executable_atomic_and_restore_focus() {
+    let mut context =
+        ContextHelpFormalState::new("measurement_selection", Some("measures.search")).unwrap();
+    let closed = context.clone();
+    assert!(
+        context
+            .apply(FormalEvent::CloseContextHelp, "measurement_selection")
+            .is_err()
+    );
+    assert_eq!(context, closed);
+
+    context
+        .apply(FormalEvent::OpenContextHelp, "measurement_selection")
+        .unwrap();
+    assert!(context.is_open());
+    assert_eq!(context.selection(), 0);
+    let opened = context.clone();
+    assert!(
+        context
+            .apply(
+                FormalEvent::MoveContextHelp {
+                    delta: 1,
+                    item_count: 3,
+                },
+                "reports",
+            )
+            .is_err()
+    );
+    assert_eq!(context, opened);
+
+    context
+        .apply(
+            FormalEvent::MoveContextHelp {
+                delta: -1,
+                item_count: 3,
+            },
+            "measurement_selection",
+        )
+        .unwrap();
+    assert_eq!(context.selection(), 2);
+    context
+        .apply(FormalEvent::CloseContextHelp, "measurement_selection")
+        .unwrap();
+    assert!(!context.is_open());
+    assert_eq!(context.selection(), 0);
+    assert_eq!(context.focus(), Some("measures.search"));
 }

@@ -95,6 +95,12 @@ pub enum FormalEvent {
     StartRun,
     CancelRun,
     Reconnect,
+    OpenContextHelp,
+    MoveContextHelp {
+        delta: i8,
+        item_count: usize,
+    },
+    CloseContextHelp,
     Resize {
         columns: u16,
         lines: u16,
@@ -141,6 +147,9 @@ impl FormalEvent {
             Self::StartRun => Some("start_run"),
             Self::CancelRun => Some("cancel_run"),
             Self::Reconnect => Some("reconnect"),
+            Self::OpenContextHelp => Some("open_context_help"),
+            Self::MoveContextHelp { .. } => Some("move_context_help"),
+            Self::CloseContextHelp => Some("close_context_help"),
             Self::Resize { .. } | Self::Focus(_) => None,
         }
     }
@@ -154,6 +163,130 @@ pub enum FormalError {
     InvalidDimensions(AppError),
     UnknownTransition { route: Route, event: String },
     RouteUnavailable(Route),
+    InvalidContextHelpState,
+}
+
+/// Executable state for the modal contextual-help layer.
+///
+/// The workspace routes development handoff through the authored landing
+/// transition, matching the existing formal development-handoff contract.
+/// Every mutation validates the exact same-route transition and effects before
+/// changing state, so illegal or wrong-route events are atomic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContextHelpFormalState {
+    route: String,
+    open: bool,
+    selection: usize,
+    focus: Option<String>,
+    return_focus: Option<String>,
+}
+
+impl ContextHelpFormalState {
+    pub fn new(route: &str, focus: Option<&str>) -> Result<Self, FormalError> {
+        let document = parse_model().map_err(FormalError::InvalidModel)?;
+        if !document
+            .routes
+            .iter()
+            .any(|candidate| candidate.id == route)
+        {
+            return Err(FormalError::InvalidModel(format!(
+                "unknown context-help route {route}"
+            )));
+        }
+        Ok(Self {
+            route: route.to_owned(),
+            open: false,
+            selection: 0,
+            focus: focus.map(str::to_owned),
+            return_focus: None,
+        })
+    }
+
+    pub fn apply(&mut self, event: FormalEvent, current_route: &str) -> Result<(), FormalError> {
+        let (event_id, expected_effects): (&str, &[&str]) = match event {
+            FormalEvent::OpenContextHelp => (
+                "open_context_help",
+                &["context_help_opened", "focus_saved", "draft_preserved"],
+            ),
+            FormalEvent::MoveContextHelp { .. } => (
+                "move_context_help",
+                &[
+                    "context_help_selection_changed",
+                    "focus_preserved",
+                    "draft_preserved",
+                ],
+            ),
+            FormalEvent::CloseContextHelp => (
+                "close_context_help",
+                &["context_help_closed", "focus_restored", "draft_preserved"],
+            ),
+            _ => {
+                return Err(FormalError::UnknownTransition {
+                    route: Route::Landing,
+                    event: "non-context-help event".into(),
+                });
+            }
+        };
+        if current_route != self.route {
+            return Err(FormalError::InvalidContextHelpState);
+        }
+        let document = parse_model().map_err(FormalError::InvalidModel)?;
+        let transition = document
+            .transitions
+            .iter()
+            .find(|transition| transition.from == self.route && transition.event == event_id)
+            .ok_or_else(|| {
+                FormalError::InvalidModel(format!(
+                    "missing {event_id} transition for {}",
+                    self.route
+                ))
+            })?;
+        if transition.to != self.route
+            || transition
+                .effects
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                != expected_effects
+        {
+            return Err(FormalError::InvalidModel(format!(
+                "{event_id} transition does not match interpreter semantics"
+            )));
+        }
+        match event {
+            FormalEvent::OpenContextHelp if !self.open => {
+                self.return_focus = self.focus.clone();
+                self.open = true;
+                self.selection = 0;
+            }
+            FormalEvent::MoveContextHelp { delta, item_count } if self.open && item_count > 0 => {
+                self.selection = (self.selection as isize + isize::from(delta))
+                    .rem_euclid(item_count as isize) as usize;
+            }
+            FormalEvent::CloseContextHelp if self.open => {
+                self.open = false;
+                self.selection = 0;
+                self.focus = self.return_focus.take();
+            }
+            _ => return Err(FormalError::InvalidContextHelpState),
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        self.open
+    }
+
+    #[must_use]
+    pub const fn selection(&self) -> usize {
+        self.selection
+    }
+
+    #[must_use]
+    pub fn focus(&self) -> Option<&str> {
+        self.focus.as_deref()
+    }
 }
 
 /// The executable state required to check route, focus, and underlying state

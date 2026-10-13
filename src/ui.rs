@@ -71,7 +71,9 @@ pub struct WorkspaceState {
     pub development_handoff: crate::development_handoff::HandoffProjection,
     pub help: bool,
     help_cursor: usize,
+    context_help_formal: Option<crate::formal_state::ContextHelpFormalState>,
     pub search: String,
+    measure_search_focused: bool,
     pub measure_cursor: usize,
     pub measures: Vec<MeasureRow>,
     /// Generation-bound nested benchmark catalog used by the production
@@ -124,6 +126,9 @@ pub struct WorkspaceState {
     /// Rendering still uses the frame's authoritative area, so a missed
     /// event cannot make the renderer allocate from stale dimensions.
     layout: ResponsiveLayout,
+    recording_catalog_entries: usize,
+    recording_cassette_selected: bool,
+    recording_progress_available: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,7 +161,9 @@ impl Default for WorkspaceState {
             authoritative_provider_catalog_seen: false,
             help: false,
             help_cursor: 0,
+            context_help_formal: None,
             search: String::new(),
+            measure_search_focused: false,
             measure_cursor: 0,
             measures: vec![
                 MeasureRow {
@@ -228,6 +235,9 @@ impl Default for WorkspaceState {
             benchmark_selection: Some(benchmark_selection),
             benchmark_control_revision: None,
             layout: ResponsiveLayout::from_dimensions(None, None),
+            recording_catalog_entries: 0,
+            recording_cassette_selected: false,
+            recording_progress_available: true,
         }
     }
 }
@@ -1141,7 +1151,11 @@ impl WorkspaceState {
                 crate::wizard_stepper::WizardPane::Summary => "wizard.selection_summary",
                 crate::wizard_stepper::WizardPane::Controls => "wizard.controls",
             },
-            Screen::Measures if self.visible_indices().is_empty() => "measures.search",
+            Screen::Measures
+                if self.measure_search_focused || self.visible_indices().is_empty() =>
+            {
+                "measures.search"
+            }
             Screen::Measures => "measures.row",
             Screen::Configuration => "configuration.entry",
             Screen::RunControl => match self.launch_state.as_ref().map(|state| state.state()) {
@@ -1169,6 +1183,209 @@ impl WorkspaceState {
         }
     }
 
+    /// Synchronize the renderer's cassette-selection predicates with the
+    /// runtime-owned recording dispatcher. Only bounded availability facts
+    /// cross this seam; cassette identities remain private to the dispatcher.
+    pub(crate) fn sync_recording_context(
+        &mut self,
+        recording: Option<&crate::recording_dispatch::RecordingDispatchState>,
+    ) {
+        self.recording_catalog_entries =
+            recording.map_or(0, |state| state.authenticated_cassette_count());
+        self.recording_cassette_selected =
+            recording.is_some_and(|state| state.has_selected_cassette());
+        self.recording_progress_available =
+            recording.is_none_or(|state| state.progress_available());
+    }
+
+    fn control_capabilities(&self) -> Option<&crate::control_codec::Capabilities> {
+        self.live.as_ref()?.capabilities.as_ref()
+    }
+
+    fn recording_phase(&self) -> Option<(crate::recording_campaign::CampaignPhase, bool)> {
+        use crate::recording_campaign::CampaignObservation;
+        let snapshot = self.live.as_ref()?;
+        let observation = snapshot
+            .recording_campaign_lifecycle
+            .as_ref()
+            .and_then(|value| CampaignObservation::try_from(value).ok())
+            .or_else(|| {
+                snapshot
+                    .recording_campaign
+                    .as_ref()
+                    .and_then(|value| CampaignObservation::try_from(value).ok())
+            })?;
+        Some((observation.phase, observation.coverage.is_complete()))
+    }
+
+    fn recording_prerequisites_ready(&self) -> bool {
+        self.recording_workload_scope().is_ok()
+            && self.live.as_ref().is_some_and(|live| {
+                live.configuration.as_ref().is_some_and(|configuration| {
+                    configuration.configured
+                        && !configuration.agent_ids.is_empty()
+                        && configuration
+                            .provider_id
+                            .as_ref()
+                            .is_some_and(|id| !id.is_empty())
+                        && configuration
+                            .model_id
+                            .as_ref()
+                            .is_some_and(|id| !id.is_empty())
+                })
+            })
+    }
+
+    fn action_is_legal(&self, action: crate::actions::UiAction) -> bool {
+        use crate::actions::UiAction as Action;
+        use crate::recording_campaign::CampaignPhase;
+        let capabilities = self.control_capabilities();
+        match action {
+            Action::StartRun => {
+                self.preflight_bundle.is_some()
+                    && capabilities.is_some_and(|caps| caps.run_control)
+                    && self.launch_state.as_ref().is_none_or(|launch| {
+                        matches!(launch.state(), crate::launch_statistics::RunState::Idle)
+                    })
+            }
+            Action::AdmitFanout => {
+                self.preflight_bundle.is_some()
+                    && capabilities.is_some_and(|caps| caps.run_control)
+                    && self.live.as_ref().is_some_and(|live| live.fanout.is_none())
+            }
+            Action::CancelRun => {
+                capabilities.is_some_and(|caps| caps.run_control && caps.events)
+                    && self.launch_state.as_ref().is_some_and(|launch| {
+                        matches!(
+                            launch.state(),
+                            crate::launch_statistics::RunState::Launching
+                                | crate::launch_statistics::RunState::Running
+                                | crate::launch_statistics::RunState::Cancelling
+                        )
+                    })
+            }
+            Action::CancelFanout => {
+                capabilities.is_some_and(|caps| caps.run_control && caps.events)
+                    && self.live.as_ref().is_some_and(|live| live.fanout.is_some())
+            }
+            Action::RefreshProviderCatalog => {
+                capabilities.is_some_and(|caps| caps.validate_settings)
+            }
+            Action::EstimateRecording | Action::PlanRecording => {
+                capabilities.is_some_and(|caps| caps.validate_settings)
+                    && self.recording_prerequisites_ready()
+                    && self.recording_phase().is_none_or(|(phase, _)| {
+                        matches!(
+                            phase,
+                            CampaignPhase::None | CampaignPhase::Cancelled | CampaignPhase::Failed
+                        )
+                    })
+            }
+            Action::ConfirmRecordingCapture => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self
+                        .recording_phase()
+                        .is_some_and(|(phase, _)| phase == CampaignPhase::Planned)
+            }
+            Action::ProgressRecording => {
+                capabilities.is_some_and(|caps| caps.events)
+                    && self.recording_progress_available
+                    && self.recording_phase().is_some_and(|(phase, _)| {
+                        matches!(
+                            phase,
+                            CampaignPhase::Recording | CampaignPhase::NeedsReconciliation
+                        )
+                    })
+            }
+            Action::CancelRecording => {
+                capabilities.is_some_and(|caps| caps.run_control && caps.events)
+                    && self.recording_phase().is_some_and(|(phase, _)| {
+                        matches!(
+                            phase,
+                            CampaignPhase::Planned
+                                | CampaignPhase::Recording
+                                | CampaignPhase::NeedsReconciliation
+                        )
+                    })
+            }
+            Action::ReconcileRecording => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self
+                        .recording_phase()
+                        .is_some_and(|(phase, _)| phase == CampaignPhase::NeedsReconciliation)
+            }
+            Action::ActivateOfflineDefault | Action::SealRecording => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self.recording_phase().is_some_and(|(phase, complete)| {
+                        phase == CampaignPhase::Complete && complete
+                    })
+            }
+            Action::ReopenRecording => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self.recording_phase().is_some_and(|(phase, _)| {
+                        matches!(
+                            phase,
+                            CampaignPhase::Complete
+                                | CampaignPhase::Failed
+                                | CampaignPhase::Cancelled
+                                | CampaignPhase::NeedsReconciliation
+                        )
+                    })
+            }
+            Action::RemoveRecordingCassette => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self
+                        .recording_phase()
+                        .is_some_and(|(phase, _)| phase == CampaignPhase::Complete)
+                    && self.recording_catalog_entries > 0
+                    && self.recording_cassette_selected
+            }
+            Action::SelectOfflineCassette => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self.recording_catalog_entries > 0
+            }
+            Action::ReplaySelected => {
+                capabilities.is_some_and(|caps| caps.run_control)
+                    && self.recording_catalog_entries > 0
+                    && self.recording_cassette_selected
+            }
+            Action::RetryRun => {
+                capabilities.is_some_and(|caps| caps.repeat)
+                    && self
+                        .live
+                        .as_ref()
+                        .is_some_and(|live| live.runs.get(self.report_cursor).is_some())
+            }
+            Action::CompareLiveOffline => {
+                capabilities.is_some_and(|caps| caps.analysis)
+                    && self.report_selection.len() == 2
+                    && self.report_selection[0] != self.report_selection[1]
+                    && self.live.as_ref().is_some_and(|live| {
+                        self.report_selection
+                            .iter()
+                            .all(|selected| live.runs.iter().any(|run| &run.run_id == selected))
+                    })
+            }
+            Action::Reconnect => self.launch_state.is_some(),
+            _ => true,
+        }
+    }
+
+    fn documented_action_is_legal(&self, id: &str) -> bool {
+        crate::actions::UiAction::ALL
+            .into_iter()
+            .find(|action| action.id() == id)
+            .is_none_or(|action| self.action_is_legal(action))
+    }
+
+    fn legal_control_action(&self, action: crate::actions::UiAction) -> UiAction {
+        if self.action_is_legal(action) {
+            UiAction::Control(action)
+        } else {
+            UiAction::None
+        }
+    }
+
     /// Context-filtered actions accepted by the current workspace state.
     /// Every returned action resolves through the document-backed help
     /// catalog. Disabled operations are omitted and explained separately by
@@ -1178,7 +1395,9 @@ impl WorkspaceState {
         use HelpCategory::{Editing, Help, Lifecycle, Navigation, Selection};
         let mut actions = Vec::new();
         let mut add = |id, key, category| {
-            if let Some(action) = context_action(id, key, category) {
+            if self.documented_action_is_legal(id)
+                && let Some(action) = context_action(id, key, category)
+            {
                 actions.push(action);
             }
         };
@@ -1252,13 +1471,17 @@ impl WorkspaceState {
                 }
             }
             Screen::Measures => {
-                add("move_measure_cursor", "Up / Down", Navigation);
-                add("focus_measure_search", "/", Editing);
-                add("edit_measure_search", "Type", Editing);
-                if !self.search.is_empty() {
-                    add("backspace_measure_search", "Backspace", Editing);
+                if self.measure_search_focused {
+                    add("edit_measure_search", "Type", Editing);
+                    if !self.search.is_empty() {
+                        add("backspace_measure_search", "Backspace", Editing);
+                    }
+                    add("focus_measure_search", "Esc / Enter", Navigation);
+                } else {
+                    add("move_measure_cursor", "Up / Down", Navigation);
+                    add("focus_measure_search", "/", Editing);
                 }
-                if !self.visible_indices().is_empty() {
+                if !self.measure_search_focused && !self.visible_indices().is_empty() {
                     add("toggle_measure", "Space", Selection);
                     add("toggle_all_measures", "A", Selection);
                     add("toggle_group", "g", Selection);
@@ -1342,7 +1565,10 @@ impl WorkspaceState {
             }
         }
 
-        if !matches!(self.screen, Screen::DevelopmentHandoff | Screen::Wizard) {
+        let text_input_focused = self.configuration_editing || self.measure_search_focused;
+        if !text_input_focused
+            && !matches!(self.screen, Screen::DevelopmentHandoff | Screen::Wizard)
+        {
             for (id, key) in [
                 ("open_landing", "1"),
                 ("open_measurement_selection", "2"),
@@ -1354,7 +1580,9 @@ impl WorkspaceState {
             }
             add("quit", "q", Lifecycle);
         }
-        add("open_help", "? / h", Help);
+        if !text_input_focused {
+            add("open_help", "? / h", Help);
+        }
         actions
     }
 
@@ -1381,6 +1609,16 @@ impl WorkspaceState {
             Screen::RunControl if self.preflight_bundle.is_none() => Some(
                 "No reviewed configuration is ready; open Configuration, prepare preflight with V, then apply it with A.",
             ),
+            Screen::RunControl if self.control_capabilities().is_none() => Some(
+                "Runner capabilities are unavailable; reconnect to the authenticated control endpoint before starting or recording.",
+            ),
+            Screen::RunControl
+                if self.recording_phase().is_some() && self.recording_catalog_entries == 0 =>
+            {
+                Some(
+                    "Recording actions follow the current campaign phase; activate a complete campaign before selecting or replaying a cassette.",
+                )
+            }
             Screen::Reports
                 if self
                     .live
@@ -1389,39 +1627,97 @@ impl WorkspaceState {
             {
                 Some("No runs are available; complete a benchmark before opening report actions.")
             }
+            Screen::Reports if self.control_capabilities().is_none() => Some(
+                "Runner capabilities are unavailable; reconnect before retrying or comparing runs.",
+            ),
             _ => None,
         }
     }
 
     #[must_use]
     pub fn contextual_help_selected(&self) -> usize {
-        self.help_cursor
+        self.context_help_formal
+            .as_ref()
+            .map_or(self.help_cursor, |formal| formal.selection())
             .min(self.contextual_help_actions().len().saturating_sub(1))
     }
 
     fn open_context_help(&mut self) {
-        self.help = true;
-        self.help_cursor = 0;
+        let route = self.context_help_route();
+        let Ok(mut formal) = crate::formal_state::ContextHelpFormalState::new(
+            route,
+            Some(self.contextual_help_element()),
+        ) else {
+            return;
+        };
+        if formal
+            .apply(crate::formal_state::FormalEvent::OpenContextHelp, route)
+            .is_ok()
+        {
+            self.help = formal.is_open();
+            self.help_cursor = formal.selection();
+            self.context_help_formal = Some(formal);
+        }
     }
 
     fn move_context_help(&mut self, delta: isize) {
         let count = self.contextual_help_actions().len();
-        if count == 0 {
+        let Ok(delta) = i8::try_from(delta) else {
+            return;
+        };
+        let route = self.context_help_route();
+        let Some(formal) = self.context_help_formal.as_mut() else {
+            return;
+        };
+        if formal
+            .apply(
+                crate::formal_state::FormalEvent::MoveContextHelp {
+                    delta,
+                    item_count: count,
+                },
+                route,
+            )
+            .is_err()
+        {
             self.help_cursor = 0;
             return;
         }
-        self.help_cursor = (self.help_cursor as isize + delta).rem_euclid(count as isize) as usize;
+        self.help_cursor = formal.selection();
     }
 
     fn close_context_help(&mut self) {
-        self.help = false;
-        self.help_cursor = 0;
+        let route = self.context_help_route();
+        let Some(formal) = self.context_help_formal.as_mut() else {
+            return;
+        };
+        if formal
+            .apply(crate::formal_state::FormalEvent::CloseContextHelp, route)
+            .is_ok()
+        {
+            self.help = formal.is_open();
+            self.help_cursor = formal.selection();
+            self.context_help_formal = None;
+        }
+    }
+
+    fn context_help_route(&self) -> &'static str {
+        match self.screen {
+            Screen::Landing | Screen::DevelopmentHandoff => "landing",
+            Screen::Wizard => "wizard",
+            Screen::Measures => "measurement_selection",
+            Screen::Configuration => "configuration",
+            Screen::RunControl => "run_control",
+            Screen::Reports => "reports",
+            Screen::Help => "help",
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> UiAction {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.screen == Screen::RunControl {
-                if self.run_control_formal(crate::formal_state::FormalEvent::CancelRun) {
+                if self.action_is_legal(crate::actions::UiAction::CancelRun)
+                    && self.run_control_formal(crate::formal_state::FormalEvent::CancelRun)
+                {
                     return UiAction::Control(crate::actions::UiAction::CancelRun);
                 }
                 return UiAction::None;
@@ -1686,6 +1982,81 @@ impl WorkspaceState {
                 _ => UiAction::None,
             };
         }
+        if self.screen == Screen::Configuration && self.configuration_editing {
+            match key.code {
+                KeyCode::Esc => {
+                    self.configuration_editing = false;
+                    self.configuration_edit_error = None;
+                    return UiAction::None;
+                }
+                KeyCode::Enter => {
+                    let _ = self.commit_configuration_edit();
+                    return UiAction::None;
+                }
+                KeyCode::Backspace => {
+                    self.configuration_edit_buffer.pop();
+                    self.apply_configuration_edit_buffer();
+                    return UiAction::None;
+                }
+                KeyCode::Char(c)
+                    if !c.is_control()
+                        && !key.modifiers.intersects(
+                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                        ) =>
+                {
+                    if self.configuration_edit_buffer.chars().count()
+                        < crate::configuration::MAX_STRING_SCALARS
+                    {
+                        self.configuration_edit_buffer.push(c);
+                        self.apply_configuration_edit_buffer();
+                    }
+                    return UiAction::None;
+                }
+                _ => {}
+            }
+        }
+        if self.screen == Screen::Measures && self.measure_search_focused {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.measure_search_focused = false;
+                    return UiAction::None;
+                }
+                KeyCode::Backspace => {
+                    self.search.pop();
+                    if let Some(selection) = self.selection.as_mut() {
+                        let _ = selection.set_query(self.search.clone());
+                    }
+                    if let Some(selection) = self.benchmark_selection.as_mut() {
+                        let _ = selection.set_query(self.search.clone());
+                    }
+                    self.sync_measure_projection();
+                    self.measure_cursor = 0;
+                    return UiAction::None;
+                }
+                KeyCode::Char(c)
+                    if !c.is_control()
+                        && !key.modifiers.intersects(
+                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                        ) =>
+                {
+                    let mut candidate = self.search.clone();
+                    candidate.push(c);
+                    if candidate.chars().count() <= MAX_QUERY_BYTES {
+                        self.search = candidate;
+                        if let Some(selection) = self.selection.as_mut() {
+                            let _ = selection.set_query(self.search.clone());
+                        }
+                        if let Some(selection) = self.benchmark_selection.as_mut() {
+                            let _ = selection.set_query(self.search.clone());
+                        }
+                        self.sync_measure_projection();
+                    }
+                    self.measure_cursor = 0;
+                    return UiAction::None;
+                }
+                _ => return UiAction::None,
+            }
+        }
         if self.screen == Screen::Configuration
             && key.code == KeyCode::Char('s')
             && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1715,7 +2086,9 @@ impl WorkspaceState {
             return UiAction::Control(crate::actions::UiAction::ApplyPreflight);
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('x') {
-            if self.run_control_formal(crate::formal_state::FormalEvent::Reconnect) {
+            if self.action_is_legal(crate::actions::UiAction::Reconnect)
+                && self.run_control_formal(crate::formal_state::FormalEvent::Reconnect)
+            {
                 if let Some(launch) = self.launch_state_mut() {
                     launch.reconnect_started();
                 }
@@ -1724,13 +2097,13 @@ impl WorkspaceState {
             return UiAction::None;
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('A') {
-            return UiAction::Control(crate::actions::UiAction::AdmitFanout);
+            return self.legal_control_action(crate::actions::UiAction::AdmitFanout);
         }
         if self.screen == Screen::RunControl
             && key.code == KeyCode::Char('z')
             && key.modifiers.contains(KeyModifiers::CONTROL)
         {
-            return UiAction::Control(crate::actions::UiAction::CancelFanout);
+            return self.legal_control_action(crate::actions::UiAction::CancelFanout);
         }
         if self.screen == Screen::Reports && key.code == KeyCode::Char(' ') {
             if let Some(run_id) = self
@@ -1752,19 +2125,19 @@ impl WorkspaceState {
             return UiAction::None;
         }
         if self.screen == Screen::Reports && key.code == KeyCode::Char('t') {
-            return UiAction::Control(crate::actions::UiAction::RetryRun);
+            return self.legal_control_action(crate::actions::UiAction::RetryRun);
         }
         if self.screen == Screen::Reports && key.code == KeyCode::Char('v') {
-            return UiAction::Control(crate::actions::UiAction::CompareLiveOffline);
+            return self.legal_control_action(crate::actions::UiAction::CompareLiveOffline);
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('S') {
-            return UiAction::Control(crate::actions::UiAction::SealRecording);
+            return self.legal_control_action(crate::actions::UiAction::SealRecording);
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('U') {
-            return UiAction::Control(crate::actions::UiAction::ReopenRecording);
+            return self.legal_control_action(crate::actions::UiAction::ReopenRecording);
         }
         if self.screen == Screen::RunControl && key.code == KeyCode::Char('D') {
-            return UiAction::Control(crate::actions::UiAction::RemoveRecordingCassette);
+            return self.legal_control_action(crate::actions::UiAction::RemoveRecordingCassette);
         }
         match key.code {
             KeyCode::Char('d') if self.screen == Screen::Landing => {
@@ -1772,37 +2145,37 @@ impl WorkspaceState {
                 UiAction::None
             }
             KeyCode::Char('f') if self.screen == Screen::Configuration => {
-                UiAction::Control(crate::actions::UiAction::RefreshProviderCatalog)
+                self.legal_control_action(crate::actions::UiAction::RefreshProviderCatalog)
             }
             KeyCode::Char('e') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::EstimateRecording)
+                self.legal_control_action(crate::actions::UiAction::EstimateRecording)
             }
             KeyCode::Char('P') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::PlanRecording)
+                self.legal_control_action(crate::actions::UiAction::PlanRecording)
             }
             KeyCode::Char('C') if self.screen == Screen::Reports => {
-                UiAction::Control(crate::actions::UiAction::CompareLiveOffline)
+                self.legal_control_action(crate::actions::UiAction::CompareLiveOffline)
             }
             KeyCode::Char('C') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::ConfirmRecordingCapture)
+                self.legal_control_action(crate::actions::UiAction::ConfirmRecordingCapture)
             }
             KeyCode::Char('G') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::ProgressRecording)
+                self.legal_control_action(crate::actions::UiAction::ProgressRecording)
             }
             KeyCode::Char('X') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::CancelRecording)
+                self.legal_control_action(crate::actions::UiAction::CancelRecording)
             }
             KeyCode::Char('Y') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::ReconcileRecording)
+                self.legal_control_action(crate::actions::UiAction::ReconcileRecording)
             }
             KeyCode::Char('o') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::ActivateOfflineDefault)
+                self.legal_control_action(crate::actions::UiAction::ActivateOfflineDefault)
             }
             KeyCode::Char('J') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::ReplaySelected)
+                self.legal_control_action(crate::actions::UiAction::ReplaySelected)
             }
             KeyCode::Char(']') if self.screen == Screen::RunControl => {
-                UiAction::Control(crate::actions::UiAction::SelectOfflineCassette)
+                self.legal_control_action(crate::actions::UiAction::SelectOfflineCassette)
             }
             KeyCode::Char('q') => UiAction::Quit,
             KeyCode::Char('?') | KeyCode::Char('h') => {
@@ -1834,7 +2207,8 @@ impl WorkspaceState {
                 UiAction::None
             }
             KeyCode::Enter if self.screen == Screen::RunControl => {
-                if self.run_control_formal(crate::formal_state::FormalEvent::StartRun)
+                if self.action_is_legal(crate::actions::UiAction::StartRun)
+                    && self.run_control_formal(crate::formal_state::FormalEvent::StartRun)
                     && self.install_launch_state().is_ok()
                     && self
                         .launch_state_mut()
@@ -1919,33 +2293,8 @@ impl WorkspaceState {
                 self.toggle_all_measures();
                 UiAction::None
             }
-            KeyCode::Char('/') if self.screen == Screen::Measures => UiAction::None,
-            KeyCode::Char(c) if self.screen == Screen::Measures && !c.is_control() => {
-                let mut candidate = self.search.clone();
-                candidate.push(c);
-                if candidate.chars().count() <= MAX_QUERY_BYTES {
-                    self.search = candidate;
-                    if let Some(selection) = self.selection.as_mut() {
-                        let _ = selection.set_query(self.search.clone());
-                    }
-                    if let Some(selection) = self.benchmark_selection.as_mut() {
-                        let _ = selection.set_query(self.search.clone());
-                    }
-                    self.sync_measure_projection();
-                }
-                self.measure_cursor = 0;
-                UiAction::None
-            }
-            KeyCode::Backspace if self.screen == Screen::Measures => {
-                self.search.pop();
-                if let Some(selection) = self.selection.as_mut() {
-                    let _ = selection.set_query(self.search.clone());
-                }
-                if let Some(selection) = self.benchmark_selection.as_mut() {
-                    let _ = selection.set_query(self.search.clone());
-                }
-                self.sync_measure_projection();
-                self.measure_cursor = 0;
+            KeyCode::Char('/') if self.screen == Screen::Measures => {
+                self.measure_search_focused = true;
                 UiAction::None
             }
             _ => UiAction::None,
@@ -3050,18 +3399,32 @@ fn contextual_footer(
 }
 
 fn help_overlay(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
-    if area.width < 32 || area.height < 8 {
+    if area.width < 60 || area.height < 16 {
         let help = document_help_entry(state.contextual_help_element());
+        let actions = state.contextual_help_actions();
+        let selected = actions.get(state.contextual_help_selected());
+        let width = usize::from(area.width.max(1));
+        let context = help.map_or_else(
+            || "Context: unavailable".to_owned(),
+            |entry| format!("Context: {}", entry.label),
+        );
+        let action = selected.map_or_else(
+            || "Action: none currently available".to_owned(),
+            |action| format!("> {} {}", action.key, action.label),
+        );
+        let detail = selected.map_or_else(
+            || "Detail: leave help and complete the required setup.".to_owned(),
+            |action| format!("About: {}", action.usage),
+        );
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from("Context help"),
-                Line::from(
-                    help.map_or("Help unavailable for this element.", |entry| entry.summary),
-                ),
-                Line::from("Up/Down browse | Esc/?/h close"),
+                Line::from(fit_display_width(&context, width)),
+                Line::from(fit_display_width(&action, width)),
+                Line::from(fit_display_width(&detail, width)),
+                Line::from(fit_display_width("Up/Down browse | Esc close", width)),
             ])
             .style(accent(policy))
-            .wrap(Wrap { trim: true }),
+            .alignment(Alignment::Left),
             area,
         );
         return;
@@ -3142,6 +3505,28 @@ fn help_overlay(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, polic
             .wrap(Wrap { trim: true }),
         popup,
     );
+}
+
+fn fit_display_width(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if Line::from(value).width() <= width {
+        return value.to_owned();
+    }
+    let marker = if width >= 3 { "..." } else { "" };
+    let content_width = width.saturating_sub(marker.len());
+    let mut fitted = String::new();
+    for character in value.chars() {
+        let mut candidate = fitted.clone();
+        candidate.push(character);
+        if Line::from(candidate.as_str()).width() > content_width {
+            break;
+        }
+        fitted.push(character);
+    }
+    fitted.push_str(marker);
+    fitted
 }
 
 fn render_compact(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, policy: RenderPolicy) {
@@ -3240,6 +3625,58 @@ mod tests {
             alternate_screen: true,
         }
     }
+
+    fn negotiated_snapshot(runs: Vec<RunSummary>) -> LiveSnapshot {
+        LiveSnapshot {
+            connection: Connection::Negotiated,
+            runner_instance_id: Some("runner-context".into()),
+            latest_revision: Some(Revision(3)),
+            capabilities: Some(crate::control_codec::Capabilities {
+                validate_settings: true,
+                run_control: true,
+                repeat: true,
+                analysis: true,
+                events: true,
+            }),
+            measurement_catalog: None,
+            benchmark_catalog: None,
+            agent_catalog: None,
+            agent_lifecycle: None,
+            provider_catalog: None,
+            dynamic_provider_catalog: None,
+            configuration: Some(crate::control_codec::ConfigurationSnapshot {
+                runner_instance_id: "runner-context".into(),
+                generation: Revision(3),
+                configured: true,
+                agent_ids: vec!["agent-1".into()],
+                provider_id: Some("openrouter".into()),
+                model_id: Some("model-1".into()),
+                auth_method: Some(ProviderAuthMethod::CredentialReference),
+                credential_reference_sha256: Some("a".repeat(64)),
+            }),
+            auth_status: None,
+            auth_unavailable: false,
+            auth_development_only: false,
+            auth_unavailable_reason: None,
+            recording_campaign: None,
+            recording_estimate: None,
+            recording_campaign_lifecycle: None,
+            fanout: None,
+            runs,
+            analysis: None,
+        }
+    }
+
+    fn completed_run(id: &str, revision: u64) -> RunSummary {
+        RunSummary {
+            run_id: RunId(id.into()),
+            attempt_id: AttemptId(format!("attempt-{revision}")),
+            state: PublicRunState::Completed,
+            created_revision: Revision(revision),
+            revision: Revision(revision),
+            plan_sha256: "a".repeat(64),
+        }
+    }
     #[test]
     fn navigation_and_selection_are_keyboard_first() {
         let mut s = WorkspaceState::default();
@@ -3250,8 +3687,10 @@ mod tests {
         assert!(!s.measures[1].selected);
         s.handle_key(key(KeyCode::Char('g')));
         assert!(s.measures[0].selected && s.measures[1].selected);
+        s.handle_key(key(KeyCode::Char('/')));
         s.handle_key(key(KeyCode::Char('c')));
         assert_eq!(s.search, "c");
+        s.handle_key(key(KeyCode::Enter));
         s.handle_key(key(KeyCode::Char('?')));
         assert!(s.help);
         s.handle_key(key(KeyCode::Esc));
@@ -3271,9 +3710,11 @@ mod tests {
         state.handle_key(key(KeyCode::Char('g')));
         assert!(state.measures[0].selected && state.measures[1].selected);
         // Search narrows the nested projection without dropping hidden state.
+        state.handle_key(key(KeyCode::Char('/')));
         for character in "latency".chars() {
             state.handle_key(key(KeyCode::Char(character)));
         }
+        state.handle_key(key(KeyCode::Enter));
         assert_eq!(state.visible_indices().len(), 1);
         assert!(state.measures[2].selected);
         // Pool selection is a handled production action even when only one
@@ -3307,9 +3748,11 @@ mod tests {
             screen: Screen::Measures,
             ..WorkspaceState::default()
         };
+        state.handle_key(key(KeyCode::Char('/')));
         for character in "latency".chars() {
             state.handle_key(key(KeyCode::Char(character)));
         }
+        state.handle_key(key(KeyCode::Enter));
         assert_eq!(state.search, "latency");
         assert_eq!(state.visible_indices().len(), 1);
         state.handle_key(key(KeyCode::Char('A')));
@@ -4452,6 +4895,7 @@ mod tests {
         state.handle_key(key(KeyCode::Char('/')));
         state.handle_key(key(KeyCode::Char('e')));
         state.handle_key(key(KeyCode::Backspace));
+        state.handle_key(key(KeyCode::Enter));
         state.handle_key(key(KeyCode::Char(' ')));
         state.handle_key(key(KeyCode::Char('g')));
         state.handle_key(key(KeyCode::Char('1')));
@@ -4460,45 +4904,20 @@ mod tests {
         state.handle_key(key(KeyCode::Tab));
         state.handle_key(key(KeyCode::BackTab));
         state.screen = Screen::Configuration;
-        assert_eq!(
-            state.handle_key(key(KeyCode::Char('f'))),
-            UiAction::Control(crate::actions::UiAction::RefreshProviderCatalog)
-        );
+        assert_eq!(state.handle_key(key(KeyCode::Char('f'))), UiAction::None);
         state.screen = Screen::Reports;
-        assert_eq!(
-            state.handle_key(key(KeyCode::Char('C'))),
-            UiAction::Control(crate::actions::UiAction::CompareLiveOffline)
-        );
+        assert_eq!(state.handle_key(key(KeyCode::Char('C'))), UiAction::None);
         state.screen = Screen::RunControl;
-        for (key_code, action) in [
-            ('e', crate::actions::UiAction::EstimateRecording),
-            ('P', crate::actions::UiAction::PlanRecording),
-            ('C', crate::actions::UiAction::ConfirmRecordingCapture),
-            ('G', crate::actions::UiAction::ProgressRecording),
-            ('X', crate::actions::UiAction::CancelRecording),
-            ('Y', crate::actions::UiAction::ReconcileRecording),
-            ('o', crate::actions::UiAction::ActivateOfflineDefault),
-        ] {
+        for key_code in ['e', 'P', 'C', 'G', 'X', 'Y', 'o', 'J', ']'] {
             assert_eq!(
                 state.handle_key(key(KeyCode::Char(key_code))),
-                UiAction::Control(action)
+                UiAction::None
             );
         }
-        assert_eq!(
-            state.handle_key(key(KeyCode::Char('J'))),
-            UiAction::Control(crate::actions::UiAction::ReplaySelected)
-        );
-        assert_eq!(
-            state.handle_key(key(KeyCode::Char(']'))),
-            UiAction::Control(crate::actions::UiAction::SelectOfflineCassette)
-        );
-        assert_eq!(
-            state.handle_key(key(KeyCode::Char('A'))),
-            UiAction::Control(crate::actions::UiAction::AdmitFanout)
-        );
+        assert_eq!(state.handle_key(key(KeyCode::Char('A'))), UiAction::None);
         assert_eq!(
             state.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)),
-            UiAction::Control(crate::actions::UiAction::CancelFanout)
+            UiAction::None
         );
         state.screen = Screen::Reports;
         assert_eq!(state.handle_key(key(KeyCode::Char('q'))), UiAction::Quit);
@@ -4565,11 +4984,21 @@ mod tests {
             crate::control_codec::RunId("run-a".into()),
             crate::control_codec::RunId("run-b".into()),
         ];
+        state.apply_live_snapshot(negotiated_snapshot(vec![
+            completed_run("run-a", 1),
+            completed_run("run-b", 2),
+        ]));
+        state.report_selection = vec![RunId("run-a".into()), RunId("run-b".into())];
         assert!(matches!(
             state.handle_key(key(KeyCode::Char(' '))),
             UiAction::None
         ));
-        assert_eq!(state.report_selection.len(), 2);
+        assert_eq!(state.report_selection, [RunId("run-b".into())]);
+        state.report_cursor = 1;
+        state.handle_key(key(KeyCode::Char(' ')));
+        assert!(state.report_selection.is_empty());
+        state.report_cursor = 0;
+        state.handle_key(key(KeyCode::Char(' ')));
         state.report_cursor = 1;
         state.handle_key(key(KeyCode::Char(' ')));
         assert_eq!(state.report_selection.len(), 2);
@@ -4873,10 +5302,24 @@ mod tests {
         let pane = state.wizard_formal.pane();
         state.handle_key(key(KeyCode::Char('?')));
         assert!(state.help);
+        assert!(
+            state
+                .context_help_formal
+                .as_ref()
+                .is_some_and(|formal| formal.is_open() && formal.selection() == 0)
+        );
         state.handle_key(key(KeyCode::Down));
         assert_eq!(state.contextual_help_selected(), 1);
+        assert_eq!(
+            state
+                .context_help_formal
+                .as_ref()
+                .map(|formal| formal.selection()),
+            Some(1)
+        );
         state.handle_key(key(KeyCode::Char('h')));
         assert!(!state.help);
+        assert!(state.context_help_formal.is_none());
         assert_eq!(state.wizard.values(), values);
         assert_eq!(state.wizard.step(), step);
         assert_eq!(state.wizard_formal.pane(), pane);
@@ -4898,9 +5341,15 @@ mod tests {
         assert!(configuration.contains("Enter Edit configuration value"));
 
         state.open_context_help();
-        for (width, height) in [(120, 30), (60, 14), (30, 7)] {
+        for (width, height) in [(120, 30), (60, 14), (32, 8), (30, 7)] {
             let text = rendered_workspace(&state, width, height);
-            assert!(text.contains("Context help") || text.contains("Context-sensitive"));
+            assert!(
+                text.contains("Context-sensitive")
+                    || (text.contains("Context:")
+                        && text.contains(">")
+                        && text.contains("About:")
+                        && text.contains("Esc close"))
+            );
             assert!(!text.contains("/home/"));
             assert!(!text.contains("api_key"));
         }
@@ -4919,10 +5368,153 @@ mod tests {
             );
         }
         state.screen = Screen::RunControl;
+        assert_eq!(state.handle_key(key(KeyCode::Char('P'))), UiAction::None);
+        state.apply_live_snapshot(negotiated_snapshot(Vec::new()));
         assert!(matches!(
             state.handle_key(key(KeyCode::Char('P'))),
             UiAction::Control(crate::actions::UiAction::PlanRecording)
         ));
+    }
+
+    #[test]
+    fn text_focus_accepts_colliding_shortcuts_and_help_preserves_drafts() {
+        let collision_text = "q?h1234swf";
+        let mut configuration = WorkspaceState {
+            screen: Screen::Configuration,
+            ..WorkspaceState::default()
+        };
+        configuration.handle_key(key(KeyCode::Enter));
+        let prefix = configuration.configuration_edit_buffer.clone();
+        for character in collision_text.chars() {
+            assert_eq!(
+                configuration.handle_key(key(KeyCode::Char(character))),
+                UiAction::None
+            );
+        }
+        assert_eq!(configuration.screen, Screen::Configuration);
+        assert!(!configuration.help);
+        assert_eq!(
+            configuration.configuration_edit_buffer,
+            format!("{prefix}{collision_text}")
+        );
+        configuration.handle_key(key(KeyCode::Esc));
+        let draft = configuration.configuration_edit_buffer.clone();
+        configuration.handle_key(key(KeyCode::Char('?')));
+        assert!(configuration.help);
+        configuration.handle_key(key(KeyCode::Esc));
+        assert_eq!(configuration.configuration_edit_buffer, draft);
+        assert_eq!(configuration.screen, Screen::Configuration);
+
+        let mut measures = WorkspaceState {
+            screen: Screen::Measures,
+            ..WorkspaceState::default()
+        };
+        measures.handle_key(key(KeyCode::Char('/')));
+        assert_eq!(measures.contextual_help_element(), "measures.search");
+        for character in collision_text.chars() {
+            assert_eq!(
+                measures.handle_key(key(KeyCode::Char(character))),
+                UiAction::None
+            );
+        }
+        assert_eq!(measures.search, collision_text);
+        assert_eq!(measures.screen, Screen::Measures);
+        assert!(!measures.help);
+        measures.handle_key(key(KeyCode::Esc));
+        measures.handle_key(key(KeyCode::Char('?')));
+        assert!(measures.help);
+        measures.handle_key(key(KeyCode::Esc));
+        assert_eq!(measures.search, collision_text);
+        assert_eq!(measures.screen, Screen::Measures);
+    }
+
+    #[test]
+    fn contextual_control_actions_follow_capabilities_lifecycle_and_selection() {
+        let mut state = WorkspaceState {
+            screen: Screen::RunControl,
+            ..WorkspaceState::default()
+        };
+        state.apply_live_snapshot(negotiated_snapshot(Vec::new()));
+        let ids = |state: &WorkspaceState| {
+            state
+                .contextual_help_actions()
+                .into_iter()
+                .map(|action| action.id)
+                .collect::<Vec<_>>()
+        };
+        assert!(ids(&state).contains(&"plan_recording"));
+        assert!(!ids(&state).contains(&"progress_recording"));
+
+        state
+            .live
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .as_mut()
+            .unwrap()
+            .validate_settings = false;
+        assert!(!ids(&state).contains(&"plan_recording"));
+        assert_eq!(state.handle_key(key(KeyCode::Char('P'))), UiAction::None);
+        state
+            .live
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .as_mut()
+            .unwrap()
+            .validate_settings = true;
+
+        let lifecycle =
+            |phase: &str, covered: u16| crate::control_codec::RecordingCampaignLifecycle {
+                runner_instance_id: "runner-context".into(),
+                generation: Revision(4),
+                campaign_id: "campaign-1".into(),
+                provider_id: "openrouter".into(),
+                model_id: "model-1".into(),
+                agent_ids: vec!["agent-1".into()],
+                workload_ids: vec!["quality".into()],
+                tuple_count: 2,
+                covered_tuple_count: covered,
+                state: phase.into(),
+                offline_ready: phase == "complete",
+                unavailable_reason: None,
+            };
+        state.live.as_mut().unwrap().recording_campaign_lifecycle = Some(lifecycle("planned", 0));
+        assert!(ids(&state).contains(&"confirm_recording_capture"));
+        assert!(ids(&state).contains(&"cancel_recording"));
+        assert!(!ids(&state).contains(&"estimate_recording"));
+
+        state.live.as_mut().unwrap().recording_campaign_lifecycle = Some(lifecycle("recording", 1));
+        assert!(ids(&state).contains(&"progress_recording"));
+        assert!(!ids(&state).contains(&"seal_recording"));
+
+        state.live.as_mut().unwrap().recording_campaign_lifecycle = Some(lifecycle("complete", 2));
+        assert!(ids(&state).contains(&"activate_offline_default"));
+        assert!(ids(&state).contains(&"seal_recording"));
+        assert!(!ids(&state).contains(&"replay_selected"));
+        state.recording_catalog_entries = 2;
+        assert!(ids(&state).contains(&"select_offline_cassette"));
+        assert!(!ids(&state).contains(&"replay_selected"));
+        state.recording_cassette_selected = true;
+        assert!(ids(&state).contains(&"replay_selected"));
+        assert!(ids(&state).contains(&"remove_recording_cassette"));
+
+        state.screen = Screen::Reports;
+        state.live.as_mut().unwrap().runs =
+            vec![completed_run("run-a", 1), completed_run("run-b", 2)];
+        state.report_selection = vec![RunId("run-a".into()), RunId("run-b".into())];
+        assert!(ids(&state).contains(&"retry_run"));
+        assert!(ids(&state).contains(&"compare_live_offline"));
+        state
+            .live
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .as_mut()
+            .unwrap()
+            .analysis = false;
+        assert!(!ids(&state).contains(&"compare_live_offline"));
+        assert_eq!(state.handle_key(key(KeyCode::Char('v'))), UiAction::None);
     }
 
     #[test]
