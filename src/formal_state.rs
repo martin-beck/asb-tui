@@ -193,6 +193,16 @@ impl ContextHelpFormalState {
                 "unknown context-help route {route}"
             )));
         }
+        if let Some(focus) = focus {
+            let Some(element) = document.elements.iter().find(|element| {
+                element.id == focus && (element.route == route || element.route == "global")
+            }) else {
+                return Err(FormalError::UnknownElement(focus.to_owned()));
+            };
+            if !element.focusable {
+                return Err(FormalError::ElementNotFocusable(focus.to_owned()));
+            }
+        }
         Ok(Self {
             route: route.to_owned(),
             open: false,

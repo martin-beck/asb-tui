@@ -776,9 +776,9 @@ impl WorkspaceState {
         self.run_error = None;
     }
 
-    /// Build a fresh digest-bound bundle from the current reviewed wizard and
-    /// nested benchmark selections. No file is changed by this operation.
-    pub fn prepare_preflight(&mut self) -> Result<(), String> {
+    fn build_preflight_bundle(
+        &self,
+    ) -> Result<crate::configuration_materialization::MaterializedBundle, String> {
         let values = self.wizard.values();
         let selection = Self::wizard_configuration_selection(&values)?;
         let draft = if let Some(draft) = self.reviewed_provider_setup.clone() {
@@ -813,14 +813,20 @@ impl WorkspaceState {
             asb_version: "development".into(),
             execution_mode: self.execution_mode_for_values(&values)?,
         };
-        let bundle = crate::configuration_materialization::MaterializedBundle::build(
+        crate::configuration_materialization::MaterializedBundle::build(
             input,
             &draft,
             benchmark_selection.catalog(),
             draft.catalog_generation(),
             benchmark_selection.catalog().generation(),
         )
-        .map_err(|error| format!("preflight rejected: {error:?}"))?;
+        .map_err(|error| format!("preflight rejected: {error:?}"))
+    }
+
+    /// Build a fresh digest-bound bundle from the current reviewed wizard and
+    /// nested benchmark selections. No file is changed by this operation.
+    pub fn prepare_preflight(&mut self) -> Result<(), String> {
+        let bundle = self.build_preflight_bundle()?;
         self.preflight = Some(bundle.preflight_summary());
         self.preflight_bundle = Some(bundle);
         self.preflight_error = None;
@@ -946,6 +952,7 @@ impl WorkspaceState {
     pub fn open_wizard(&mut self) {
         self.provider_setup_apply.restart();
         if self.wizard_formal.apply(FormalEvent::OpenWizard).is_ok() {
+            self.close_context_help_before_route_change();
             self.screen = Screen::Wizard;
         }
     }
@@ -1241,6 +1248,26 @@ impl WorkspaceState {
         use crate::recording_campaign::CampaignPhase;
         let capabilities = self.control_capabilities();
         match action {
+            Action::Quit
+            | Action::GoBack
+            | Action::OpenLanding
+            | Action::OpenConfiguration
+            | Action::OpenMeasurementSelection
+            | Action::OpenRunControl
+            | Action::OpenReports
+            | Action::OpenHelp => true,
+            Action::OpenRecentRuns | Action::RefreshRuns | Action::CompareRuns => false,
+            Action::FocusSearch => self.screen == Screen::Help,
+            Action::ToggleAllMeasures
+            | Action::ToggleMeasure
+            | Action::SelectBenchmarkPool
+            | Action::ToggleBenchmarkGroup
+            | Action::ToggleBenchmark => {
+                self.screen == Screen::Measures
+                    && !self.measure_search_focused
+                    && !self.visible_indices().is_empty()
+            }
+            Action::FocusBenchmarkSearch => self.screen == Screen::Measures,
             Action::StartRun => {
                 self.preflight_bundle.is_some()
                     && capabilities.is_some_and(|caps| caps.run_control)
@@ -1367,15 +1394,147 @@ impl WorkspaceState {
                     })
             }
             Action::Reconnect => self.launch_state.is_some(),
-            _ => true,
+            Action::WizardDevelopmentEnroll => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentEnroll)
+                .is_ok(),
+            Action::WizardDevelopmentTest => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentTest)
+                .is_ok(),
+            Action::WizardDevelopmentRotate => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentRotate)
+                .is_ok(),
+            Action::WizardDevelopmentReset => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentReset)
+                .is_ok(),
+            Action::WizardDevelopmentSelectFixture => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentSelectFixture)
+                .is_ok(),
+            Action::WizardDevelopmentSelectNone => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentSelectNone)
+                .is_ok(),
+            Action::WizardDevelopmentRestart => self
+                .wizard_formal
+                .clone()
+                .apply(crate::wizard::FormalEvent::DevelopmentRestart)
+                .is_ok(),
+            Action::OpenPreflight => self.build_preflight_bundle().is_ok(),
+            Action::ApplyPreflight => {
+                self.preflight_bundle.is_some() && self.configuration_path.is_some()
+            }
+            Action::OpenDevelopmentHandoff => self.screen == Screen::Landing,
+            Action::MaterializeDevelopment => {
+                self.screen == Screen::DevelopmentHandoff
+                    && self.development_handoff.phase == crate::development_handoff::Phase::Ready
+            }
+            Action::CancelDevelopment => {
+                self.screen == Screen::DevelopmentHandoff
+                    && matches!(
+                        self.development_handoff.phase,
+                        crate::development_handoff::Phase::Cloning
+                            | crate::development_handoff::Phase::Building
+                            | crate::development_handoff::Phase::Installing
+                    )
+            }
+            Action::RetryDevelopment => {
+                self.screen == Screen::DevelopmentHandoff
+                    && matches!(
+                        self.development_handoff.phase,
+                        crate::development_handoff::Phase::Cancelled
+                            | crate::development_handoff::Phase::RolledBack
+                            | crate::development_handoff::Phase::Failed
+                            | crate::development_handoff::Phase::Incompatible
+                    )
+            }
         }
     }
 
     fn documented_action_is_legal(&self, id: &str) -> bool {
-        crate::actions::UiAction::ALL
+        if let Some(action) = crate::actions::UiAction::ALL
             .into_iter()
             .find(|action| action.id() == id)
-            .is_none_or(|action| self.action_is_legal(action))
+        {
+            return self.action_is_legal(action);
+        }
+        let wizard_event_legal = |event| self.wizard_formal.clone().apply(event).is_ok();
+        match id {
+            "wizard_cycle_pane" => wizard_event_legal(crate::wizard::FormalEvent::CyclePane),
+            "wizard_back" => wizard_event_legal(crate::wizard::FormalEvent::Back),
+            "cancel_wizard" => wizard_event_legal(crate::wizard::FormalEvent::Cancel),
+            "complete_wizard" => wizard_event_legal(crate::wizard::FormalEvent::Complete),
+            "wizard_catalog_move" => wizard_event_legal(crate::wizard::FormalEvent::CatalogMove(0)),
+            "wizard_catalog_query" => self.wizard.catalog().is_some(),
+            "wizard_catalog_backspace" => self
+                .wizard
+                .catalog()
+                .is_some_and(|catalog| !catalog.query().is_empty()),
+            "wizard_catalog_select" => {
+                wizard_event_legal(crate::wizard::FormalEvent::CatalogSelect)
+            }
+            "wizard_catalog_toggle_visible_agents" => {
+                wizard_event_legal(crate::wizard::FormalEvent::CatalogToggleVisibleAgents)
+            }
+            "wizard_bounded_choice_move" => {
+                wizard_event_legal(crate::wizard::FormalEvent::BoundedChoiceMove(0))
+            }
+            "wizard_next" => wizard_event_legal(crate::wizard::FormalEvent::Next),
+            "wizard_edit" => self.screen == Screen::Wizard && !self.wizard.has_bounded_choices(),
+            "wizard_backspace" => {
+                self.screen == Screen::Wizard && !self.wizard.current_value().is_empty()
+            }
+            "move_measure_cursor" | "focus_measure_search" => self.screen == Screen::Measures,
+            "edit_measure_search" => self.screen == Screen::Measures && self.measure_search_focused,
+            "backspace_measure_search" => {
+                self.screen == Screen::Measures
+                    && self.measure_search_focused
+                    && !self.search.is_empty()
+            }
+            "move_configuration" => {
+                self.screen == Screen::Configuration && !self.configuration_editing
+            }
+            "focus_configuration" => {
+                self.screen == Screen::Configuration
+                    && !self.configuration_editing
+                    && self
+                        .configuration_draft
+                        .visible_settings()
+                        .get(self.config_cursor)
+                        .is_some()
+            }
+            "edit_configuration" | "commit_configuration_edit" => {
+                self.screen == Screen::Configuration && self.configuration_editing
+            }
+            "backspace_configuration" => {
+                self.screen == Screen::Configuration
+                    && self.configuration_editing
+                    && !self.configuration_edit_buffer.is_empty()
+            }
+            "save_configuration" => {
+                self.screen == Screen::Configuration
+                    && !self.configuration_editing
+                    && self.configuration_path.is_some()
+            }
+            "move_report_cursor" => self.screen == Screen::Reports && self.report_entry_count() > 0,
+            "toggle_report_selection" => {
+                self.screen == Screen::Reports
+                    && self
+                        .live
+                        .as_ref()
+                        .is_some_and(|live| live.runs.get(self.report_cursor).is_some())
+            }
+            _ => false,
+        }
     }
 
     fn legal_control_action(&self, action: crate::actions::UiAction) -> UiAction {
@@ -1580,9 +1739,11 @@ impl WorkspaceState {
             }
             add("quit", "q", Lifecycle);
         }
-        if !text_input_focused {
-            add("open_help", "? / h", Help);
-        }
+        add(
+            "open_help",
+            if text_input_focused { "F1" } else { "? / h" },
+            Help,
+        );
         actions
     }
 
@@ -1646,7 +1807,7 @@ impl WorkspaceState {
         let route = self.context_help_route();
         let Ok(mut formal) = crate::formal_state::ContextHelpFormalState::new(
             route,
-            Some(self.contextual_help_element()),
+            Some(self.contextual_focus_element()),
         ) else {
             return;
         };
@@ -1697,6 +1858,43 @@ impl WorkspaceState {
             self.help = formal.is_open();
             self.help_cursor = formal.selection();
             self.context_help_formal = None;
+        } else {
+            // An authenticated refresh can replace the landing route with the
+            // setup wizard while this modal is open. Never trap the operator
+            // behind a stale route-bound overlay; the underlying input-focus
+            // flags and drafts remain untouched.
+            self.help = false;
+            self.help_cursor = 0;
+            self.context_help_formal = None;
+        }
+    }
+
+    fn close_context_help_before_route_change(&mut self) {
+        if self.help {
+            self.close_context_help();
+        }
+    }
+
+    fn contextual_focus_element(&self) -> &'static str {
+        match self.screen {
+            Screen::Landing | Screen::DevelopmentHandoff => "landing.primary",
+            Screen::Wizard => match self.wizard_formal.pane() {
+                crate::wizard_stepper::WizardPane::Progress => "wizard.step_region",
+                crate::wizard_stepper::WizardPane::Choices => "wizard.selection_list",
+                crate::wizard_stepper::WizardPane::Summary => "wizard.selection_summary",
+                crate::wizard_stepper::WizardPane::Controls => "wizard.controls",
+            },
+            Screen::Measures if self.measure_search_focused => "measures.search",
+            Screen::Measures => "measures.row",
+            Screen::Configuration => "configuration.entry",
+            Screen::RunControl => match self.contextual_help_element() {
+                "run.start" => "run.start",
+                "run.cancel" => "run.cancel",
+                _ => "navigation",
+            },
+            Screen::Reports if self.report_entry_count() > 0 => "reports.row",
+            Screen::Reports => "reports.compare",
+            Screen::Help => "help.entry",
         }
     }
 
@@ -1726,13 +1924,17 @@ impl WorkspaceState {
         }
         if self.help {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h') => {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::F(1) => {
                     self.close_context_help();
                 }
                 KeyCode::Up | KeyCode::Char('k') => self.move_context_help(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.move_context_help(1),
                 _ => {}
             }
+            return UiAction::None;
+        }
+        if key.code == KeyCode::F(1) {
+            self.open_context_help();
             return UiAction::None;
         }
         if self.screen == Screen::Wizard {
@@ -3421,7 +3623,7 @@ fn help_overlay(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, polic
                 Line::from(fit_display_width(&context, width)),
                 Line::from(fit_display_width(&action, width)),
                 Line::from(fit_display_width(&detail, width)),
-                Line::from(fit_display_width("Up/Down browse | Esc close", width)),
+                Line::from(fit_display_width("Up/Down browse | Esc/F1 close", width)),
             ])
             .style(accent(policy))
             .alignment(Alignment::Left),
@@ -3498,7 +3700,7 @@ fn help_overlay(frame: &mut Frame<'_>, area: Rect, state: &WorkspaceState, polic
             action.label, action.usage
         )));
     }
-    lines.push(Line::from("Up/Down or j/k browse | Esc/?/h close"));
+    lines.push(Line::from("Up/Down or j/k browse | Esc/?/h/F1 close"));
     frame.render_widget(
         Paragraph::new(lines)
             .block(panel(" Help ", policy))
@@ -5348,7 +5550,7 @@ mod tests {
                     || (text.contains("Context:")
                         && text.contains(">")
                         && text.contains("About:")
-                        && text.contains("Esc close"))
+                        && text.contains("Esc/F1 close"))
             );
             assert!(!text.contains("/home/"));
             assert!(!text.contains("api_key"));
@@ -5397,12 +5599,14 @@ mod tests {
             configuration.configuration_edit_buffer,
             format!("{prefix}{collision_text}")
         );
-        configuration.handle_key(key(KeyCode::Esc));
         let draft = configuration.configuration_edit_buffer.clone();
-        configuration.handle_key(key(KeyCode::Char('?')));
+        assert!(configuration.configuration_editing);
+        configuration.handle_key(key(KeyCode::F(1)));
         assert!(configuration.help);
-        configuration.handle_key(key(KeyCode::Esc));
+        configuration.handle_key(key(KeyCode::Down));
+        configuration.handle_key(key(KeyCode::F(1)));
         assert_eq!(configuration.configuration_edit_buffer, draft);
+        assert!(configuration.configuration_editing);
         assert_eq!(configuration.screen, Screen::Configuration);
 
         let mut measures = WorkspaceState {
@@ -5420,12 +5624,93 @@ mod tests {
         assert_eq!(measures.search, collision_text);
         assert_eq!(measures.screen, Screen::Measures);
         assert!(!measures.help);
-        measures.handle_key(key(KeyCode::Esc));
-        measures.handle_key(key(KeyCode::Char('?')));
+        assert!(measures.measure_search_focused);
+        measures.handle_key(key(KeyCode::F(1)));
         assert!(measures.help);
+        measures.handle_key(key(KeyCode::Down));
         measures.handle_key(key(KeyCode::Esc));
         assert_eq!(measures.search, collision_text);
+        assert!(measures.measure_search_focused);
         assert_eq!(measures.screen, Screen::Measures);
+    }
+
+    #[test]
+    fn contextual_action_legality_is_fail_closed_for_wizard_and_configuration() {
+        let ids = |state: &WorkspaceState| {
+            state
+                .contextual_help_actions()
+                .into_iter()
+                .map(|action| action.id)
+                .collect::<Vec<_>>()
+        };
+
+        let mut wizard = WorkspaceState::default();
+        wizard.open_wizard();
+        for value in ["agent", "provider", "model", "all defaults"] {
+            wizard
+                .wizard_formal
+                .apply(crate::wizard::FormalEvent::SetValue(value.into()))
+                .unwrap();
+            wizard
+                .wizard_formal
+                .apply(crate::wizard::FormalEvent::Next)
+                .unwrap();
+        }
+        wizard.wizard = wizard.wizard_formal.wizard().clone();
+        assert_eq!(wizard.wizard.step(), crate::wizard::Step::Authentication);
+        let before_enrollment = ids(&wizard);
+        assert!(before_enrollment.contains(&"wizard_development_enroll"));
+        assert!(!before_enrollment.contains(&"wizard_development_test"));
+        assert!(!before_enrollment.contains(&"wizard_development_rotate"));
+        wizard.handle_key(key(KeyCode::Char('E')));
+        let after_enrollment = ids(&wizard);
+        assert!(after_enrollment.contains(&"wizard_development_test"));
+        assert!(after_enrollment.contains(&"wizard_development_rotate"));
+        wizard.handle_key(key(KeyCode::Char('N')));
+        assert!(!ids(&wizard).contains(&"wizard_development_enroll"));
+
+        let mut catalog = WorkspaceState::default();
+        catalog.ensure_development_catalog();
+        catalog.open_wizard();
+        assert!(catalog.wizard.catalog().is_some());
+        assert!(!ids(&catalog).contains(&"wizard_catalog_backspace"));
+        catalog.handle_key(key(KeyCode::Char('a')));
+        assert!(ids(&catalog).contains(&"wizard_catalog_backspace"));
+
+        let mut configuration = WorkspaceState {
+            screen: Screen::Configuration,
+            ..WorkspaceState::default()
+        };
+        let unavailable = ids(&configuration);
+        assert!(!unavailable.contains(&"save_configuration"));
+        assert!(!unavailable.contains(&"open_preflight"));
+        assert!(!unavailable.contains(&"apply_preflight"));
+        let directory = private_temp_dir();
+        let path = directory.join("config.json");
+        configuration = WorkspaceState::with_configuration_store(&path).unwrap();
+        configuration.screen = Screen::Configuration;
+        assert!(ids(&configuration).contains(&"save_configuration"));
+        assert!(!ids(&configuration).contains(&"apply_preflight"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn refresh_route_change_closes_context_help_without_losing_wizard_draft() {
+        let mut state = WorkspaceState::default();
+        state.open_context_help();
+        assert!(state.help);
+        let draft = state.wizard.values();
+        let mut snapshot = negotiated_snapshot(Vec::new());
+        snapshot.configuration.as_mut().unwrap().configured = false;
+        state.apply_live_snapshot(snapshot);
+        assert_eq!(state.screen, Screen::Wizard);
+        assert!(!state.help);
+        assert!(state.context_help_formal.is_none());
+        assert_eq!(state.wizard.values(), draft);
+        state.handle_key(key(KeyCode::Char('?')));
+        assert!(state.help);
+        state.handle_key(key(KeyCode::Esc));
+        assert!(!state.help);
     }
 
     #[test]

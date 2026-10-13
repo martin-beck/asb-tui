@@ -58,7 +58,7 @@
     {"action":"wizard_back_left","element":"navigation","key":"Left"},
     {"action":"wizard_back_empty","element":"navigation","key":"Backspace when the current editable value or search is empty"},
     {"action":"cancel_wizard","element":"navigation","key":"q"},
-    {"action":"open_help","element":"navigation","key":"?"},
+    {"action":"open_help","element":"navigation","key":"?/h or F1 while editing"},
     {"action":"reconnect","element":"navigation","key":"x"},
     {"action":"focus_search","element":"help.search","key":"/"},
     {"action":"focus_measure_search","element":"measures.search","key":"/"},
@@ -104,7 +104,7 @@
     ,{"action":"move_report_cursor","element":"reports.row","key":"Up/Down"}
     ,{"action":"toggle_report_selection","element":"reports.row","key":"Space"}
     ,{"action":"move_context_help","element":"context_help.entry","key":"Up/Down or j/k"}
-    ,{"action":"close_context_help","element":"context_help.overlay","key":"Esc/?/h"}
+    ,{"action":"close_context_help","element":"context_help.overlay","key":"Esc/?/h/F1"}
   ],
   "routes": [
     {"id":"landing","elements":["landing.primary","navigation","status.connection","context_help.footer","context_help.overlay","context_help.entry"]},

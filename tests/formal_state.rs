@@ -586,6 +586,18 @@ fn development_authentication_actions_are_formally_executable() {
 
 #[test]
 fn contextual_help_events_are_executable_atomic_and_restore_focus() {
+    assert!(matches!(
+        ContextHelpFormalState::new("measurement_selection", Some("unknown.element")),
+        Err(asb_tui::formal_state::FormalError::UnknownElement(_))
+    ));
+    assert!(matches!(
+        ContextHelpFormalState::new("landing", Some("status.connection")),
+        Err(asb_tui::formal_state::FormalError::ElementNotFocusable(_))
+    ));
+    assert!(matches!(
+        ContextHelpFormalState::new("reports", Some("measures.search")),
+        Err(asb_tui::formal_state::FormalError::UnknownElement(_))
+    ));
     let mut context =
         ContextHelpFormalState::new("measurement_selection", Some("measures.search")).unwrap();
     let closed = context.clone();

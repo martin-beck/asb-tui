@@ -288,7 +288,7 @@
     {
       "action": "open_help",
       "element": "navigation",
-      "key": "?"
+      "key": "?/h or F1 while editing"
     },
     {
       "action": "reconnect",
@@ -518,7 +518,7 @@
     {
       "action": "close_context_help",
       "element": "context_help.overlay",
-      "key": "Esc/?/h"
+      "key": "Esc/?/h/F1"
     }
   ],
   "routes": [
