@@ -4924,4 +4924,25 @@ mod tests {
             UiAction::Control(crate::actions::UiAction::PlanRecording)
         ));
     }
+
+    #[test]
+    fn route_cycle_keeps_every_contextual_screen_reachable() {
+        assert_eq!(next_screen(Screen::Landing), Screen::Measures);
+        assert_eq!(next_screen(Screen::DevelopmentHandoff), Screen::Landing);
+        assert_eq!(next_screen(Screen::Wizard), Screen::Measures);
+        assert_eq!(next_screen(Screen::Measures), Screen::Configuration);
+        assert_eq!(next_screen(Screen::Configuration), Screen::RunControl);
+        assert_eq!(next_screen(Screen::RunControl), Screen::Reports);
+        assert_eq!(next_screen(Screen::Reports), Screen::Landing);
+        assert_eq!(next_screen(Screen::Help), Screen::Landing);
+
+        assert_eq!(previous_screen(Screen::Landing), Screen::Reports);
+        assert_eq!(previous_screen(Screen::DevelopmentHandoff), Screen::Landing);
+        assert_eq!(previous_screen(Screen::Wizard), Screen::Landing);
+        assert_eq!(previous_screen(Screen::Measures), Screen::Landing);
+        assert_eq!(previous_screen(Screen::Configuration), Screen::Measures);
+        assert_eq!(previous_screen(Screen::RunControl), Screen::Configuration);
+        assert_eq!(previous_screen(Screen::Reports), Screen::RunControl);
+        assert_eq!(previous_screen(Screen::Help), Screen::Configuration);
+    }
 }
