@@ -59,8 +59,12 @@ class EnvironmentTests(TestCase):
             "selection": {"agents": ["codex"], "workloads": ["original.bug-fix"]},
             "plan_run_journey": {"comparison": {"comparable": True}},
             "campaign": {"comparison": {"comparable": True}},
-            "negative_identity": {"rejected": True},
-            "negative_incomplete_coverage": {"rejected": True},
+            "negative_identity": {
+                "stale_experiment": {"rejected": True, "exit_code": 3, "message": "experiment identity is invalid"},
+                "executable_mismatch": {"rejected": True, "exit_code": 3, "message": "agent executable digest does not match"},
+                "workload_mismatch": {"rejected": True, "exit_code": 3, "message": "unknown or invalid workload"},
+            },
+            "negative_incomplete_coverage": {"rejected": True, "reason": "recording-coverage-incomplete"},
             "receipt_sha256": "c" * 64,
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -73,6 +77,24 @@ class EnvironmentTests(TestCase):
             path.write_text(json.dumps(receipt), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "credential-free and offline"):
                 runner.load_upstream_receipt(path, "a" * 40, "b" * 40)
+
+    def test_upstream_receipt_rejects_missing_or_false_typed_negative_evidence(self):
+        runner = load_runner()
+        valid = {
+            "negative_identity": {
+                "stale_experiment": {"rejected": True, "exit_code": 3, "message": "experiment identity is invalid"},
+                "executable_mismatch": {"rejected": True, "exit_code": 3, "message": "agent executable digest does not match"},
+                "workload_mismatch": {"rejected": True, "exit_code": 3, "message": "unknown or invalid workload"},
+            },
+            "negative_incomplete_coverage": {"rejected": True, "reason": "recording-coverage-incomplete"},
+        }
+        valid["negative_identity"]["stale_experiment"]["rejected"] = False
+        with self.assertRaisesRegex(ValueError, "stale-identity"):
+            runner.negative_diagnostics(valid)
+        valid["negative_identity"]["stale_experiment"]["rejected"] = True
+        valid["negative_incomplete_coverage"].pop("reason")
+        with self.assertRaisesRegex(ValueError, "incomplete-cassette"):
+            runner.negative_diagnostics(valid)
 
 
 if __name__ == "__main__":

@@ -412,7 +412,7 @@ def main() -> int:
         "schema_version": 1, "ar": "AR-1693", "classification": "development/mock",
         "network": {"install_materialization": "allowed", "benchmark_and_replay": "denied"}, "credentials": "none",
         "selection": {"channel": "dev", "provider": "fixture", "auth": "development_fixture", "agent": "opencode", "model": "fixture-model", "cassette": "strict-replay-cassette", "replay": "offline"},
-        "routes": {"install": installed_with_handoff, "status": status, "restart_status": restarted, "launch": launch, "tamper_negative": tampered, "onboarding": onboarding, "journey": journey, "provider_selection": "provider_lifecycle_1656 passed", "fanout_capture_replay": "coverage_setup_recording and development_journey passed", "end_to_end_test": "passed", "channel_compatibility_matrix": channel_matrix, "capture_replay_matrix": matrix, "comparison": "end_to_end_qualification passed", "analysis": "end_to_end_qualification passed"},
+        "routes": {"install": installed_with_handoff, "status": status, "restart_status": restarted, "launch": launch, "tamper_negative": tampered, "onboarding": onboarding, "journey": journey, "provider_selection": "provider_lifecycle_1656 passed", "unavailable_provider": "provider_lifecycle_1656 passed", "fanout_capture_replay": "coverage_setup_recording and development_journey passed", "end_to_end_test": "passed", "channel_compatibility_matrix": channel_matrix, "capture_replay_matrix": matrix, "comparison": "end_to_end_qualification passed", "analysis": "end_to_end_qualification passed"},
         "provenance": {
             "tui_commit": tui_commit, "tui_tree": tui_tree,
             "asb_commit": asb_head, "asb_tree": git(asb_checkout, f"{asb_head}^{{tree}}"),

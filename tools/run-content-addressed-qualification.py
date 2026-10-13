@@ -33,6 +33,12 @@ _REQUIRED_UPSTREAM_KEYS = {
     "plan_run_journey", "campaign", "negative_identity", "negative_incomplete_coverage",
     "receipt_sha256",
 }
+_IDENTITY_NEGATIVES = {
+    "stale_experiment": "experiment identity is invalid",
+    "executable_mismatch": "agent executable digest does not match",
+    "workload_mismatch": "unknown or invalid workload",
+}
+_INCOMPLETE_CASSETTE_REASON = "recording-coverage-incomplete"
 
 
 def sanitized_environment() -> dict[str, str]:
@@ -70,6 +76,37 @@ def json_result(process: subprocess.CompletedProcess[str]) -> dict[str, Any]:
     raise AssertionError("no structured JSON result")
 
 
+def negative_diagnostics(value: dict[str, Any]) -> dict[str, Any]:
+    """Validate and compact ASB-owned typed negative qualification evidence.
+
+    The TUI does not recreate an ASB plan or cassette.  It does, however,
+    reject any upstream qualification that has not demonstrated each required
+    identity and coverage failure.  The projected evidence retains only stable
+    diagnostic classes and exit codes, not capture contents or paths.
+    """
+
+    identity = value.get("negative_identity")
+    if not isinstance(identity, dict) or set(identity) != set(_IDENTITY_NEGATIVES):
+        raise ValueError("ASB qualification has incomplete stale-identity diagnostics")
+    cases: dict[str, dict[str, Any]] = {}
+    for name, message in _IDENTITY_NEGATIVES.items():
+        item = identity[name]
+        if not isinstance(item, dict) or set(item) != {"rejected", "exit_code", "message"}:
+            raise ValueError("ASB qualification has malformed stale-identity diagnostics")
+        if item.get("rejected") is not True or item.get("exit_code") != 3 or item.get("message") != message:
+            raise ValueError("ASB qualification did not retain a typed stale-identity rejection")
+        cases[name] = {"rejected": True, "exit_code": 3}
+    incomplete = value.get("negative_incomplete_coverage")
+    if not isinstance(incomplete, dict) or set(incomplete) != {"rejected", "reason"}:
+        raise ValueError("ASB qualification has malformed incomplete-cassette diagnostics")
+    if incomplete.get("rejected") is not True or incomplete.get("reason") != _INCOMPLETE_CASSETTE_REASON:
+        raise ValueError("ASB qualification did not retain the incomplete-cassette rejection")
+    return {
+        "stale_identity": {"rejected": True, "cases": cases},
+        "incomplete_cassette": {"rejected": True, "reason": _INCOMPLETE_CASSETTE_REASON},
+    }
+
+
 def load_upstream_receipt(path: Path, asb_head: str, tui_head: str) -> dict[str, Any]:
     """Reject incomplete, mismatched, or non-private ASB qualification output."""
 
@@ -81,15 +118,12 @@ def load_upstream_receipt(path: Path, asb_head: str, tui_head: str) -> dict[str,
     paired = value["paired_heads"]
     if not isinstance(paired, dict) or paired != {"asb": asb_head, "asb_tui": tui_head}:
         raise ValueError("ASB qualification receipt is not bound to the requested paired heads")
-    journey, campaign, negative = (
-        value["plan_run_journey"], value["campaign"], value["negative_incomplete_coverage"]
-    )
+    journey, campaign = value["plan_run_journey"], value["campaign"]
     if not isinstance(journey, dict) or journey.get("comparison", {}).get("comparable") is not True:
         raise ValueError("ASB qualification did not produce a comparable plan/run journey")
     if not isinstance(campaign, dict) or campaign.get("comparison", {}).get("comparable") is not True:
         raise ValueError("ASB qualification did not produce comparable replay evidence")
-    if not isinstance(negative, dict) or negative.get("rejected") is not True:
-        raise ValueError("ASB qualification did not retain the incomplete-coverage rejection")
+    negative_diagnostics(value)
     return value
 
 
@@ -152,6 +186,7 @@ def main() -> int:
             "asb_content_addressed_qualification": {
                 "passed": True, "receipt_sha256": upstream["receipt_sha256"],
             },
+            "negative_diagnostics": negative_diagnostics(upstream),
             "tui_journey": probe_tui(tui),
         },
         "complete": True,
