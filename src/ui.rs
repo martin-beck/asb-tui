@@ -6066,6 +6066,7 @@ mod tests {
         state
     }
 
+    #[allow(clippy::field_reassign_with_default)]
     fn visual_launch(state: PublicRunState) -> WorkspaceState {
         let mut workspace = WorkspaceState::default();
         workspace.screen = Screen::RunControl;
@@ -6111,6 +6112,7 @@ mod tests {
         workspace
     }
 
+    #[allow(clippy::field_reassign_with_default)]
     fn visual_scenario(route: &str, scenario: &str) -> WorkspaceState {
         let mut state = match (route, scenario) {
             ("landing", "ready") => {
