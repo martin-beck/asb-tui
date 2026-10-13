@@ -1496,6 +1496,7 @@ mod tests {
         }
         assert_eq!(backend.calls, ["offline", "catalog"]);
         assert!(recording.is_some());
+        assert!(workspace.run_error.is_none());
     }
 
     #[test]
