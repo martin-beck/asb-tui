@@ -992,7 +992,9 @@ pub fn render_with_pane(
         wizard_step_region(wizard, policy, pane, regions[1]),
         regions[1],
     );
-    let (details, summary, compact_summary) = if wizard.has_bounded_choices() {
+    let (details, summary, compact_summary) = if wizard.step == Step::Review {
+        review_presentation(wizard, policy)
+    } else if wizard.has_bounded_choices() {
         let selected = wizard.bounded_selected_index();
         let mut lines = vec![
             Line::from(Span::styled(
@@ -1180,7 +1182,13 @@ pub fn render_with_pane(
     }
     frame.render_widget(
         Paragraph::new(if narrow {
-            let selected_line = if wizard.step == Step::Agent {
+            let selected_line = if wizard.step == Step::Review {
+                let values = review_values(wizard);
+                format!(
+                    "Selected: {} / {} / {}",
+                    values[0].1, values[1].1, values[2].1
+                )
+            } else if wizard.step == Step::Agent {
                 if let Some(catalog) = wizard.catalog() {
                     let selected = catalog
                         .selected_ids(OptionKind::Agent)
@@ -1253,6 +1261,75 @@ pub fn render_with_pane(
         ),
         regions[3],
     );
+}
+
+fn review_values(wizard: &Wizard) -> Vec<(&'static str, String)> {
+    let values = wizard.values();
+    let authentication = match values[Step::Authentication as usize].as_str() {
+        value if value.starts_with("credential_reference:") => "Credential reference".into(),
+        "local_daemon" => "Local daemon".into(),
+        "none" => "No credential".into(),
+        "" => "Not selected".into(),
+        _ => "Configured reference".into(),
+    };
+    vec![
+        ("Agents", selected_or_missing(&values[Step::Agent as usize])),
+        (
+            "Provider",
+            selected_or_missing(&values[Step::Provider as usize]),
+        ),
+        ("Model", selected_or_missing(&values[Step::Model as usize])),
+        (
+            "Configuration",
+            selected_or_missing(&values[Step::Configuration as usize]),
+        ),
+        ("Authentication", authentication),
+        (
+            "Recording",
+            selected_or_missing(&values[Step::Recording as usize]),
+        ),
+        (
+            "Replay",
+            selected_or_missing(&values[Step::Replay as usize]),
+        ),
+    ]
+}
+
+fn selected_or_missing(value: &str) -> String {
+    if value.is_empty() {
+        "Not selected".into()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn review_presentation(
+    wizard: &Wizard,
+    policy: RenderPolicy,
+) -> (Vec<Line<'static>>, Vec<Line<'static>>, String) {
+    let values = review_values(wizard);
+    let mut details = vec![
+        Line::from(Span::styled(
+            "Step: Review",
+            shell_style(SemanticRole::Focus, policy),
+        )),
+        Line::from(step_prompt(Step::Review)),
+    ];
+    details.extend(
+        values
+            .iter()
+            .map(|(label, value)| Line::from(format!("{label}: {value}"))),
+    );
+    details.push(Line::from(format!("Element: {}", element_id(Step::Review))));
+
+    let mut summary = vec![Line::from("Review all seven setup choices")];
+    summary.extend(
+        values
+            .iter()
+            .map(|(label, value)| Line::from(format!("{label}: {value}"))),
+    );
+    summary.extend(unavailable_reason_lines(Step::Review));
+    (details, summary, "Enter confirm; Esc revise".into())
 }
 
 fn choice_style(row: &SelectionRow<'_>, policy: RenderPolicy) -> Style {

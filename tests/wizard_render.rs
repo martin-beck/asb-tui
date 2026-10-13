@@ -63,6 +63,49 @@ fn rendered_workspace_text(
         .collect()
 }
 
+fn completed_review_wizard(authentication: &str) -> Wizard {
+    let mut wizard = Wizard::default();
+    for value in ["codex", "development", "fixture-model", "all defaults"] {
+        wizard.set_value(value).unwrap();
+        wizard.advance().unwrap();
+    }
+    wizard.set_value(authentication).unwrap();
+    wizard.advance().unwrap();
+    wizard.set_value("local-mock").unwrap();
+    wizard.advance().unwrap();
+    wizard.set_value("strict offline replay").unwrap();
+    wizard.advance().unwrap();
+    assert_eq!(wizard.step(), Step::Review);
+    wizard
+}
+
+#[test]
+fn review_visibly_summarizes_every_choice_without_disclosing_credential_digest() {
+    let digest = "a".repeat(64);
+    let wizard = completed_review_wizard(&format!("credential_reference:{digest}"));
+    let ordinary = rendered_text(&wizard, policy(true), 120, 30);
+    for expected in [
+        "Step: Review",
+        "Review all seven setup choices",
+        "Agents: codex",
+        "Provider: development",
+        "Model: fixture-model",
+        "Configuration: all defaults",
+        "Authentication: Credential reference",
+        "Recording: local-mock",
+        "Replay: strict offline replay",
+    ] {
+        assert!(ordinary.contains(expected), "missing {expected:?}");
+    }
+    assert!(!ordinary.contains(&digest));
+    assert!(!ordinary.contains("Review: none selected"));
+
+    let narrow = rendered_text(&wizard, policy(false), 60, 16);
+    assert!(narrow.contains("Selected: codex / development / fixture-model"));
+    assert!(narrow.contains("Enter confirm; Esc revise"));
+    assert!(!narrow.contains(&digest));
+}
+
 #[test]
 fn setup_is_required_only_when_authoritative_readiness_is_false() {
     assert_eq!(startup_route(false), StartupRoute::Wizard);
