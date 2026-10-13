@@ -452,8 +452,31 @@ impl SelectedAgentComparison {
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let unavailable = display_reasons(&result.assessment.unavailable_reasons);
+        let confounders = display_reasons(&result.assessment.confounders);
+        let sides = result
+            .assessment
+            .sides
+            .iter()
+            .map(|side| {
+                format!(
+                    "- {} {}: {}; unavailable: {}; confounders: {}",
+                    comparison_role_label(&side.role),
+                    side.run_id.as_str(),
+                    if side.available {
+                        "available"
+                    } else {
+                        "unavailable"
+                    },
+                    display_reasons(&side.unavailable_reasons),
+                    display_reasons(&side.confounders),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         format!(
-            "selected-agent comparison\nStatus: {status}\nRuns: {}\nEvidence: {evidence}\n",
+            "selected-agent comparison\nStatus: {status}\nAvailability: {}\nRuns: {}\nEvidence: {evidence}\nUnavailable: {unavailable}\nConfounders: {confounders}\nSides:\n{sides}\n",
+            comparison_availability_label(&result.assessment.availability),
             result
                 .selected_run_ids
                 .iter()
@@ -468,12 +491,43 @@ impl SelectedAgentComparison {
             "status": if result.comparison.is_some() { "ready" } else { "not-ready" },
             "run_ids": result.selected_run_ids.iter().map(RunId::as_str).collect::<Vec<_>>(),
             "terminal_sources": result.terminal_sources,
+            "availability": comparison_availability_label(&result.assessment.availability),
             "comparable": result.assessment.comparable,
             "unavailable_reasons": result.assessment.unavailable_reasons,
             "confounders": result.assessment.confounders,
             "excluded_measures": result.assessment.excluded_measures,
+            "sides": result.assessment.sides.iter().map(|side| serde_json::json!({
+                "role": comparison_role_label(&side.role),
+                "run_id": side.run_id.as_str(),
+                "available": side.available,
+                "unavailable_reasons": side.unavailable_reasons,
+                "confounders": side.confounders,
+            })).collect::<Vec<_>>(),
         })
         .to_string()
+    }
+}
+
+fn comparison_availability_label(availability: &ComparisonAvailability) -> &'static str {
+    match availability {
+        ComparisonAvailability::Available => "available",
+        ComparisonAvailability::Partial => "partial",
+        ComparisonAvailability::Unavailable => "unavailable",
+    }
+}
+
+fn comparison_role_label(role: &ComparisonRole) -> &'static str {
+    match role {
+        ComparisonRole::Baseline => "baseline",
+        ComparisonRole::Candidate => "candidate",
+    }
+}
+
+fn display_reasons(reasons: &[String]) -> String {
+    if reasons.is_empty() {
+        "none".to_owned()
+    } else {
+        reasons.join(", ")
     }
 }
 
