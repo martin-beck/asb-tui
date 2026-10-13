@@ -186,6 +186,8 @@ fn wizard_render_has_stable_context_and_tiny_fallback() {
     let wizard = Wizard::default();
     assert_eq!(element_id(wizard.step()), "wizard.agent");
     assert!(plain_text(&wizard).contains("ASB setup wizard"));
+    assert!(plain_text(&wizard).contains("field: Agent"));
+    assert!(!plain_text(&wizard).contains("wizard.agent"));
     let mut terminal = Terminal::new(TestBackend::new(24, 6)).unwrap();
     terminal
         .draw(|frame| render(frame, &wizard, policy(false)))
@@ -246,10 +248,59 @@ fn wizard_selection_rows_and_summary_are_textually_unambiguous() {
     state.apply(FormalEvent::CatalogMove(1)).unwrap();
     let text = rendered_text(state.wizard(), policy(false), 120, 24);
     assert!(text.contains("[x] Agent A"));
-    assert!(text.contains("> [ ] Agent B — unavailable: not available for this setup"));
+    assert!(text.contains("> [ ] Agent B — unavailable: Unavailable; refresh the setup catalog."));
     assert!(text.contains("Selection summary"));
     assert!(text.contains("Agent: 1 selected"));
     assert!(text.contains("Space toggles; A selects all or clears all"));
+}
+
+#[test]
+fn catalog_viewport_keeps_deep_focus_visible_and_projects_typed_reason() {
+    let agents = (0..10)
+        .map(|index| {
+            let id = format!("agent-{index}");
+            let option = WizardOption::new(id.clone(), format!("Agent {index}"), index != 0)
+                .unwrap();
+            if index == 0 {
+                option
+                    .with_unavailable_reason("Installation metadata is incomplete; install or refresh this agent in ASB.")
+                    .unwrap()
+            } else {
+                option
+            }
+        })
+        .collect::<Vec<_>>();
+    let agent_ids = agents.iter().map(|option| option.id.clone()).collect();
+    let catalog = WizardCatalog::new(
+        agents,
+        vec![
+            WizardOption::new("provider", "Provider", true)
+                .unwrap()
+                .compatible_with(agent_ids)
+                .unwrap(),
+        ],
+        vec![
+            WizardOption::new("model", "Model", true)
+                .unwrap()
+                .compatible_with(vec!["provider".into()])
+                .unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut state = WizardFormalState::new_with_catalog(catalog).unwrap();
+    state.apply(FormalEvent::OpenWizard).unwrap();
+    state.apply(FormalEvent::CatalogMove(9)).unwrap();
+
+    let text = rendered_text(state.wizard(), policy(false), 160, 40);
+    assert!(text.contains("Choices 3-10 of 10"));
+    assert!(text.contains("> [ ] Agent 9"));
+    assert!(!text.contains("Agent 0"));
+    assert!(!text.contains("wizard.agent"));
+
+    state.apply(FormalEvent::CatalogMove(-9)).unwrap();
+    let text = rendered_text(state.wizard(), policy(false), 160, 40);
+    assert!(text.contains("Agent 0 — unavailable: Installation metadata is incomplete"));
+    assert!(!text.contains("not available for this setup"));
 }
 
 #[test]
@@ -909,7 +960,8 @@ fn ar1668_authoritative_openrouter_wizard_completes_through_renderer_seam() {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("ASB setup wizard"));
-        assert!(text.contains(asb_tui::wizard::element_id(state.wizard.step())));
+        assert!(text.contains("Step:"));
+        assert!(!text.contains(asb_tui::wizard::element_id(state.wizard.step())));
         visited.push(asb_tui::wizard::element_id(state.wizard.step()));
     };
 

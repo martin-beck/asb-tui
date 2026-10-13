@@ -26,6 +26,7 @@ pub struct WizardOption {
     pub id: String,
     pub label: String,
     pub available: bool,
+    unavailable_reason: Option<String>,
     compatible_ids: Vec<String>,
 }
 
@@ -39,6 +40,7 @@ impl WizardOption {
             id: id.into(),
             label: label.into(),
             available,
+            unavailable_reason: None,
             compatible_ids: Vec::new(),
         };
         validate_option(&option)?;
@@ -56,6 +58,19 @@ impl WizardOption {
     #[must_use]
     pub fn compatible_ids(&self) -> &[String] {
         &self.compatible_ids
+    }
+
+    /// Preserve the authoritative, non-secret reason that a catalog entry is
+    /// unavailable. An available entry cannot carry this annotation.
+    pub fn with_unavailable_reason(mut self, reason: impl Into<String>) -> Result<Self, String> {
+        self.unavailable_reason = Some(reason.into());
+        validate_option(&self)?;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn unavailable_reason(&self) -> Option<&str> {
+        self.unavailable_reason.as_deref()
     }
 }
 
@@ -414,6 +429,17 @@ fn validate_option(option: &WizardOption) -> Result<(), String> {
         || option.label.chars().any(char::is_control)
     {
         return Err("invalid wizard catalog option label".into());
+    }
+    if option.available && option.unavailable_reason.is_some() {
+        return Err("available wizard catalog option has an unavailable reason".into());
+    }
+    if let Some(reason) = &option.unavailable_reason
+        && (reason.trim().is_empty()
+            || reason.len() > MAX_LABEL_BYTES
+            || !reason.is_ascii()
+            || reason.chars().any(char::is_control))
+    {
+        return Err("invalid wizard catalog unavailable reason".into());
     }
     let mut ids = BTreeSet::new();
     for id in &option.compatible_ids {
